@@ -12,9 +12,18 @@ import { buildStarships } from '../footer/foot-model-starship.js';
 import { buckets } from '../footer/foot-model-kit.js';
 
 const MARGIN = 0.12;                       // quad bleed around the disc (radii fraction) for the atmosphere rim
-const EARTH = { period: 120, tilt: 0.22, lean: 0.14, front: 0.40 };   // seconds per turn, axis tilt (z), lean toward us (x), start longitude (uv.x facing us)
-const MARS = { period: 150, tilt: -0.30, lean: 0.14, front: 0.30 };
-const SUN = [-0.55, 0.28, 0.79];           // toward the sun: front-left, a little above
+// Texture slot (urls are relative to the assets base, or absolute). To swap in NASA Blue Marble later, change these lines only.
+// Expected files: color 2048x1024 webp (high) and 1024x512 (low), equirectangular, lon 0 at the centre; clouds 1024x512 webp
+// (greyscale cover); normal 1024x512 webp (tangent-space, optional, high tier only).
+const EARTH_TEX = { color: { high: 'earth-2048.webp', low: 'earth-1024.webp' }, clouds: 'earth-clouds-1024.webp', normal: 'earth-n-1024.webp' };
+const MARS_TEX = { color: { high: 'mars-2048.webp', low: 'mars-1024.webp' }, normal: 'mars-n-1024.webp' };
+
+// Fixed start rotation: the uv.x (0..1, lon 0 at 0.5) that faces the camera at t=0. No randomness, so a still at t=0 is the first live frame.
+export const INITIAL_ROTATION = { earth: 0.345, mars: 0.346 };
+export const EARTH = { period: 360, tilt: 0.22, lean: 0.14, front: INITIAL_ROTATION.earth, sun: [0.42, 0.16, 0.89] };   // seconds per turn, axis tilt (z), lean toward us (x), start uv.x, sun
+export const MARS = { period: 450, tilt: -0.30, lean: 0.14, front: INITIAL_ROTATION.mars, sun: [-0.40, 0.18, 0.90] };
+// Each planet has its own sun: mostly frontal, offset toward the page centre and a little up, so the terminator falls on the off-screen side.
+const SUN = [-0.55, 0.28, 0.79];           // ship key light and environment only: front-left, a little above
 const T0 = 0.04, T1 = 0.96;                // rocket arc parameter limits
 const P0 = 0.15, P1 = 0.85;                // section progress mapped onto T0..T1
 const SAMPLES = 192;                       // path samples (cached in px on resize)
@@ -25,7 +34,7 @@ const nextFrame = () => new Promise(r => (typeof requestAnimationFrame === 'func
 
 export function createMission({ THREE, section, quality = 'high', base } = {}) {
   const high = quality !== 'low';
-  const baseURL = String(base || new URL('./assets/', import.meta.url).href).replace(/\/?$/, '/');
+  const baseURL = new URL(String(base || new URL('./assets/', import.meta.url).href).replace(/\/?$/, '/'), location.href).href;
   const host = section.querySelector('[data-mission-canvas]') || section;
   const earthBox = section.querySelector('[data-mission-earth]'), marsBox = section.querySelector('[data-mission-mars]');
   const pathEl = section.querySelector('path[data-mission-path]');
@@ -47,7 +56,7 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   const quadGeo = new THREE.PlaneGeometry(1, 1);
   const additive = { transparent: true, depthTest: false, depthWrite: false, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor };
   const dot1 = (r, g, b) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); t.needsUpdate = true; return t; };
-  const sunW = new THREE.Vector3(...SUN).normalize();
+  const sunW = new THREE.Vector3(...SUN).normalize();   // ship key
   const defines = { ...(high ? { HAS_NORM: '' } : {}) };
   const mkUniforms = (extra) => ({ uQ: { value: 1 + 2 * MARGIN }, uRot: { value: new THREE.Matrix3() }, uSun: { value: new THREE.Vector3() }, uSunI: { value: 1 }, uExp: { value: 1 }, uGlow: { value: 1 }, ...extra });
 
@@ -201,7 +210,7 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
       P.q.copy(P.qt).multiply(qb.setFromAxisAngle(AY, ang));
       m4.makeRotationFromQuaternion(P.q);
       const R = P.u.uRot.value.setFromMatrix4(m4).transpose();        // world -> object
-      P.u.uSun.value.copy(sunW).applyMatrix3(R);
+      P.u.uSun.value.set(...P.cfg.sun).normalize().applyMatrix3(R);
     }
     earthU.uCloudOff.value = -time * 0.0025;                        // deck drifts ~30% faster than the ground (same direction)
     const ca = -earthU.uCloudOff.value * Math.PI * 2;
@@ -247,15 +256,16 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   // ---------------------------------------------------------------- textures, compile, first frame
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const fetchTex = (name, srgb) => new Promise((res, rej) => loader.load(baseURL + name, t => {
+  const fetchTex = (name, srgb) => new Promise((res, rej) => loader.load(new URL(name, baseURL).href, t => {
     const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve();
     dec.then(() => {
       t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true; res(t);
     });
   }, undefined, () => rej(new Error('mission texture failed: ' + name))));
+  const tier = high ? 'high' : 'low';
   const files = high
-    ? [[earthU.tMap, 'earth-2048.webp', true], [marsU.tMap, 'mars-2048.webp', true], [earthU.tNorm, 'earth-n-1024.webp', false], [marsU.tNorm, 'mars-n-1024.webp', false], [earthU.tClouds, 'earth-clouds-1024.webp', false]]
-    : [[earthU.tMap, 'earth-1024.webp', true], [marsU.tMap, 'mars-1024.webp', true]];
+    ? [[earthU.tMap, EARTH_TEX.color[tier], true], [marsU.tMap, MARS_TEX.color[tier], true], [earthU.tNorm, EARTH_TEX.normal, false], [marsU.tNorm, MARS_TEX.normal, false], [earthU.tClouds, EARTH_TEX.clouds, false]]
+    : [[earthU.tMap, EARTH_TEX.color[tier], true], [marsU.tMap, MARS_TEX.color[tier], true]];
   const loaded = [];
 
   const ready = (async () => {
@@ -281,11 +291,13 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   ready.catch(() => {});
 
   // QA: render now and read the canvas back (RGBA, bottom-up, premultiplied). glow:false drops the atmosphere so the disc edge is exact.
-  function capture({ glow = true } = {}) {
+  function capture({ glow = true, noShip = false } = {}) {
     if (!isReady) return null;
     const gl = renderer.getContext(), w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
     earthU.uGlow.value = marsU.uGlow.value = glow ? 1 : 0;
+    const sv = ship.visible; if (noShip) ship.visible = false;
     renderer.render(scene, camera);
+    ship.visible = sv;
     const data = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);
     earthU.uGlow.value = marsU.uGlow.value = 1;
     return { w, h, data };

@@ -30,6 +30,7 @@ URL switches: `?foot=0` keeps the poster, `?q=low|high` forces a quality tier.
 - `[data-mission]`: section, `position: relative; overflow: hidden`
 - `[data-mission-canvas]`: absolute inset-0 empty mount, `pointer-events: none` (the canvas is created inside it)
 - `[data-mission-earth]`, `[data-mission-mars]`: square boxes, each with a poster `img`; the sphere is drawn exactly over its box (diameter = box width) and may bleed off the section edge. The imgs fade out once the first real frame is drawn.
+- `img[data-mission-billboard]`: the designer's static 2D rocket with plume, placed on the arc. It is the fallback for the 3D Starship, so it fades out with the posters on the first real frame and stays visible on any bail or failure.
 - `[data-mission-arc]` containing `path[data-mission-path]`, left to right: the rocket's arc
 
 The rocket's arc parameter is `t = remap(p, 0.15..0.85 -> 0.04..0.96)`, where `p` is section progress (0 when the section top meets the viewport bottom, 1 when its bottom meets the viewport top). It is smoothed, clamped, and fades out at the extremes. Rings around the planets are Webflow CSS.

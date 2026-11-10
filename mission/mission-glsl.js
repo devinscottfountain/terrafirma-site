@@ -55,7 +55,7 @@ const DISC = /* glsl */ `
 `;
 
 // ---------------------------------------------------------------------------------------------
-// Earth: map, ocean from the map's own near-black sea, glint and Fresnel sheen, normal relief on land,
+// Earth: map, ocean from the map's own near-black sea, Fresnel sheen, normal relief on land,
 // a cloud deck (high tier) that slides over the ground and shades it, thin blue-white atmosphere rim.
 // ---------------------------------------------------------------------------------------------
 export const EARTH_FRAG = /* glsl */ `
@@ -91,17 +91,13 @@ ${DISC}
     shadow = 1. - 0.6 * smoothstep(0.15, 0.85, sh) * smoothstep(0., 0.25, mu + 0.05);
     #endif
     vec3 sunCol = sunTrans(mu, vec3(0.034, 0.075, 0.175));
-    float gate = smoothstep(-0.02, 0.07, mu);
-    float NL = max(dot(N, L), 0.) * gate;
+    float gate = smoothstep(-0.30, 0.10, mu);                                  // soft terminator (sun is frontal, so it sits off screen)
+    float NL = clamp((dot(N, L) + 0.25) / 1.25, 0., 1.) * gate;                // wrapped diffuse: gentle limb darkening
     col = base * sunCol * NL * uSunI * shadow;
     col += base * vec3(0.10, 0.17, 0.34) * 0.55 * smoothstep(-0.12, 0.6, mu);                       // blue sky fill, day side
     col += vec3(0.95, 0.42, 0.22) * 0.04 * exp(-pow((mu + 0.015) / 0.07, 2.)) * (0.35 + 0.65 * (1. - ocean * 0.5)); // twilight band
-    // ocean glint (tight + broad) and Fresnel sky reflection toward the limb; V is the constant ortho view in object space
-    vec3 V = uRot * vec3(0., 0., 1.), H = normalize(L + V);
-    float nh = max(dot(p, H), 0.);
+    // Fresnel sky reflection toward the limb (no sun glint)
     float F = 0.02 + 0.98 * pow(1. - z, 5.);
-    float glint = pow(nh, 3000.) * 3. + pow(nh, 500.) * 0.5 + pow(nh, 90.) * 0.02;
-    col += ocean * smoothstep(0., 0.12, mu) * (1. - smoothstep(0.1, 0.8, cover)) * vec3(1., 0.93, 0.82) * sunCol * glint * (0.35 + 1.6 * F);
     col += ocean * vec3(0.10, 0.20, 0.42) * F * 1.4 * smoothstep(-0.2, 0.5, mu);
     #ifdef HAS_CLOUDS
     vec3 cloudCol = vec3(0.93, 0.95, 0.98) * sunCol * max(dot(Nc, L), 0.) * smoothstep(-0.03, 0.1, mu) * uSunI * mix(1., 0.78, dens);
@@ -116,7 +112,7 @@ ${DISC}
   // atmosphere: thin blue-white rim, e-folds in ~4 px outside the limb, a short haze inside it
   float H0 = 0.011;
   float lim = r > 1. ? exp(-(r - 1.) / H0) : exp(-z / 0.16);
-  float lit = smoothstep(-0.28, 0.30, mu);
+  float lit = smoothstep(-0.50, 0.10, mu);
   vec3 rimC = mix(vec3(0.20, 0.46, 1.0), vec3(0.72, 0.88, 1.0), smoothstep(0.3, 1., lim));
   vec3 glow = rimC * lim * lit * 0.85 + vec3(1., 0.45, 0.2) * lim * exp(-pow(mu / 0.09, 2.)) * 0.16;
   glow *= uGlow * (r < 1. ? 0.55 : 1.);
@@ -158,8 +154,8 @@ ${DISC}
     rust = max(mix(vec3(l), rust, 1.0), 0.) * vec3(1.0, 0.93, 0.74);                  // butterscotch rust
     vec3 A = mix(rust, vec3(0.80, 0.78, 0.76) * (0.7 + 0.2 * l), ice * 0.85);
     vec3 sunCol = sunTrans(mu, vec3(0.05, 0.085, 0.15));
-    float gate = smoothstep(-0.035, 0.09, mu);                                           // a few degrees of penumbra, then near black
-    float m0 = max(dot(N, L) + 0.04, 0.) / 1.04 * gate, m1 = max(z, 0.05);
+    float gate = smoothstep(-0.20, 0.15, mu);                                            // soft terminator (frontal sun keeps it off screen)
+    float m0 = max(dot(N, L) + 0.25, 0.) / 1.25 * gate, m1 = max(z, 0.05);                // wrapped diffuse: gentle limb darkening
     float val = mix(m0, 2. * m0 / (m0 + m1), 0.12);
     col = A * sunCol * val * uSunI;
     col += A * vec3(0.95, 0.60, 0.36) * 0.03 * smoothstep(-0.05, 0.6, mu);               // dust fill, day side only
@@ -172,7 +168,7 @@ ${DISC}
   // atmosphere rim: thin and dusty, lit side only, falls off in ~3 px
   float H0 = 0.0075;
   float lim = r > 1. ? exp(-(r - 1.) / H0) : exp(-z / 0.10);
-  float lit = smoothstep(-0.12, 0.35, mu);
+  float lit = smoothstep(-0.40, 0.10, mu);
   vec3 glow = mix(vec3(1.0, 0.52, 0.26), vec3(1.0, 0.72, 0.46), smoothstep(0.4, 1., lim)) * lim * lit * 0.42;
   glow *= uGlow * (r < 1. ? 0.6 : 1.);
   if (cov <= 0. && max(glow.r, max(glow.g, glow.b)) < 0.002) discard;

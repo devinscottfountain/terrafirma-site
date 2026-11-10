@@ -12,6 +12,7 @@
 //   [data-mission-canvas]        absolute inset-0 empty mount; the transparent WebGL canvas is added inside it
 //   [data-mission-earth|mars]    square boxes holding a poster <img>; each sphere renders exactly over its box
 //   [data-mission-arc] path[data-mission-path]   the rocket's arc, left to right
+//   img[data-mission-billboard]  the static 2D rocket on the arc: fallback for the 3D ship, fades out with the posters
 // Posters fade out once the first real frame is drawn. Switches: ?mission=0 keeps the posters.
 
 const BASE = new URL('./footer/', import.meta.url).href;   // footer modules and textures, pinned with this file's SHA
@@ -173,7 +174,7 @@ const mBail = !mRoot || qs.get('mission') === '0' || matchMedia('(prefers-reduce
 
 if (!mBail) {
   const MBASE = new URL('./mission/', import.meta.url).href;
-  const posters = [...mRoot.querySelectorAll('[data-mission-earth] img, [data-mission-mars] img')];
+  const posters = [...mRoot.querySelectorAll('[data-mission-earth] img, [data-mission-mars] img, [data-mission-billboard]')];
   let mission = null, mBooted = false, mDead = false;
   const quality = pickQuality();
   const mCleanups = [];
