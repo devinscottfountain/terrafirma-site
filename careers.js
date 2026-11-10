@@ -6,6 +6,13 @@
 //   [data-foot-canvas]  absolute mount that holds the poster <img>; the WebGL canvas is added inside it
 //   [data-foot-logo]    wrapper around the logotype svg (the halo and glow sit behind its rect)
 // Anything that goes wrong leaves the poster in place.
+//
+// Also mounts the Mission section (Earth, Mars and a Starship on an SVG arc) when [data-mission] exists:
+//   [data-mission]               section root (position: relative; overflow: hidden)
+//   [data-mission-canvas]        absolute inset-0 empty mount; the transparent WebGL canvas is added inside it
+//   [data-mission-earth|mars]    square boxes holding a poster <img>; each sphere renders exactly over its box
+//   [data-mission-arc] path[data-mission-path]   the rocket's arc, left to right
+// Posters fade out once the first real frame is drawn. Switches: ?mission=0 keeps the posters.
 
 const BASE = new URL('./footer/', import.meta.url).href;   // footer modules and textures, pinned with this file's SHA
 const FADE_MS = 600;
@@ -17,7 +24,12 @@ const logoEl = root && root.querySelector('[data-foot-logo]');
 const poster = mount && mount.querySelector('img');
 
 // ---------------------------------------------------------------- bail conditions (poster stays)
+let gl2Probe;   // one probe context for the footer and the mission
 function hasWebGL2() {
+  if (gl2Probe !== undefined) return gl2Probe;
+  return gl2Probe = probeWebGL2();
+}
+function probeWebGL2() {
   try {
     const gl = document.createElement('canvas').getContext('webgl2');
     gl?.getExtension('WEBGL_lose_context')?.loseContext();   // free the probe context right away
@@ -151,4 +163,59 @@ if (!bail) {
   near.observe(root);
   if (document.readyState === 'complete') idle(boot, 3000);
   else addEventListener('load', () => idle(boot, 3000), { once: true });
+}
+
+// =================================================================================================
+// Mission section
+// =================================================================================================
+const mRoot = document.querySelector('[data-mission]');
+const mBail = !mRoot || qs.get('mission') === '0' || matchMedia('(prefers-reduced-motion: reduce)').matches || !hasWebGL2();
+
+if (!mBail) {
+  const MBASE = new URL('./mission/', import.meta.url).href;
+  const posters = [...mRoot.querySelectorAll('[data-mission-earth] img, [data-mission-mars] img')];
+  let mission = null, mBooted = false, mDead = false;
+  const quality = pickQuality();
+  const mCleanups = [];
+
+  // failure: dispose, bring the posters back
+  function mFail(err) {
+    if (mDead) return;
+    mDead = true;
+    console.warn('TerraFirma mission: falling back to the posters.', err);
+    for (const fn of mCleanups.splice(0)) { try { fn(); } catch (_) { /* best effort */ } }
+    try { mission?.dispose(); } catch (_) { /* best effort */ }
+    mission = null; window.TFMission = undefined;
+    for (const img of posters) { img.style.transition = 'none'; img.style.opacity = ''; img.style.visibility = ''; }
+  }
+
+  async function mBoot() {
+    if (mBooted || mDead) return;
+    mBooted = true;
+    try {
+      const [THREE, mod] = await Promise.all([import('three'), import('./mission/mission3d.js')]);
+      if (mDead) return;
+      mission = mod.createMission({ THREE, section: mRoot, quality, base: MBASE + 'assets/' });   // adds its own absolute-fill canvas to the mount
+      window.TFMission = { mission, quality };   // QA only
+      const cv = mission.canvas;
+      Object.assign(cv.style, { opacity: '0', transition: `opacity ${FADE_MS}ms ease`, zIndex: '1', pointerEvents: 'none' });
+      cv.addEventListener('webglcontextlost', e => { e.preventDefault(); mFail(new Error('webgl context lost')); });
+      if (!(await mission.ready)) { if (!mDead) mFail(new Error('mission disposed before ready')); return; }
+      if (mDead) return;
+      mission.start();   // renders only while the section is on screen
+      // crossfade: canvas 0 -> 1 and posters 1 -> 0 over FADE_MS
+      for (const img of posters) img.style.transition = `opacity ${FADE_MS}ms ease`;
+      void cv.offsetWidth;
+      cv.style.opacity = '1';
+      for (const img of posters) img.style.opacity = '0';
+    } catch (err) { mFail(err); }
+  }
+
+  // lazy trigger: within 2 viewports, or idle after load (same pattern as the footer)
+  const mIdle = (fn, timeout) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 200));
+  const mSchedule = () => requestAnimationFrame(() => requestAnimationFrame(() => mIdle(mBoot, 1000)));
+  const mNear = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { mNear.disconnect(); mSchedule(); } }, { rootMargin: `${innerHeight * 2}px 0px` });
+  mNear.observe(mRoot);
+  if (document.readyState === 'complete') mIdle(mBoot, 3000);
+  else addEventListener('load', () => mIdle(mBoot, 3000), { once: true });
 }
