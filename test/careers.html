@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>careers.js footer test</title>
+<!-- Mimics the Webflow DOM. Local test only: the importmap points at a scratch node_modules served from the web root. -->
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+html,body{margin:0;background:#0b0705;color:#D6D9E3;font:16px/1.4 system-ui,sans-serif}
+.spacer{height:3000px;background:linear-gradient(#161616,#2a1a12)}
+.foot{position:relative;overflow:hidden;width:100%;height:1152px}
+.foot-canvas{position:absolute;inset:0}
+.foot-canvas img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.foot-content{position:absolute;left:7.5%;right:7.5%;bottom:6%;z-index:2}
+.foot-logo{width:100%;height:21%}
+.foot-logo svg{display:block;width:100%;height:auto}
+</style></head><body>
+<div class="spacer"></div>
+<footer class="foot" data-foot>
+  <div class="foot-canvas" data-foot-canvas>
+    <!-- placeholder poster: flat dusk gradient -->
+    <img alt="" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='9'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23120a0c'/%3E%3Cstop offset='.4' stop-color='%23b4552c'/%3E%3Cstop offset='1' stop-color='%231a0c06'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='16' height='9' fill='url(%23g)'/%3E%3C/svg%3E">
+  </div>
+  <div class="foot-content">
+    <div class="foot-logo" data-foot-logo><svg viewBox="0 0 1200 220" xmlns="http://www.w3.org/2000/svg"><text x="0" y="190" font-size="200" font-weight="500" fill="#D6D9E3" font-family="system-ui,sans-serif" letter-spacing="-4">TERRAFIRMA</text></svg></div>
+  </div>
+</footer>
+<script type="module" src="../careers.js"></script>
+</body></html>
