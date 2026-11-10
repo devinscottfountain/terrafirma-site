@@ -1,0 +1,38 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>careers.js mission test</title>
+<!-- Mimics the Webflow Mission DOM at 1600 wide (scaled by --k on phones). Local test only: the importmap points at a scratch node_modules served from the web root. -->
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>
+:root{--k:1}
+@media (max-width:600px){:root{--k:.24375}}
+html,body{margin:0;background:#05070d;color:#D6D9E3;font:16px/1.4 system-ui,sans-serif}
+.spacer{height:2000px;background:linear-gradient(#0b0705,#05070d)}
+.mission{position:relative;overflow:hidden;width:100%;height:calc(960px*var(--k));background:#05070d}
+.mission-canvas{position:absolute;inset:0;pointer-events:none}
+.box{position:absolute;pointer-events:none}
+.box img{display:block;width:100%;height:100%}
+.ring{position:absolute;border:1px solid rgba(214,217,227,.25);border-radius:50%;pointer-events:none}
+.arc{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.arc path{fill:none;stroke:rgba(255,255,255,.12);stroke-width:1;stroke-dasharray:4 6}
+.copy{position:absolute;left:50%;top:60%;transform:translateX(-50%);z-index:2;text-align:center;width:calc(560px*var(--k) + 40px)}
+.copy h2{margin:0 0 12px;font-size:clamp(28px,calc(56px*var(--k) + 8px),56px);font-weight:500;letter-spacing:-.02em}
+.copy p{margin:0;color:#9aa0b4}
+.spacer2{height:2000px;background:#05070d}
+</style></head><body>
+<div class="spacer"></div>
+<section class="mission" data-mission>
+  <div class="mission-canvas" data-mission-canvas></div>
+  <!-- rings (Webflow CSS, static here) -->
+  <div class="ring" style="left:calc(-300px*var(--k));top:calc(50px*var(--k));width:calc(960px*var(--k));height:calc(960px*var(--k))"></div>
+  <div class="ring" style="left:calc(1190px*var(--k));top:calc(140px*var(--k));width:calc(680px*var(--k));height:calc(680px*var(--k))"></div>
+  <div class="box" data-mission-earth style="left:calc(-230px*var(--k));top:calc(120px*var(--k));width:calc(820px*var(--k));height:calc(820px*var(--k))">
+    <img alt="" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Ccircle cx='4' cy='4' r='4' fill='%23234a8a'/%3E%3C/svg%3E"></div>
+  <div class="box" data-mission-mars style="left:calc(1250px*var(--k));top:calc(200px*var(--k));width:calc(560px*var(--k));height:calc(560px*var(--k))">
+    <img alt="" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Ccircle cx='4' cy='4' r='4' fill='%23a5552d'/%3E%3C/svg%3E"></div>
+  <svg class="arc" data-mission-arc viewBox="0 0 1600 960" preserveAspectRatio="none" aria-hidden="true">
+    <path data-mission-path d="M 650 480 C 760 150, 1040 120, 1200 380"/>
+  </svg>
+  <div class="copy"><h2>One day, on Mars</h2><p>We build the systems that get people there and keep them alive once they arrive.</p></div>
+</section>
+<div class="spacer2"></div>
+<script type="module" src="../careers.js"></script>
+</body></html>
