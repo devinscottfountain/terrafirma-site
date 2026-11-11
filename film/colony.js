@@ -32,37 +32,11 @@ let colonyAPI = null;               // { build(g, t), cranes, rockets } once pop
 // rockets.js + the footer's Starship hull builder load in the background and are normally ready long before the colony is built
 let rockMod = null; const rockP = Promise.all([import('./rockets.js'), import('../footer/foot-model-starship.js'), import('../footer/foot-model-kit.js')])
   .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll } })).catch(e => console.warn('film rockets:', e));
-function* populateColony() {
-// terrain: the real floor of Jezero Crater, 2 km east of the delta front (18.4455 N, 77.4635 E).
-// Shape: USGS Mars 2020 HiRISE 1 m DTM (inner 1.6 km) blended into the CTX 20 m DTM (12 km), both packed as 16-bit RG.
-// Light: HiRISE 25 cm / CTX 6 m orbital images used ONLY as bump (they are greyscale). Colour: the colour Mars map at Jezero
-// plus procedural regolith (butterscotch fines, rust, dark basaltic sand, pale bedrock on steep faces).
-// The city sits on a graded pad that eases back into the real ground.
+// Jezero maps: fetched at boot idle (loadMaps), uploaded on arrival, then each switch fades in over MAP_FADE ms instead of popping
 const terrU = { tDtm: { value: null }, tHi: { value: null }, tCtx: { value: null }, uOn: { value: new THREE.Vector3(0, 0, 0) }, uHB0: { value: 0 }, tMars: planets.mars.material.uniforms.tMap };
-{
-  const px = (r, g, b) => { const d = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); d.needsUpdate = true; return d; };
-  terrU.tDtm.value = px(128, 0, 0); terrU.tHi.value = px(128, 128, 128); terrU.tCtx.value = px(128, 128, 128);
-  const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
-  if (files.dtm) ld.load(files.dtm, t => { t.colorSpace = THREE.NoColorSpace; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = true; terrU.tDtm.value = t; terrU.uHB0.value = readHB0(t); terrU.uOn.value.x = 1; });
-  const aniso = renderer.capabilities.getMaxAnisotropy();
-  if (files.hiBump) ld.load(files.hiBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tHi.value = t; terrU.uOn.value.y = 1; });
-  if (files.ctxBump) ld.load(files.ctxBump, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tCtx.value = t; terrU.uOn.value.z = 1; });
-}
-const TERR_GL = /* glsl */ `
-uniform sampler2D tDtm, tHi, tCtx, tMars; uniform vec3 uOn; uniform float uHB0; // uHB0 = hB(vec2(0.)), read back once after the DTM loads
-// 16-bit heights live in R (hi byte) and G (lo byte); filter by hand so the bytes never blend across a carry
-float dtmTap(vec2 uv, float side){ vec2 t=vec2(uv.x*.5+side*.5, uv.y); vec4 c=texture2D(tDtm,t); return (c.r*255.*256.+c.g*255.)/65535.; }
-float dtmBil(vec2 uv, float side){ vec2 p=uv*512.-.5, f=fract(p), i=floor(p);
-  float a=dtmTap((i+vec2(.5,.5))/512.,side), b=dtmTap((i+vec2(1.5,.5))/512.,side), c=dtmTap((i+vec2(.5,1.5))/512.,side), d=dtmTap((i+vec2(1.5,1.5))/512.,side);
-  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
-float hA(vec2 p){ return -2621.547+62.5074*dtmBil(vec2(p.x/1600.+.5,.5-p.y/1600.),0.); }   // HiRISE DTM, metres (areoid)
-float hB(vec2 p){ return -2664.712+352.3924*dtmBil(vec2(p.x/12000.+.5,.5-p.y/12000.),1.); } // CTX DTM
-float terrH(vec2 p){
-  float b=hB(p), a=hA(p), wa=1.-smoothstep(560.,780.,max(abs(p.x),abs(p.y)));
-  float h=mix(b,a,wa)-uHB0;
-  float d=length(p);
-  return uOn.x*h*smoothstep(330.,620.,d);           // the city's graded pad eases back into the real ground
-}`;
+const mapAt = [0, 0, 0], MAP_FADE = 500; // performance.now() each map arrived (dtm, hi bump, ctx bump), 0 until then
+{ const px = (r, g, b) => { const d = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); d.needsUpdate = true; return d; };
+  terrU.tDtm.value = px(128, 0, 0); terrU.tHi.value = px(128, 128, 128); terrU.tCtx.value = px(128, 128, 128); }
 // hB(vec2(0.)) once, on the CPU, from the 4 DTM texels the shader's dtmBil blends at uv (.5,.5) on the CTX half (f = .5 there).
 // The texels are read back from the GPU texture byte-exact, so this matches the shader without decoding the PNG twice.
 function readHB0(tex) {
@@ -78,6 +52,41 @@ function readHB0(tex) {
   const h = k => (px[k * 4] * 256 + px[k * 4 + 1]) / 65535, v = ((h(0) + h(1)) / 2 + (h(2) + h(3)) / 2) / 2;
   return -2664.712 + 352.3924 * v;
 }
+let mapsP = null;
+function loadMaps() {
+  if (mapsP) return mapsP;
+  const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
+  const aniso = renderer.capabilities.getMaxAnisotropy(), up = t => { try { renderer.initTexture(t); } catch (e) { /* first draw uploads it */ } };
+  const get = (url, i, cfg) => new Promise(res => { if (!url) return res(); ld.load(url, t => { cfg(t); up(t); mapAt[i] = performance.now(); res(); }, undefined, () => res()); });
+  return (mapsP = Promise.all([
+    get(files.dtm, 0, t => { t.colorSpace = THREE.NoColorSpace; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = true; terrU.tDtm.value = t; terrU.uHB0.value = readHB0(t); }),
+    get(files.hiBump, 1, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tHi.value = t; }),
+    get(files.ctxBump, 2, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tCtx.value = t; })
+  ]));
+}
+const fadeMaps = () => { const now = performance.now(), f = a => (a ? sstep(now - a, 0, MAP_FADE) : 0); terrU.uOn.value.set(f(mapAt[0]), f(mapAt[1]), f(mapAt[2])); };
+function* populateColony() {
+loadMaps(); // normally already started at boot idle
+// terrain: the real floor of Jezero Crater, 2 km east of the delta front (18.4455 N, 77.4635 E).
+// Shape: USGS Mars 2020 HiRISE 1 m DTM (inner 1.6 km) blended into the CTX 20 m DTM (12 km), both packed as 16-bit RG.
+// Light: HiRISE 25 cm / CTX 6 m orbital images used ONLY as bump (they are greyscale). Colour: the colour Mars map at Jezero
+// plus procedural regolith (butterscotch fines, rust, dark basaltic sand, pale bedrock on steep faces).
+// The city sits on a graded pad that eases back into the real ground.
+const TERR_GL = /* glsl */ `
+uniform sampler2D tDtm, tHi, tCtx, tMars; uniform vec3 uOn; uniform float uHB0; // uHB0 = hB(vec2(0.)), read back once after the DTM loads
+// 16-bit heights live in R (hi byte) and G (lo byte); filter by hand so the bytes never blend across a carry
+float dtmTap(vec2 uv, float side){ vec2 t=vec2(uv.x*.5+side*.5, uv.y); vec4 c=texture2D(tDtm,t); return (c.r*255.*256.+c.g*255.)/65535.; }
+float dtmBil(vec2 uv, float side){ vec2 p=uv*512.-.5, f=fract(p), i=floor(p);
+  float a=dtmTap((i+vec2(.5,.5))/512.,side), b=dtmTap((i+vec2(1.5,.5))/512.,side), c=dtmTap((i+vec2(.5,1.5))/512.,side), d=dtmTap((i+vec2(1.5,1.5))/512.,side);
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
+float hA(vec2 p){ return -2621.547+62.5074*dtmBil(vec2(p.x/1600.+.5,.5-p.y/1600.),0.); }   // HiRISE DTM, metres (areoid)
+float hB(vec2 p){ return -2664.712+352.3924*dtmBil(vec2(p.x/12000.+.5,.5-p.y/12000.),1.); } // CTX DTM
+float terrH(vec2 p){
+  float b=hB(p), a=hA(p), wa=1.-smoothstep(560.,780.,max(abs(p.x),abs(p.y)));
+  float h=mix(b,a,wa)-uHB0;
+  float d=length(p);
+  return uOn.x*h*smoothstep(330.,620.,d);           // the city's graded pad eases back into the real ground
+}`;
 {
   // the grid is written straight into typed arrays in XZ (same vertex order and winding as PlaneGeometry + rotateX(-PI/2)).
   // Position only: the shader rebuilds the normal from the DTM (beginnormal_vertex is replaced) and the material samples no uv.
@@ -200,6 +209,7 @@ habI.forEach((l, i) => shell.setColorAt(i, l.col)); fabI.forEach((l, i) => sheds
 // instances outside .count are never drawn, so give each mesh a fixed bound instead of one computed from whatever prefix exists first
 const bnd = r => new THREE.Sphere(new THREE.Vector3(0, 10, 0), r);
 [shell, habGlass, frame, ringPad, skirt, sheds].forEach(m => (m.boundingSphere = bnd(270)));
+yield; // instanced city meshes allocated
 colony.add(shell, habGlass, frame, ringPad, skirt, sheds);
 // shadows: shell/ringPad/sheds cast + receive; shell and sheds use customDepthMaterials that match their per-instance vertex toggles.
 // The frame does not cast (the shell silhouette covers it). Instances past .count are not drawn and cast nothing.
@@ -237,6 +247,7 @@ for (let r = 262; r < 345; r += 4.2) for (let a = 0.25; a < 1.35; a += 3.2 / r) 
 panels.sort(byBt); // nothing else depends on panel order
 const panel = new THREE.InstancedMesh(new THREE.BoxGeometry(3, 0.1, 2.2).translate(0, 1.2, 0), new THREE.MeshStandardMaterial({ color: 0x16243c, metalness: 0.85, roughness: 0.22, emissive: 0x050a14 }), panels.length);
 panel.castShadow = panel.receiveShadow = true; panel.boundingSphere = bnd(360); colony.add(panel);
+yield; // lights, domes, tubes, solar farm
 
 // tower cranes: show up just ahead of the build front, swing like a timelapse, then pack up
 const craneMat = new THREE.MeshStandardMaterial({ color: 0xf0a35a, emissive: 0x3a1a00, roughness: 0.6 });
@@ -251,7 +262,9 @@ const cranes = craneLots.filter((l, i) => i % Math.max(1, Math.floor(craneLots.l
 
 let rockets = null;
 const mkRockets = (light = true) => (rockets = rockMod.createRockets({ THREE, foot: rockMod.foot, colony, envMap: marsEnv, high: HIGH, sites: ROCK_SITES, light })); // late load: no PointLight, so the warmed colony programs stay valid
+yield; // cranes
 if (rockMod) mkRockets(); else rockP.then(() => { if (rockMod) { mkRockets(false); lateRockets(rockets); } }); // normally loaded long before the colony is built
+yield; // rockets
 // colony life (machines.js): rovers, suited figures, graded roads + lamp pools, comms masts; replaces the 1 px roads and the traffic dots
 const life = createColonyLife({ THREE, colony, layout: colonyLayout({ high: HIGH, rockets: true }), envMap: marsEnv, high: HIGH, arrive: ARRIVE, hideLines: roads, solar: panel });
 let lastG = -1;
@@ -261,6 +274,7 @@ const qPanel = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5)); 
 const started = (list, g) => { let n = 0; while (n < list.length && list[n].bt < g) n++; return n; }; // easeOut(x) > 0 exactly when bt < g
 // returns true when the build state (and so the shadow casters and sun) changed this frame
 function buildColony(g, t) {
+  fadeMaps();
   const gR = g; g = Math.max(0, (g - ARRIVE) / (1 - ARRIVE)); // rockets: the ships land first, the city build (and its day) runs on the rest
   const night = colNight = sstep(g, 0.35, 0.95), el = THREE.MathUtils.lerp(0.34, -0.05, sstep(g, 0.05, 1));
   colSky.visible = false; // the atmosphere owner's sky dome (planets.air) replaces this one
@@ -311,5 +325,5 @@ let colonyGen = null;
 // one chunk of the build; true once the colony is fully populated
 function step() { if (colonyAPI) return true; colonyGen = colonyGen || populateColony(); return colonyGen.next().done; }
 function ensure() { while (!step()); }   // synchronous: the colony is about to render
-return { group: colony, step, ensure, rockReady: rockP, get api() { return colonyAPI; }, get sun() { return colSun; }, get night() { return colNight; }, get done() { return !!colonyAPI; } };
+return { group: colony, step, ensure, loadMaps, rockReady: rockP, get api() { return colonyAPI; }, get sun() { return colSun; }, get night() { return colNight; }, get done() { return !!colonyAPI; } };
 } // createColony

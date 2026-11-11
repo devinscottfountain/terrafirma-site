@@ -80,20 +80,22 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
   // load -> decode off the main thread -> upload -> swap, so the first frame that samples a photo never stalls on it.
   // Resolves true once swapped in, false if it failed (CORS, 404): the procedural ground just stays.
-  const loadInto = (url, tex, on) => new Promise(res => {
+  const fadeAt = {}; // uniform name -> performance.now() its photo arrived: the 8 km / 80 km layers fade in over FADE_MS, no pop mid-pull
+  const FADE_MS = 500;
+  const loadInto = (url, tex, on, fade = false) => new Promise(res => {
     if (!url) return res(false);
     ld.load(url, t => {
       const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve(); // decode can stall in a background tab: cap it
       dec.then(() => {
         t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
         if (renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ }
-        U[tex].value = t; U[on].value = 1; res(true);
+        U[tex].value = t; if (fade) fadeAt[on] = performance.now(); else U[on].value = 1; res(true);
       });
     }, undefined, () => res(false));
   });
   const [oA, oB, oC] = [].concat(orthoUrl || []);
   const ready = loadInto(oA, 'tOrtho', 'uOrthoOn'); // the 800 m lot photo: the opening frame waits on this one (main.js races it)
-  const readyAll = Promise.all([ready, loadInto(oB, 'tOrthoB', 'uOrthoBOn'), loadInto(oC, 'tOrthoC', 'uOrthoCOn')]);
+  const readyAll = Promise.all([ready, loadInto(oB, 'tOrthoB', 'uOrthoBOn', true), loadInto(oC, 'tOrthoC', 'uOrthoCOn', true)]);
   let patchN = 0;
   const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn, fNormal) => {
     const key = 'tfsite' + patchN++; mat.customProgramCacheKey = () => key; // each patched material needs its own program
@@ -415,6 +417,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
 
   function update({ g, t }) {
+    for (const k in fadeAt) { const v = Math.min(1, (performance.now() - fadeAt[k]) / FADE_MS); U[k].value = v * v * (3 - 2 * v); if (v >= 1) delete fadeAt[k]; }
     const hour = g < 0.86 ? H0 + (g / 0.86) * 60.5 : 68 + (g - 0.86) / 0.14 * 3, hd = ((hour % 24) + 24) % 24; // timelapse ends at 20:00 so the whole pull out is night
     const prog = g, wt = g * 33; // round-the-clock job: progress and the machine clock never stop, night shifts run under the light towers
     const working = 1;

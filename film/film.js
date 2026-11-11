@@ -373,7 +373,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     if (s < 1) S = -1;
     const introOn = s < 1, zPull = clamp01((s - TL) / (1 - TL)), lam = LAM0 + (LAM1 - LAM0) * smoother(Math.pow(zPull, 0.85));
     mode = introOn ? (lam < LAMH ? 'site' : 'globe') : (S >= CA ? 'colony' : 'space');
-    // lazy world loads, one per beat: Moon as the pull begins, Mars on the way over, the colony once Mars is close
+    // lazy world loads: Moon as the pull begins. Mars maps, Jezero maps and the colony build start at boot idle (bootIdle);
+    // these calls are only fallbacks (all idempotent), and ensure() only does work if the idle build has not finished by the swap
     if (s > 0.6) planets.loadDeferred('moon');
     if (S > -0.9) planets.loadDeferred('mars');
     if (mode === 'colony') colonyW.ensure(); else if (S > 0.3) scheduleColony();
@@ -480,14 +481,22 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   }
 
   // ================================================================ lazy colony build + warm-up
-  const ric = window.requestIdleCallback ? f => requestIdleCallback(f, { timeout: 700 }) : f => setTimeout(f, 120);
+  const ric = window.requestIdleCallback ? (f, timeout = 700) => requestIdleCallback(f, { timeout }) : f => setTimeout(f, 120);
+  const BUILD_WAIT = 300; // ms an idle build slot may wait on a busy main thread before it runs anyway, so the build always lands well before the swap
   let colonyIdle = false;
-  // one chunk per idle slot, only while the scroll is calm; after the last chunk, queue the colony's shader programs
+  // from boot: one small chunk per idle slot that has room for it (or once the slot times out, so it always finishes), then the
+  // colony's programs compile off-screen. No scroll-speed gate: the colony is minutes of scroll away, a chunk now beats a build at the swap.
   function scheduleColony() {
     if (colonyIdle || colonyW.done) return; colonyIdle = true;
-    const tick = dl => { if (dead) return; if (Math.abs(ysV) > 40 && !(dl && dl.didTimeout)) return ric(tick); if (!colonyW.step()) ric(tick); else ric(warmColony); };
-    ric(tick);
+    const tick = dl => {
+      if (dead) return;
+      if (dl && !dl.didTimeout && dl.timeRemaining && dl.timeRemaining() < 8) return ric(tick, BUILD_WAIT); // slot too short for a chunk: wait for a roomier one
+      if (!colonyW.step()) ric(tick, BUILD_WAIT); else ric(warmColony, BUILD_WAIT);
+    };
+    ric(tick, BUILD_WAIT);
   }
+  // boot idle: start every download the later beats need (decoded + uploaded on arrival), then the colony build
+  function bootIdle() { if (dead) return; planets.loadDeferred('mars'); colonyW.loadMaps(); scheduleColony(); }
   const rtWarm = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }); // the scene pass also draws into a half-float target, so program keys match
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
@@ -502,7 +511,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   }
   // one draw of a world into the 4x4 target with every object in it shown and nothing culled
   function throwaway(w) {
-    const touched = [];
+    const touched = [], prevMode = lastMode;
     inWorld(w, () => {
       if (w === 'colony') colonyW.api.build(0, 0); // first, so the forced visibility below is what draws (build(0) hides unbuilt domes, ships, life)
       for (const r of w === 'site' ? [site.group] : w === 'colony' ? [colonyGroup, ...planets.entryRoots()] : spaceRoots())
@@ -515,7 +524,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
         renderer.render(scene, cam);
       } finally { for (const [o, v, f] of touched) { o.visible = v; o.frustumCulled = f; } }
     });
-    lastMode = ''; forceShadow = true; // the loop re-applies its own rig and redraws its shadow map on its next frame
+    if (prevMode) rig(prevMode === 'site'); // put the visible set's light rig back; lastMode is kept, so its TAA history and motion state survive
+    forceShadow = true; // the loop redraws its own shadow map on its next frame
   }
   async function precompile() {
     const jobs = [];
@@ -534,11 +544,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       try { job = Promise.all([compileIn(colonyGroup), ...planets.entryRoots().map(compileIn)]); } finally { for (const [o, v] of vis) o.visible = v; }
     });
     await Promise.race([job, wait(1500)]);
-    if (lastMode !== 'colony') throwaway('colony');
+    await new Promise(r => ric(r, BUILD_WAIT)); // the throwaway draw (shadow + depth programs, first uploads) also waits for an idle slot
+    if (!dead && lastMode !== 'colony') throwaway('colony');
   }
 
   // ================================================================ lifecycle
-  const readyP = Promise.all([planets.ready, site.ready, skyP]).then(() => precompile()).then(() => { booted = true; });
+  const readyP = Promise.all([planets.ready, site.ready, skyP]).then(() => precompile()).then(() => { booted = true; ric(bootIdle); });
   let ro = null;
   function resize() {
     W = Math.max(1, host.clientWidth); H = Math.max(1, host.clientHeight);
