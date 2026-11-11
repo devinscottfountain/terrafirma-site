@@ -1,10 +1,12 @@
-// site.js: the opening shot. An East Austin dirt lot seen from ~170 m up, built out as a 2.5 day timelapse
-// (clear, dig, haul, gravel, rebar, pour, columns, cores, deck forms), then main.js pulls the camera off to orbit.
+// site.js: the opening shot. An East Austin dirt lot seen from ~125 m up, built out over one day, dawn to dusk
+// (clear, dig, haul, gravel, rebar, pour, columns, cores, deck forms) while film.js pulls the camera off to orbit.
+// Scroll sets what exists (build progress g) and the hour (sun); machines, crew and traffic run on the film clock t.
 // Units are metres. Local origin = lot centre, +x east, -z north. The group sits far from the solar system.
 // The ground is one camera-following quad whose shader paints the neighbourhood procedurally and fades into the
-// real Earth colour + NASA night-lights maps at altitude, so the hand-off to the globe in main.js matches.
+// real Earth colour + NASA night-lights maps at altitude, so the hand-off to the globe in film.js matches.
 
 import { createMachines } from './machines.js';
+import { sunAt } from './austin.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
 // the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
 export const SITE_ROT = 17 * Math.PI / 180;
@@ -269,13 +271,14 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
       // streetlights every 36 m on the sidewalk
       float sl=smoothstep(.9,.1,length(vec2(cl-(dX<dZ?hx:hz)+1.,mod(along,36.)-18.)));
       L+=vec3(1.,.66,.32)*sl*1.6+vec3(1.,.6,.3)*.05*smoothstep(10.,0.,length(vec2(cl-(dX<dZ?hx:hz)+1.,mod(along,36.)-18.)))*road;
-      // traffic: long-exposure trails at night, jittery timelapse cars by day
-      float lane=cl-1.9-(art>.5?1.8:0.), frm=floor(uT*9.);
+      // traffic: long-exposure trails at night, moving cars by day
+      float lane=cl-1.9-(art>.5?1.8:0.);
       float trail=cov(abs(fract(cl/3.6)-.5)*3.6-.35,w)*road*step(cl,hx-2.2);
       float flow=smoothstep(.3,.8,vn(vec2(along*.02-uT*3.*sign(lc.x+lc.y),cl)))*(art>.5?1.:.15)*min(1.,.6/w);
       L+=mix(vec3(1.,.15,.06),vec3(1.,.95,.8),step(0.,dX<dZ?lc.x:lc.y))*trail*flow*1.4;
-      float slot=floor(along/9.), ln=floor(cl/3.6);
-      float car=step(art>.5?.55:.88,h21(vec2(slot,ln+frm*.37)))*cov(sdBox(vec2(mod(along,9.)-4.5,fract(cl/3.6)*3.6-1.8),vec2(0.),vec2(2.2,.9)),w)*road*step(cl,hx-2.5);
+      // day traffic: a fixed pattern of cars sliding along each lane at street speed (one direction per side), on the film clock
+      float aS=along-uT*(art>.5?13.:8.)*sign(dX<dZ?lc.x:lc.y), slot=floor(aS/9.), ln=floor(cl/3.6);
+      float car=step(art>.5?.55:.88,h21(vec2(slot,ln)))*cov(sdBox(vec2(mod(aS,9.)-4.5,fract(cl/3.6)*3.6-1.8),vec2(0.),vec2(2.2,.9)),w)*road*step(cl,hx-2.5);
       float cc=h21(vec2(slot,ln+3.)); vec3 paint=cc<.3?vec3(.7):cc<.5?vec3(.35):cc<.7?vec3(.025):cc<.8?vec3(.15,.16,.18):cc<.9?vec3(.35,.03,.02):vec3(.03,.07,.2);
       col=mix(col,paint,car*(1.-uNight));
     }
@@ -404,46 +407,65 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   const cores = [[-12, -4, 8, 6], [14, 5, 6, 6]].map(([x, z, w, d]) => { const m = box(w, 1, d, mats.conc, x, -D, z); m.geometry.translate(0, 0.5, 0); return m; });
   const DECK = []; for (let x = -28; x < 28; x += 8) for (let z = -18; z < 18; z += 9) DECK.push([x + 4, z + 4.5]);
   const deck = new THREE.InstancedMesh(new THREE.BoxGeometry(7.8, 0.35, 8.8), mats.ply, DECK.length); deck.castShadow = deck.receiveShadow = true; group.add(deck);
-  // ---------------------------------------------------------------- clock: 2.6 days of Austin late October, work only in daylight
-  const H0 = 7.5, HSPAN = 63, LAT = THREE.MathUtils.degToRad(AUSTIN.lat), DEC = THREE.MathUtils.degToRad(-13);
-  const workHrs = h => { const d = Math.floor(h / 24), hd = h - d * 24; return d * 11 + Math.min(11, Math.max(0, hd - 7)); };
-  const W_END = workHrs(H0 + HSPAN), W0 = workHrs(H0);
-  const sunL = new THREE.Vector3(), skyC = new THREE.Color(), gndC = new THREE.Color();
-  // path helpers
-  const lerpPath = (pts, u, out) => { const n = pts.length - 1, f = Math.min(n - 1e-6, Math.max(0, u * n)), i = Math.floor(f), k = f - i; out.set(pts[i][0] + (pts[i + 1][0] - pts[i][0]) * k, 0, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * k); return Math.atan2(-(pts[i + 1][1] - pts[i][1]), pts[i + 1][0] - pts[i][0]); };
+  // ---------------------------------------------------------------- clocks: scroll gives build progress g and the hour, t (film clock, s) runs the machines
+  const sunO = {}, sunL = new THREE.Vector3(), skyC = new THREE.Color(), gndC = new THREE.Color(), lampBase = towers[0].material.color.clone();
+  const SUN_Q = THREE.MathUtils.degToRad(0.1), SUN_MIN = THREE.MathUtils.degToRad(2.5); // light direction quantum, lowest elevation the light takes
+  // machine rates (real time): excavator dig-swing-dump cycle, dozer pass, haul loop, boom pump sweep, crane slew
+  const EX_CYCLE = 7, DOZE_P = 80, PIT_P = 40, PUMP_W = 0.45, SLEW_W = 0.09;
+  // path helpers: haul loop by arc length, slow on the lot and fast on the street
   const LOOP = [[86, -420], [86, -30], [74, -24], [40, -25.5], [-20, -25.5], [-44, -25.5], [-50, 0], [-44, 25.5], [-10, 25.5], [40, 25.5], [74, 30], [86, 36], [86, 420]];
+  const LSEG = LOOP.slice(1).map((p, i) => { const L = Math.hypot(p[0] - LOOP[i][0], p[1] - LOOP[i][1]); return { L, T: L / (L > 200 ? 12 : 4.5) }; });
+  const LOOP_T = LSEG.reduce((a, s) => a + s.T, 0);
+  const loopAt = (u, out) => { // u 0..1 of the loop's time -> position, returns yaw
+    let k = u * LOOP_T, i = 0; while (i < LSEG.length - 1 && k > LSEG[i].T) { k -= LSEG[i].T; i++; }
+    const f = Math.min(1, k / LSEG[i].T), a = LOOP[i], b = LOOP[i + 1];
+    out.set(a[0] + (b[0] - a[0]) * f, 0, a[1] + (b[1] - a[1]) * f); return Math.atan2(-(b[1] - a[1]), b[0] - a[0]);
+  };
   const sd = new THREE.Vector3(), X1 = new THREE.Vector3(1, 0, 0);
   const seg = (m, a, b) => { sd.subVectors(b, a); const L = sd.length(); m.position.copy(a).add(b).multiplyScalar(0.5); m.scale.set(L, 1, 1); m.quaternion.setFromUnitVectors(X1, sd.normalize()); };
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  // crew: each worker holds a spot for 6 to 12 s, then walks to the next one (spots follow the active work zone)
+  const crewS = Array.from({ length: NW }, () => ({ x: 0, y: 0, z: 0, yaw: 0 }));
+  let crewT = -1, crewG = -1;
+  // shadow box anchored on the lot, its centre snapped to whole shadow texels in light space (a grid that never slides under the lot)
+  const xb = new THREE.Vector3(), yb = new THREE.Vector3(), Y1 = new THREE.Vector3(0, 1, 0);
+  function placeSun(dir) {
+    const c = sunLight.shadow.camera, ms = sunLight.shadow.mapSize, tx = (c.right - c.left) / ms.x, ty = (c.top - c.bottom) / ms.y;
+    xb.crossVectors(Y1, dir).normalize(); yb.crossVectors(dir, xb);   // the shadow camera's own x/y (Matrix4.lookAt, up +y)
+    const cx = ORIGIN.dot(xb), cy = ORIGIN.dot(yb);
+    sunLight.target.position.copy(ORIGIN).addScaledVector(xb, Math.round(cx / tx) * tx - cx).addScaledVector(yb, Math.round(cy / ty) * ty - cy);
+    sunLight.position.copy(sunLight.target.position).addScaledVector(dir, 400);
+  }
 
-  function update({ g, t }) {
+  function update({ g, t, hour }) {
     for (const k in fadeAt) { const v = Math.min(1, (performance.now() - fadeAt[k]) / FADE_MS); U[k].value = v * v * (3 - 2 * v); if (v >= 1) delete fadeAt[k]; }
-    const hour = g < 0.86 ? H0 + (g / 0.86) * 60.5 : 68 + (g - 0.86) / 0.14 * 3, hd = ((hour % 24) + 24) % 24; // timelapse ends at 20:00 so the whole pull out is night
-    const prog = g, wt = g * 33; // round-the-clock job: progress and the machine clock never stop, night shifts run under the light towers
-    const working = 1;
-    // sun: hour angle from solar noon (~13:00 CDT)
-    const Ha = THREE.MathUtils.degToRad((hd - 13.1) * 15), sinE = Math.sin(LAT) * Math.sin(DEC) + Math.cos(LAT) * Math.cos(DEC) * Math.cos(Ha);
-    const el = Math.asin(sinE), az = Math.atan2(-Math.sin(Ha), Math.tan(DEC) * Math.cos(LAT) - Math.sin(LAT) * Math.cos(Ha));
-    sunL.set(Math.cos(el) * Math.sin(az), Math.sin(el), -Math.cos(el) * Math.cos(az));
+    const prog = g;
+    // sun: one day from the camera's clock. The light direction is quantised (0.1 deg) so shadows hold still between steps, and
+    // never goes under 2.5 deg: through the horizon only the intensity fades, so the shadows thin out instead of flipping
+    const { sinE, el, az } = sunAt(hour, sunO);
+    const elL = Math.round(0.5 * (el + SUN_MIN + Math.sqrt((el - SUN_MIN) ** 2 + 4e-4)) / SUN_Q) * SUN_Q; // smooth max(el, 2.5 deg), then quantise
+    const azL = Math.round(az / SUN_Q) * SUN_Q;
+    sunL.set(Math.cos(elL) * Math.sin(azL), Math.sin(elL), -Math.cos(elL) * Math.cos(azL));
     const day = sstep(sinE, -0.1, 0.12), night = 1 - day, low = 1 - sstep(sinE, 0.05, 0.5);
-    U.uSunL.value.copy(sunL); U.uNight.value = sstep(-sinE, -0.02, 0.12); U.uT.value = t + g * 40; U.uG.value = g; U.uProg.value = prog;
-    U.uWork.value = U.uNight.value * (prog > 0.05 ? 1 : 0);
+    U.uSunL.value.copy(sunL); U.uNight.value = sstep(-sinE, -0.02, 0.12); U.uT.value = t; U.uG.value = g; U.uProg.value = prog;
+    U.uWork.value = U.uNight.value * sstep(prog, 0.03, 0.06);        // work lights follow the dusk, once there is work
     sunLight.color.setRGB(1, 0.93 - low * 0.25, 0.85 - low * 0.45); sunLight.intensity = 3.2 * sstep(sinE, -0.02, 0.1);
-    sunLight.position.copy(ORIGIN).addScaledVector(sunL.y > 0 ? sunL : tv.set(sunL.x, 0.05, sunL.z).normalize(), 400); sunLight.target.position.copy(ORIGIN);
+    placeSun(sunL);
     hemi.color.copy(skyC.setRGB(0.42, 0.58, 1.0).lerp(gndC.setRGB(0.06, 0.07, 0.12), night)); hemi.groundColor.setRGB(0.42 * day + 0.02, 0.34 * day + 0.02, 0.24 * day + 0.03);
     hemi.intensity = 0.6 + 0.95 * day; // a little moonlight so the photo neighbourhood never goes fully black
-    workLights.forEach(l => (l.intensity = 140 * U.uWork.value)); towers.forEach(h => (h.visible = U.uWork.value > 0.05));
+    const wk = U.uWork.value; workLights.forEach(l => (l.intensity = 140 * wk));
+    towers[0].material.color.copy(lampBase).multiplyScalar(wk); towers.forEach(h => (h.visible = wk > 0.002)); // lamp faces fade up with the work lights
     U.uClear.value = sstep(prog, 0.0, 0.07);
     U.uDig.value = sstep(prog, 0.07, 0.36); U.uPile.value = sstep(prog, 0.08, 0.24) * (1 - sstep(prog, 0.3, 0.46)) * 0.9 + 0.1 * sstep(prog, 0.3, 0.46);
     U.uBack.value = sstep(prog, 0.8, 0.93);
     // oaks come down in the first hours
     oaks.forEach(([x, z, r], i) => { const k = 1 - sstep(prog, 0.005 + i * 0.004, 0.02 + i * 0.004); tmpM.compose(tv.set(x, r * 0.55 + 1.6, z), tq.setFromAxisAngle(YA, i), k > 0.01 ? ts.set(r * k, r * 0.55 * k, r * k) : HIDE); oak.setMatrixAt(i, tmpM); });
     oak.instanceMatrix.needsUpdate = true;
-    // excavators: dig, swing, dump, swing back; they ride the dig face
+    // excavators: dig, swing, dump, swing back (EX_CYCLE s); they ride the dig face, which scroll moves
     const digOn = prog > 0.06 && prog < 0.42, xf = -32 + U.uDig.value * 76;
     [[exA, -13, -1], [exB, 13, 1]].forEach(([e, z, s], i) => {
       e.g.visible = digOn || (i === 1 && prog > 0.8 && prog < 0.95);
-      const ph = (wt * 1.9 + i * 0.37) % 1, sw = sstep(ph, 0.35, 0.55) * (1 - sstep(ph, 0.7, 0.95));
+      const ph = (t / EX_CYCLE + i * 0.37) % 1, sw = sstep(ph, 0.35, 0.55) * (1 - sstep(ph, 0.7, 0.95));
       e.up.rotation.y = sw * s * 1.9;
       e.boom.rotation.z = THREE.MathUtils.lerp(0.35 - sstep(ph, 0, 0.3) * 0.55, 0.62, sw);
       e.stick.rotation.z = -THREE.MathUtils.lerp(1.05 + sstep(ph, 0.05, 0.33) * 0.9, 0.9 - sstep(ph, 0.55, 0.68) * 0.5, sw);
@@ -452,30 +474,30 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
     });
     // haul trucks loop through the gates; loaded on the way out
     trucks.forEach((tr, i) => {
-      const u = ((wt * 0.16 + i / trucks.length) % 1); tr.g.visible = prog > 0.07 && prog < 0.46;
-      const yaw = lerpPath(LOOP, u, tr.g.position); tr.g.rotation.y = yaw; tr.load.visible = u > 0.5;
+      const u = (t / LOOP_T + i / trucks.length) % 1; tr.g.visible = prog > 0.07 && prog < 0.46;
+      tr.g.rotation.y = loopAt(u, tr.g.position); tr.load.visible = u > 0.5;
     });
-    // dozer: strips the lot, grades the pit floor, then fine grades the yard
-    { const ph = (wt * 0.9) % 1, tri = Math.abs(ph * 2 - 1); let x, z, y = 0, on = true;
-      if (prog < 0.1) { x = -60 + tri * 110; z = -40 + Math.floor(wt * 0.9 % 4) * 20; }
-      else if (prog > 0.3 && prog < 0.44) { x = -26 + tri * 52; z = -12 + Math.floor(wt * 0.9 % 3) * 12; y = -D; }
-      else if (prog > 0.86) { x = -60 + tri * 40; z = 40; }
+    // dozer: strips the lot, grades the pit floor, then fine grades the yard (one pass per period, next lane each pass)
+    { let x, z, y = 0, on = true, n;
+      if (prog < 0.1) { n = t / DOZE_P; x = -60 + Math.abs((n % 1) * 2 - 1) * 110; z = -40 + (Math.floor(n) % 4) * 20; }
+      else if (prog > 0.3 && prog < 0.44) { n = t / PIT_P; x = -26 + Math.abs((n % 1) * 2 - 1) * 52; z = -12 + (Math.floor(n) % 3) * 12; y = -D; }
+      else if (prog > 0.86) { n = t / PIT_P; x = -60 + Math.abs((n % 1) * 2 - 1) * 40; z = 40; }
       else on = false;
-      dozer.visible = on; if (on) { dozer.position.set(x, y, z); dozer.rotation.y = ph < 0.5 ? 0 : Math.PI; } }
+      dozer.visible = on; if (on) { dozer.position.set(x, y, z); dozer.rotation.y = n % 1 < 0.5 ? 0 : Math.PI; } }
     // pours: pump parks on the north edge opposite the active bay, two mixers queue behind it
     const bay = Math.min(7, Math.max(0, Math.floor((prog - 0.47) / 0.028 + 0.5))), pouring = prog > 0.455 && prog < 0.69;
     pump.g.visible = pouring; mixers.forEach(m => (m.g.visible = pouring));
     if (pouring) {
       const bx = -32 + Math.floor(bay / 2) * 16 + 8, bz = bay % 2 ? 9.5 : -9.5;
-      pump.g.position.set(bx, 0, -29); A.set(bx, 3.2, -29); C.set(bx + Math.sin(wt * 5) * 3, -D + 3.5, bz + Math.cos(wt * 4) * 2); B.copy(A).lerp(C, 0.45); B.y = 16;
+      pump.g.position.set(bx, 0, -29); A.set(bx, 3.2, -29); C.set(bx + Math.sin(t * PUMP_W) * 3, -D + 3.5, bz + Math.cos(t * PUMP_W * 0.8) * 2); B.copy(A).lerp(C, 0.45); B.y = 16;
       seg(pump.s1, A, B); seg(pump.s2, B, C); seg(pump.hose, C, tv.copy(C).setY(-D + 0.2));
       [pump.s1, pump.s2, pump.hose].forEach(m => (m.visible = true));
       mixers.forEach((m, i) => { m.g.position.set(bx + 12 + i * 11, 0, -29); m.d.rotation.x = t * 3 + i; });
     } else [pump.s1, pump.s2, pump.hose].forEach(m => (m.visible = false));
-    // crane: mast climbs in, then the jib swings between picks
+    // crane: mast climbs in with the build, then the jib slews between picks
     { const up = sstep(prog, 0.4, 0.47), Hm = 40 * up + 0.01; crane.g.visible = up > 0.01; crane.mast.scale.y = Hm; crane.top.position.y = Hm;
-      crane.top.visible = up > 0.95; const sw = wt * 0.7; crane.top.rotation.y = Math.sin(sw) * 1.6 + Math.sin(sw * 2.3) * 0.7;
-      const tr = 12 + (Math.sin(wt * 1.3) * 0.5 + 0.5) * 36, drop = 10 + (Math.sin(wt * 2.1) * 0.5 + 0.5) * 22; crane.trolley.position.x = tr;
+      crane.top.visible = up > 0.95; const sw = t * SLEW_W; crane.top.rotation.y = Math.sin(sw) * 1.6 + Math.sin(sw * 2.3) * 0.7;
+      const tr = 12 + (Math.sin(t * 0.13) * 0.5 + 0.5) * 36, drop = 10 + (Math.sin(t * 0.21) * 0.5 + 0.5) * 22; crane.trolley.position.x = tr;
       crane.line.scale.y = drop; crane.line.position.y = -0.8 - drop / 2; crane.hook.position.y = -1.2 - drop; }
     // structure: columns per bay after the slab cures, cores climbing, deck forms on the west half
     COLS.forEach(([x, z], i) => { const b = Math.floor((x + 32) / 16) * 2 + (z < 0 ? 0 : 1), k = sstep(prog, 0.47 + b * 0.028 + 0.07, 0.47 + b * 0.028 + 0.12);
@@ -485,41 +507,31 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
     DECK.forEach(([x, z], i) => { const k = sstep(prog, 0.8 + (x + 28) / 56 * 0.15 + (i % 4) * 0.01, 0.84 + (x + 28) / 56 * 0.15 + (i % 4) * 0.01);
       tmpM.compose(tv.set(x, -0.25, z), tq.identity(), k > 0.5 ? ts.set(1, 1, 1) : HIDE); deck.setMatrixAt(i, tmpM); });
     deck.instanceMatrix.needsUpdate = true;
-    // crew: clusters on the active bay, spotters by the excavators, a few by the trailer; positions jump per frame like a real timelapse
-    const fr = Math.floor(wt * 14);
+    // crew: clusters on the active bay, spotters by the excavators, a few by the trailer. Each walks (1.3 to 5 m/s, faster when far)
+    // to a new spot every 6 to 12 s; a scroll jump (g moves > 0.08 in a frame) or the first frame places everyone at once
+    const dtc = crewT < 0 ? 0 : Math.min(0.1, Math.max(0, t - crewT)), jump = crewT < 0 || Math.abs(g - crewG) > 0.08; crewT = t; crewG = g;
     for (let i = 0; i < NW; i++) {
-      let x, z, y = 0; const r1 = H(i * 31 + fr), r2 = H(i * 17 + fr * 3 + 5);
-      if (!working) { tmpM.compose(tv.set(0, 0, 0), tq.identity(), HIDE); crew.setMatrixAt(i, tmpM); continue; }
+      const k = Math.floor(t / (6 + 6 * H(i * 13 + 3)) + H(i * 7 + 1)), r1 = H(i * 31 + k * 7), r2 = H(i * 17 + k * 3 + 5);
+      let x, z, y = 0;
       if (i < 26 && prog > 0.38 && prog < 0.72) { const b = Math.min(7, bay + (i % 3 === 0 ? 1 : 0)); x = -32 + Math.floor(b / 2) * 16 + 2 + r1 * 12; z = (b % 2 ? 2 : -17) + r2 * 15; y = -D; }
-      else if (i < 26 && prog >= 0.72) { const c = COLS[(i * 7 + fr) % COLS.length]; x = c[0] + (r1 - 0.5) * 3; z = c[1] + (r2 - 0.5) * 3; y = -D + (prog > 0.85 && x < 0 ? 3.75 : 0); }
+      else if (i < 26 && prog >= 0.72) { const c = COLS[(i * 7 + k) % COLS.length]; x = c[0] + (r1 - 0.5) * 3; z = c[1] + (r2 - 0.5) * 3; y = -D + (prog > 0.85 && x < 0 ? 3.75 : 0); }
       else if (i < 34 && digOn) { x = xf - 2 + r1 * 8; z = (i % 2 ? -1 : 1) * (20 + r2 * 4); }
       else { x = 40 + r1 * 25; z = -40 + r2 * 10; }
-      tmpM.compose(tv.set(x, y, z), tq.setFromAxisAngle(YA, r1 * 6), ts.set(1, 1, 1)); crew.setMatrixAt(i, tmpM);
+      const w = crewS[i], dx = x - w.x, dy = y - w.y, dz = z - w.z, d = Math.hypot(dx, dy, dz);
+      if (jump || d > 90) { w.x = x; w.y = y; w.z = z; w.yaw = r1 * 6; }
+      else if (d > 0.02) {
+        const st = Math.min(d, dtc * Math.min(5, Math.max(1.3, d * 0.5)));
+        w.x += dx / d * st; w.y += dy / d * st; w.z += dz / d * st;
+        const yaw = Math.atan2(-dz, dx); let dyaw = yaw - w.yaw; dyaw -= Math.round(dyaw / (2 * Math.PI)) * 2 * Math.PI; w.yaw += dyaw * Math.min(1, dtc * 6); // face the walk (+x is the front)
+      }
+      tmpM.compose(tv.set(w.x, w.y, w.z), tq.setFromAxisAngle(YA, w.yaw), ts.set(1, 1, 1)); crew.setMatrixAt(i, tmpM);
     }
     crew.instanceMatrix.needsUpdate = true;
-    return { hour, prog, day: Math.floor(hour / 24) + 1, hd, sunL, night };
+    return { hour, prog, sinE, sunL, night: U.uNight.value };
   }
-  // clouds on the climb: six thin layers between 1.5 and 2.8 km, moonlit on top, lit orange from the city underneath.
-  // Climbing through them hides the hand-over from the photos to the map; they thin out again before the globe takes over.
-  const cloudU = { uFade: { value: 0 }, uT: { value: 0 }, uOrigin: U.uOrigin };
-  const cloudMat = new THREE.ShaderMaterial({ uniforms: cloudU, transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    vertexShader: `uniform vec3 uOrigin; varying vec3 vL; varying float vD; void main(){ vec4 w=modelMatrix*vec4(position,1.); vL=w.xyz-uOrigin; vec4 mv=viewMatrix*w; vD=-mv.z; gl_Position=projectionMatrix*mv; }`,
-    fragmentShader: GL + `uniform float uFade, uT; varying vec3 vL; varying float vD;
-      void main(){
-        vec2 p=vL.xz*.0011+vec2(vL.y*.0007,uT*.004);
-        float c=fb(p)*.65+fb(p*3.1+7.)*.35;
-        float cov=smoothstep(.36,.62,c), thick=smoothstep(.5,.85,c);
-        // moonlit grey tops, thinner edges glowing sodium-orange from the city underneath
-        vec3 col=mix(vec3(.11,.12,.15),vec3(.06,.065,.08),thick)+vec3(1.,.58,.24)*.22*(1.-thick)*cov;
-        float a=cov*.62*uFade*smoothstep(80.,600.,vD);   // fade the slab right at the lens so it never pops
-        gl_FragColor=vec4(col*a,a); }` });
-  cloudMat.blending = THREE.CustomBlending; cloudMat.blendSrc = THREE.OneFactor; cloudMat.blendDst = THREE.OneMinusSrcAlphaFactor;
-  const clouds = [1500, 1750, 2000, 2250, 2500, 2800].map(h => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), cloudMat); m.position.y = h; m.frustumCulled = false; m.renderOrder = 3; group.add(m); return m; });
   // ground quad follows the camera and scales with altitude so it always fills the frame
-  function follow(camLocal, alt, cloudFade = 0, t = 0) {
+  function follow(camLocal, alt) {
     const s = Math.max(4000, alt * 12); ground.scale.set(s, 1, s); ground.position.x = camLocal.x; ground.position.z = camLocal.z;
-    cloudU.uFade.value = cloudFade; cloudU.uT.value = t;
-    clouds.forEach(m => { m.visible = cloudFade > 0.001; const cs = Math.max(20000, alt * 14); m.scale.set(cs, 1, cs); m.position.x = camLocal.x; m.position.z = camLocal.z; });
   }
   return { group, update, follow, uniforms: U, D, ready, readyAll };
 }

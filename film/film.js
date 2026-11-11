@@ -1,4 +1,4 @@
-// film.js: the homepage scroll film on one canvas. Austin lot timelapse -> pull up to Earth (Moon orbiting) -> up and over Earth
+// film.js: the homepage scroll film on one canvas. Austin lot, one day dawn to dusk, one continuous pull up to Earth (Moon orbiting) -> up and over Earth
 // toward Mars -> "One day on Mars" title -> SpaceX lines -> atmospheric entry -> Jezero colony timelapse, rockets, launch.
 // Ported from the prototype's d5/main.js with the D5 intro (text, button, veil, scroll lock, Moon stop) and every flag branch removed.
 //
@@ -13,13 +13,13 @@ import { createPost } from './post.js';
 import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
+import { createAustinCam, sunAt, exposureAt } from './austin.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 
 const CA = 0.46;                     // the entry swap: everything past this is the Jezero timelapse
 const E0 = 0.40, E1 = 0.60;          // atmospheric entry window
 const MM_R = 0.14, B2 = [0.04, 0.12, 0.34, 0.42]; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S)
-const TL = 0.51;                     // share of the Austin leg that is timelapse; the rest is the pull out
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
 
 export function createFilm({ THREE, host, section, scenes, sol, quality, files }) {
@@ -91,7 +91,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new THREE.Vector3(), shutterV = new THREE.Vector3(); let hasLast = false;
   const cut = () => { post.resetMotion(); hasLast = false; camVel.set(0, 0, 0); }; // hard cut: no motion blur, TAA/trail history or dust streak across it
 
-  // ---------- Austin: the opening lot, then a powers-of-ten pull out to the Earth frame below ----------
+  // ---------- Austin: the opening lot, then a powers-of-ten pull out to the Earth frame below (camera in austin.js) ----------
   const V = a => (a.isVector3 ? a.clone() : new THREE.Vector3(...a));
   const M3 = (b, o) => b.clone().add(new THREE.Vector3(...o));
   const upP = new THREE.Vector3(0, 1, 0).addScaledVector(toSun, -toSun.y).normalize();
@@ -105,14 +105,6 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // park Austin on the night side right under the Earth frame: same azimuth as C0, so the pull out lands with the city just below centre
   const SPIN_LAND = Math.atan2(austinLocal.z, austinLocal.x) - Math.atan2(C0.z, C0.x);
   const AUS = austinLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), SPIN_LAND).multiplyScalar(10), AUSn = AUS.clone().normalize();
-  const LAM0 = Math.log(400), LAMH = Math.log(650e3), LAM1 = Math.log(C0.distanceTo(AUS) / U_PER_M); // ln(distance in metres): site, hand-off, landing
-  const backEnd = C0.clone().sub(AUS).normalize(), lookEnd = L0.clone().sub(C0).normalize(), negN = AUSn.clone().negate();
-  const qT = new THREE.Quaternion(), qI = new THREE.Quaternion();
-  const slerpV = (a, b, k, out) => { qT.setFromUnitVectors(a, b); qI.identity().slerp(qT, k); return out.copy(a).applyQuaternion(qI); };
-  // timelapse framing: creep out, snap out, creep out, snap out, then the long pull. Distances in metres, eased in log space.
-  const BEATS = [[0, 0.44, 130, 150, 0], [0.44, 0.52, 150, 235, 1], [0.52, 0.9, 235, 262, 0], [0.9, 1, 262, 400, 1]];
-  const expoIO = x => (x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? Math.pow(2, 20 * x - 10) / 2 : 1 - Math.pow(2, -20 * x + 10) / 2);
-  const lapseDist = g => { for (const [a, b, d0, d1, snap] of BEATS) if (g <= b) { const x = (g - a) / (b - a), e = snap ? expoIO(x) : x; return Math.exp(Math.log(d0) + (Math.log(d1) - Math.log(d0)) * e); } return 400; };
 
   // ---------- Moon: orbits Earth with the scroll, so it drifts across the frame instead of sitting still ----------
   const MOON_R = 34, moonAt = (S, out) => {
@@ -144,7 +136,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const NK = SHOTS.length, PX = SHOTS.map(k => k.p), arcLens = posC.getLengths();
   const arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
   const arcP = pchip(PX, SHOTS.map((k, i) => arcAt(i / (NK - 1))), 0.6, 2.2); // ease off the Earth frame; accelerate into the dive
-  const idxP = pchip(PX, SHOTS.map((k, i) => i)), fovP = pchip(PX, SHOTS.map(k => k.fov));
+  const idxP = pchip(PX, SHOTS.map((k, i) => i)), fovP = pchip(PX, SHOTS.map(k => k.fov), 0); // fov leaves the Earth frame level: C1 with the Austin lens (38)
   const dA = new THREE.Vector3(), dB = new THREE.Vector3(), qL = new THREE.Quaternion(), qL0 = new THREE.Quaternion();
   function spaceCam(p, outPos, outLook) {
     const q = Math.min(Math.max(p, PX[0]), CA), u = posC.getUtoTmapping(0, Math.max(0, arcP(q)));
@@ -156,6 +148,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     outLook.copy(dA).applyQuaternion(qL0).multiplyScalar(fa + (fb - fa) * t).add(outPos);
     return fovP(q);
   }
+  const austin = createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }), AC = { pos: new THREE.Vector3(), look: new THREE.Vector3(), up: new THREE.Vector3() };
+  const LAMH = austin.LAMH, LAM1 = austin.LAM1, sunO = {};
 
   // ---------- colony camera: descent onto Jezero, a slow push round the ships and the build pad, then the tilt up after the ship ----------
   const C_PIV = [15, 0, -135], cAt = (R, a, h) => [C_PIV[0] + R * Math.sin(a * Math.PI / 180), h, C_PIV[2] + R * Math.cos(a * Math.PI / 180)];
@@ -242,10 +236,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       [Ys('colony', 0), 0.62], [Ys('colony', 1), 0.9], [yEnd, P_END]
     ];
     for (let i = 1; i < keys.length; i++) if (keys[i][0] <= keys[i - 1][0] + 1) keys[i][0] = keys[i - 1][0] + 1; // always increasing, whatever the heights
-    // the Austin leg: timelapse while the Austin copy is up, then the pull out until the Earth frame
-    const sKeys = [[Yt('austin', -1.0), 0], [Yt('austin', 0.3), TL], [keys[0][0], 1]];
-    for (let i = 1; i < sKeys.length; i++) if (sKeys[i][0] <= sKeys[i - 1][0] + 1) sKeys[i][0] = sKeys[i - 1][0] + 1;
-    LAY = { vh, yEnd, S: pmap(keys), s: pmap(sKeys), sc }; // monotone C1 through the keys: text-anchored beats land exactly, no speed step at any key
+    LAY = { vh, yEnd, S: pmap(keys), sc }; // monotone C1 through the keys: text-anchored beats land exactly, no speed step at any key
+    // the Austin leg: from the scene's first frame on screen (its top at the viewport bottom) to the Earth frame (S = -1),
+    // anchored on the H2 (centred, then near the top edge). Kept in order whatever the heights.
+    const aK = [sc.austin.top - vh, Yt('austin', 0), Yt('austin', 0.5), keys[0][0]];
+    for (let i = aK.length - 2; i >= 0; i--) if (aK[i] >= aK[i + 1] - 1) aK[i] = aK[i + 1] - Math.max(1, 0.25 * vh);
+    austin.layout({ yA: aK[0], yT: aK[1], yX: aK[2], yE: aK[3], S: LAY.S });
     measureTitle(); measureBeat();
   }
   // title: the two [data-split] words flank the planet. Row layout: the planet fills the gap between them. Column layout (narrow):
@@ -285,7 +281,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const mouse = { x: 0, y: 0 }, ms = { x: 0, y: 0 };
   const onMove = e => { mouse.x = e.clientX / innerWidth - 0.5; mouse.y = e.clientY / innerHeight - 0.5; };
   addEventListener('mousemove', onMove, { passive: true });
-  const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3(), siteT = new THREE.Vector3(), siteDir = new THREE.Vector3();
+  const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3();
   const camUp = new THREE.Vector3(0, 1, 0), mcv = new THREE.Vector3();
   const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
   const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
@@ -369,10 +365,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       ysV = dt > 0 ? (ys - y0) / dt : 0;                   // film scroll speed, px/s (state.v, for QA)
     }
     ms.x += (mouse.x - ms.x) * dt * 2; ms.y += (mouse.y - ms.y) * dt * 2;
-    s = clamp01(LAY.s(ys)); S = Math.min(P_END, Math.max(-1, LAY.S(ys)));
+    austin.at(ys, AC); s = AC.s; S = Math.min(P_END, Math.max(-1, LAY.S(ys)));
     if (s < 1) S = -1;
-    const introOn = s < 1, zPull = clamp01((s - TL) / (1 - TL)), lam = LAM0 + (LAM1 - LAM0) * smoother(Math.pow(zPull, 0.85));
-    mode = introOn ? (lam < LAMH ? 'site' : 'globe') : (S >= CA ? 'colony' : 'space');
+    const introOn = s < 1, lam = AC.lam;
+    mode = introOn ? AC.world : (S >= CA ? 'colony' : 'space');
     // lazy world loads: Moon as the pull begins. Mars maps, Jezero maps and the colony build start at boot idle (bootIdle);
     // these calls are only fallbacks (all idempotent), and ensure() only does work if the idle build has not finished by the swap
     if (s > 0.6) planets.loadDeferred('moon');
@@ -383,49 +379,46 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     let fov = 46, focus = 30;
     camUp.set(0, 1, 0);
     if (inSite) {
-      // satellite-ish oblique over the lot; drifts a few degrees during the timelapse, then rises and tips straight down for the pull out
-      const g = s < TL ? (s / TL) * 0.86 : 0.86 + 0.14 * zPull, up = sstep(lam, LAM0, LAM0 + (LAMH - LAM0) * 0.55);
-      const a = THREE.MathUtils.lerp(-0.06 + 0.12 * g, SITE_ROT, up), pitch = THREE.MathUtils.degToRad(58 * (1 - up) + 90 * up) - 0.0001;
-      const dist = s < TL ? lapseDist(g) : Math.exp(lam);
-      siteT.set(0, -1, 3 * (1 - up));
-      siteDir.set(Math.sin(a) * Math.cos(pitch), Math.sin(pitch), Math.cos(a) * Math.cos(pitch));
-      tmp.copy(siteT).addScaledVector(siteDir, dist); tmp.x += ms.x * 3 * (1 - up); tmp.z += ms.y * 2 * (1 - up);
-      pos.copy(tmp).add(SITE0); look.copy(siteT).add(SITE0);
-      camUp.set(-Math.sin(a), 0, -Math.cos(a));                   // screen-up = north, so the hand-off to the globe keeps its heading
-      fov = 38; focus = dist; siteDist = dist;
+      // the lot: one continuous drift up and back (austin.js), tilting to straight down and north-up by the world swap
+      const dist = AC.dist, md = 1 - AC.upk;
+      tmp.copy(AC.pos); tmp.x += ms.x * 3 * md; tmp.z += ms.y * 2 * md; // mouse drift, gone once straight down
+      pos.copy(tmp).add(SITE0); look.copy(AC.look).add(SITE0); camUp.copy(AC.up);
+      fov = AC.fov; focus = dist; siteDist = dist;
       setClip(Math.max(0.3, dist * 0.004), dist * 8 + 3000);
-      siteArg.g = g; siteArg.t = t; siteInfo = site.update(siteArg);
-      const cloudFade = sstep(lam, Math.log(500), Math.log(1400)) * (1 - sstep(lam, Math.log(15e3), Math.log(70e3)));
-      site.follow(tmp, dist, cloudFade, t); scene.fog.near = 1e8; scene.fog.far = 1e9;
+      siteArg.g = AC.g; siteArg.hour = AC.hour; siteArg.t = t; siteInfo = site.update(siteArg);
+      site.follow(tmp, dist); scene.fog.near = 1e8; scene.fog.far = 1e9;
       hemi.intensity *= 1 - sstep(lam, Math.log(3e3), Math.log(60e3)); // moonlight on the photos dies away so the ground meets the black night side of the globe
+      // long-exposure trails only after dark (work lights, street traffic); by day the machines read clean
+      const nt = siteInfo.night; post.trails.enabled = HIGH && nt > 0.02; post.trails.amount = 0.65 * nt;
     } else if (mode === 'globe') {
-      // straight up off Austin, then curve round onto the Earth frame (C0). Distances stay logarithmic the whole way.
-      const D = Math.exp(lam) * U_PER_M, f2 = clamp01((lam - LAMH) / (LAM1 - LAMH)), e = smoother(f2);
-      slerpV(AUSn, backEnd, e, tmp); pos.copy(AUS).addScaledVector(tmp, D);
-      slerpV(negN, lookEnd, smoother(Math.min(1, f2 * 1.1)), tmp2); look.copy(pos).addScaledVector(tmp2, D);
-      fov = 38; focus = D;
-      setClip(Math.min(0.1, Math.max(0.0005, D * 0.04)), 9000);
+      // straight up off Austin, swinging round onto the Earth frame (C0) with spaceCam's speed (austin.js)
+      pos.copy(AC.pos); look.copy(AC.look); fov = AC.fov; focus = AC.dist * U_PER_M;
+      setClip(Math.min(0.1, Math.max(0.0005, focus * 0.04)), 9000);
     } else if (inCol) {
       fov = colCam(S, pos, look); pos.x += ms.x * 8 * live; pos.y -= ms.y * 5 * live; focus = pos.distanceTo(look);
       // near plane rides the camera height: at 0.1 the depth buffer had ~10 cm steps at 400 m, so hab floors, gardens and pads z-fought
       setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
     } else {
-      fov = spaceCam(S, pos, look); focus = pos.distanceTo(look);
+      fov = spaceCam(S, pos, look); pos.add(austin.corr(S, tmp)); focus = pos.distanceTo(look); // corr: the hand-off's outward push, zero past S ~ -0.95
       { const w = sstep(S, 0.4, 0.45); if (w > 0) camUp.lerp(tmp.copy(pos).sub(MARS).normalize(), w).normalize(); } // entry: the planet's up, so the horizon lies level
       pos.x += ms.x * 2.2 * live; pos.y -= ms.y * 1.4 * live;
       setClip(0.1, 9000);
     }
-    // exposure ride on the pull out: a real camera stops down while a whole lit city fills the frame, then opens back up for orbit
-    { const swell = introOn ? sstep(zPull, 0.08, 0.28) * (1 - sstep(zPull, 0.62, 0.85)) : 0; post.motion.shutter = 0.6 + 2.4 * swell; post.motion.maxLen = 0.035 + 0.11 * swell; }
-    post.auto.min = introOn ? 0.12 : 0.55;
-    renderer.toneMappingExposure = introOn && zPull > 0 ? 1.05 * (1 - 0.72 * sstep(lam, Math.log(2e3), Math.log(4e4)) * (1 - sstep(lam, Math.log(8e5), Math.log(5e6)))) : 1.05;
+    if (!inSite) post.trails.enabled = false;
+    // camera motion blur opens up through the fast part of the rise
+    { const swell = introOn ? sstep(lam, Math.log(450), Math.log(3600)) * (1 - sstep(lam, 14, 15.9)) : 0; post.motion.shutter = 0.6 + 2.4 * swell; post.motion.maxLen = 0.035 + 0.11 * swell; }
+    // exposure: on the Austin beat a fixed curve of sun elevation and altitude (austin.js), written straight into the exposure state
+    // every frame (no metering, no adaptation: no pumping while scrubbing, no drift when the scroll stops). Auto exposure from S = -1.
+    post.auto.enabled = !introOn;
+    if (introOn) { renderer.toneMappingExposure = exposureAt(sunAt(AC.hour, sunO).sinE, lam); post.snapExposure(); }
+    else { renderer.toneMappingExposure = 1.05; post.auto.min = 0.55; }
     // per-set switches: what is in the world, which light rig, shadow box
     if (mode !== lastMode) {
       site.group.visible = inSite; colonyGroup.visible = inCol;
       const sp = !inSite && !inCol; spaceMeshes.forEach(m => (m.visible = sp));
       rig(inSite);
       post.motion.cutDist = mode === 'site' || mode === 'globe' ? 1e12 : 400;
-      post.trails.enabled = post.ao.enabled = inSite && HIGH; // long-exposure smears on the moving machines + contact shadows, only on the job site
+      post.ao.enabled = inSite && HIGH; // contact shadows, only on the job site (trails are set per frame above)
       if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
       lastMode = mode; forceShadow = true; // never show a shadow map left over from another set
     }
@@ -472,6 +465,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     postArg.dt = dt; postArg.t = t; postArg.focus = focus; postArg.aperture = (deep ? 0.0004 : inCol ? 0.006 : focus < 12 ? 0.02 : 0.003) / focus;
     postArg.maxblur = !HIGH ? 0 : deep ? 0.0008 : inCol ? 0.0042 : focus < 12 ? 0.005 : 0.0018; postArg.ca = 0.012;
     lensCine(inCol);
+    // the Austin H2 sits over the lot: a soft burn behind it while it is on screen (read from its box, nothing added to the DOM)
+    if (inSite && scenes.austin && scenes.austin.firstElementChild) {
+      const r = rectOf(scenes.austin.firstElementChild), mr = rectOf(host), on = r.bottom > mr.top && r.top < mr.bottom;
+      post.scrim(((r.left + r.right) / 2 - mr.left) / W, 1 - ((r.top + r.bottom) / 2 - mr.top) / H, 0.66 * r.width / W + 0.05, 0.8 * r.height / H + 0.07, on ? 0.45 * (1 - AC.upk) : 0);
+    } else post.scrim(0.5, 0.5, 1, 1, 0);
     post.update(postArg);
     solFrame();
     post.render();
@@ -573,7 +571,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
     step, resize, relayout,
     snap() { snapNext = true; },
-    get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh } }; },
+    get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh },
+      site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);
       for (const k of ['Ls', 'Rs']) if (tG && tG[k]) tG[k].style.transform = '';
