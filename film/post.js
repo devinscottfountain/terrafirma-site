@@ -490,7 +490,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     snapExposure() { tonePass.snap = true; },     // jump exposure to target next frame (no adaptation)
     getExposure,
     // cine only (D6.1): live lens knobs, look tunables, quality ladder 0..3 (see createCine)
-    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, lensFrame: C ? o => C.lensFrame(o) : () => {},
+    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (...a) => C.scrim(...a) : () => {},
     setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
     gpuTimes: C ? () => C.gpuTimes() : () => null
   };
@@ -662,9 +662,10 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
 
   // ---------------------------------------------------------------- lens: heat shimmer, FXAA, vignette, grain, dither
   const lensU = { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 }, grain: { value: look.grain }, vig: { value: look.vignette },
-    heat: { value: 0 }, heatAt: { value: new THREE.Vector2(0.5, 0.5) }, heatLocal: { value: 0 }, fxaa: { value: 0 } };
+    heat: { value: 0 }, heatAt: { value: new THREE.Vector2(0.5, 0.5) }, heatLocal: { value: 0 }, fxaa: { value: 0 },
+    scrim: { value: new THREE.Vector4(0.5, 0.5, 1, 1) }, scrimK: { value: 0 } }; // soft burn behind on-screen copy: centre uv (y up), radii uv, depth
   const mLens = mat(`
-    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform float time, grain, vig, heat, heatLocal, fxaa; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform vec4 scrim; uniform float time, grain, vig, heat, heatLocal, fxaa, scrimK; varying vec2 vUv;
     ${CINE_GLSL}
     float vh(vec2 p){ return cH12(p*1.17+.31); }
     float vn(vec2 x){ vec2 i=floor(x),f=fract(x); f=f*f*(3.-2.*f); return mix(mix(vh(i),vh(i+vec2(1,0)),f.x),mix(vh(i+vec2(0,1)),vh(i+vec2(1,1)),f.x),f.y); }
@@ -691,6 +692,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       vec3 col=fxaa>.5 ? fx3(uv) : texture2D(tDiffuse,uv).rgb;
       vec2 c=vUv-.5; float r2=dot(c,c);
       col*=mix(1.,smoothstep(.75,.12,r2*1.6),vig);
+      if(scrimK>0.){ vec2 q=(vUv-scrim.xy)/scrim.zw; col*=1.-scrimK*exp(-dot(q,q)); } // a printer's burn under the copy, never a box
       gl_FragColor=vec4(clamp(cineGrain(col,gl_FragCoord.xy,time,grain),0.,1.),1.); }`, lensU);
 
   // ---------------------------------------------------------------- sizing + quality
@@ -800,6 +802,8 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     taaOn: () => (level < 0 ? !low : Q.aa === 3),
     jitter, render, setSize, setQuality,
     profile(on = true) { profiling = !!on && !!tq; return profiling; },
+    // scrim(cx, cy, rx, ry, k): darken a soft ellipse (uv, y up) by up to k behind copy that sits over a busy frame; k 0 = off
+    scrim(cx, cy, rx, ry, k) { lensU.scrim.value.set(cx, cy, Math.max(1e-3, rx), Math.max(1e-3, ry)); lensU.scrimK.value = Math.max(0, k); },
     // one call per frame from main.js sets every lens knob from the story clocks (curves live here, with the look):
     // entry e 0..1 (p .40-.60, swap at e .30), gR = rockets' colony clock (ignite .80, liftoff .83), plume = [u, v] screen uv of
     // the engines (y up) or null. Anything not passed counts as outside its window.
