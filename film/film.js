@@ -89,6 +89,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     lines.frustumCulled = heads.frustumCulled = false; dust.add(lines, heads);
   }
   const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new THREE.Vector3(), shutterV = new THREE.Vector3(); let hasLast = false;
+  const cut = () => { post.resetMotion(); hasLast = false; camVel.set(0, 0, 0); }; // hard cut: no motion blur, TAA/trail history or dust streak across it
 
   // ---------- Austin: the opening lot, then a powers-of-ten pull out to the Earth frame below ----------
   const V = a => (a.isVector3 ? a.clone() : new THREE.Vector3(...a));
@@ -278,12 +279,13 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
 
   // ---------- state, per frame ----------
   let ys = 0, ysV = 0, S = -1, s = 0, mode = 'site', lastMode = '', visible = false, snapNext = true, running = false, ext = false, raf = 0, lastT = 0;
+  let tEl = 0; // film clock (s): advanced by step(dt) whoever drives it, so grain, shimmer, drift and blinkers run under gsap.ticker too
   let siteInfo = null, siteDist = 0, shadowFrame = 0, forceShadow = true, booted = false, dead = false;
   const mouse = { x: 0, y: 0 }, ms = { x: 0, y: 0 };
   const onMove = e => { mouse.x = e.clientX / innerWidth - 0.5; mouse.y = e.clientY / innerHeight - 0.5; };
   addEventListener('mousemove', onMove, { passive: true });
   const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3(), siteT = new THREE.Vector3(), siteDir = new THREE.Vector3();
-  const camUp = new THREE.Vector3(0, 1, 0), clock = new THREE.Clock(), mcv = new THREE.Vector3();
+  const camUp = new THREE.Vector3(0, 1, 0), mcv = new THREE.Vector3();
   const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
   const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
   const siteArg = { g: 0, t: 0 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
@@ -351,13 +353,20 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
 
   // ================================================================ the frame
   let lastEvt = -1, lastBeat = '';
+  const evtDetail = { p: 0, beat: '' }, filmEvt = new CustomEvent('tf:film', { detail: evtDetail }); // one event, re-dispatched: no per-frame garbage
   const beatOf = () => (S < -0.55 ? (s < 1 ? 'austin' : 'earth') : S < 0.12 ? 'mars-title' : S < 0.42 ? 'reindustrialize' : S < 0.88 ? 'colony' : 'launch');
   function frame(dt) {
     if (!LAY) measure();
-    const t = clock.elapsedTime;
+    const t = tEl;
     const yT = -rectOf(section).top;                       // target scroll position in the track
-    if (snapNext) { ys = yT; ysV = 0; snapNext = false; post.resetMotion(); }
-    { const Wd = 3.6; ysV += (Wd * Wd * (yT - ys) - 2 * Wd * ysV) * dt; ys += ysV * dt; } // critically damped scroll: flicks ramp up and settle, never snap
+    // a jump of more than 2 viewports (anchor link, scroll rail, resize) is a cut: land on it and drop every velocity history
+    if (snapNext || Math.abs(yT - ys) > 2 * LAY.vh) { ys = yT; ysV = 0; snapNext = false; cut(); }
+    else {
+      const y0 = ys;
+      if (window.lenis) ys = yT;                           // Lenis already smooths the page: the picture is locked to the copy
+      else ys += (yT - ys) * (1 - Math.exp(-dt / 0.05));    // no Lenis: one light pole (tau 50 ms) takes the edge off wheel notches
+      ysV = dt > 0 ? (ys - y0) / dt : 0;                   // film scroll speed, px/s (state.v, for QA)
+    }
     ms.x += (mouse.x - ms.x) * dt * 2; ms.y += (mouse.y - ms.y) * dt * 2;
     s = clamp01(LAY.s(ys)); S = Math.min(P_END, Math.max(-1, LAY.S(ys)));
     if (s < 1) S = -1;
@@ -433,7 +442,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const dist = pos.distanceTo(look);
     if (!introOn) pos.add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live));
     cam.up.copy(camUp);
-    if (Math.abs(cam.fov - fov) > 0.01) { cam.fov = fov; cam.updateProjectionMatrix(); }
+    if (Math.abs(cam.fov - fov) > 0.0005) { cam.fov = fov; cam.updateProjectionMatrix(); } // fine enough that slow zooms never step
     cam.position.copy(pos); cam.lookAt(look);
     frameMars(mode === 'space');
     // dust: smoothed camera velocity drives streak length (a short virtual shutter)
@@ -466,7 +475,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     post.render();
     // progress event, only when it moves
     const p = clamp01(ys / LAY.yEnd), q = Math.round(p * 1e4), beat = beatOf();
-    if (q !== lastEvt || beat !== lastBeat) { lastEvt = q; lastBeat = beat; window.dispatchEvent(new CustomEvent('tf:film', { detail: { p, beat } })); }
+    if (q !== lastEvt || beat !== lastBeat) { lastEvt = q; lastBeat = beat; evtDetail.p = p; evtDetail.beat = beat; window.dispatchEvent(filmEvt); }
   }
 
   // ================================================================ lazy colony build + warm-up
@@ -541,17 +550,18 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   addEventListener('load', relayout);
   function step(dt) {
     if (!running || !booted || dead) return;
-    frame(Math.min(0.05, dt || clock.getDelta()));
+    dt = Math.max(0, dt || 0); tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
+    frame(Math.min(0.05, dt));
   }
-  const loop = () => { raf = requestAnimationFrame(loop); step(clock.getDelta()); };
+  const loop = now => { raf = requestAnimationFrame(loop); const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
   const api = {
     ready: readyP, canvas, renderer, post, scene, cam,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the film runs its own rAF loop
-    start(external = false) { if (running) return; running = true; ext = external; snapNext = true; clock.getDelta(); if (!external) raf = requestAnimationFrame(loop); },
+    start(external = false) { if (running) return; running = true; ext = external; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
     step, resize, relayout,
     snap() { snapNext = true; },
-    get state() { return { y: ys, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh } }; },
+    get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh } }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);
       for (const k of ['Ls', 'Rs']) if (tG && tG[k]) tG[k].style.transform = '';
