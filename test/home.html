@@ -1,0 +1,50 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>home3d.js Solutions test</title>
+<!-- Mimics the Webflow Solutions DOM. Local test only. Serve from the repo root: python3 -m http.server
+     three: /node_modules/three (npm i three@0.160.0 into a scratch dir and symlink it as ./node_modules, not committed),
+     or add ?cdn to use jsDelivr. -->
+<script>
+  const cdn = new URLSearchParams(location.search).has('cdn');
+  const map = cdn
+    ? { three: 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js', 'three/addons/': 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/' }
+    : { three: '/node_modules/three/build/three.module.js', 'three/addons/': '/node_modules/three/examples/jsm/' };
+  document.head.appendChild(Object.assign(document.createElement('script'), { type: 'importmap', textContent: JSON.stringify({ imports: map }) }));
+</script>
+<style>
+html,body{margin:0;background:#000;color:#fff;font:16px/1.4 system-ui,sans-serif}
+.pre,.post{height:120vh;background:#000}
+.sol{position:relative;overflow:hidden;padding:96px 0}
+.stage{position:absolute;inset:0}
+.container{position:relative;max-width:1280px;margin:0 auto;padding:0 40px;pointer-events:none}
+.container h2{max-width:760px;margin:0 0 24px;font-size:40px;font-weight:500;line-height:1.15}
+.spacer{min-height:640px}
+.tabs{display:flex;gap:16px;pointer-events:auto}
+.tabs button{flex:1;text-align:left;padding:24px;border:1px solid #333;background:#000;color:#b9b9b9;font:inherit;cursor:pointer}
+.tabs button[aria-selected="true"]{background:#151515;color:#fff}
+@media (max-width:991px){.spacer{min-height:0}.tabs{flex-direction:column}}
+</style></head><body>
+<div class="pre"></div>
+<section class="sol" id="solutions" data-three="solutions">
+  <div class="stage" id="solutions-stage" data-three-mount="solutions" aria-hidden="true"></div>
+  <div class="container">
+    <h2>Advancing construction with human-in-the-loop autonomy through Planning, Orchestration, and Operation</h2>
+    <div class="spacer" data-solutions-spacer></div>
+    <div class="tabs" data-tabs="solutions">
+      <button data-tab="planning" aria-selected="false">PLANNING<br>Mission Planner</button>
+      <button data-tab="orchestration" aria-selected="true">ORCHESTRATION<br>Mission Control</button>
+      <button data-tab="execution" aria-selected="false">EXECUTION<br>Accelerated Operations</button>
+    </div>
+  </div>
+</section>
+<div class="post"></div>
+<script>
+  // stand-in for the Webflow page script: select a tab, dispatch tf:solutions (also once on load)
+  const tabs = document.querySelectorAll('[data-tabs="solutions"] [data-tab]');
+  const select = mode => {
+    tabs.forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === mode)));
+    window.dispatchEvent(new CustomEvent('tf:solutions', { detail: { mode } }));
+  };
+  tabs.forEach(b => b.addEventListener('click', () => select(b.dataset.tab)));
+  select('orchestration');
+</script>
+<script type="module" src="../home3d.js"></script>
+</body></html>
