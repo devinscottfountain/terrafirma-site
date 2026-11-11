@@ -9,6 +9,18 @@
     : { three: '/node_modules/three/build/three.module.js', 'three/addons/': '/node_modules/three/examples/jsm/' };
   document.head.appendChild(Object.assign(document.createElement('script'), { type: 'importmap', textContent: JSON.stringify({ imports: map }) }));
   window.__H = (qs.get('h') || '2,1.5,3.5,4,3,2').split(',').map(Number);
+  // ?lenis: load gsap + Lenis like the real page (film steps from gsap.ticker, Lenis smooths the scroll). jsDelivr with ?cdn, else /node_modules
+  if (qs.has('lenis')) {
+    const src = cdn ? { gsap: 'https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js', lenis: 'https://cdn.jsdelivr.net/npm/lenis@1.1.13/dist/lenis.min.js' }
+      : { gsap: '/node_modules/gsap/dist/gsap.min.js', lenis: '/node_modules/lenis/dist/lenis.min.js' };
+    document.write(`<script src="${src.gsap}"><\/script><script src="${src.lenis}"><\/script>`); // parser-blocking, so both exist before the film module runs
+  }
+</script>
+<script>
+  if (window.Lenis && window.gsap) { // same wiring as the site: Lenis driven from the gsap ticker
+    window.lenis = new Lenis();
+    gsap.ticker.add(t => window.lenis.raf(t * 1000)); gsap.ticker.lagSmoothing(0);
+  }
 </script>
 <style>
 :root{--m:40px}
