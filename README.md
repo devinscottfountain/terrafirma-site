@@ -1,6 +1,6 @@
 # terrafirma-site
 
-Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Mission section (planets and Starship) on the careers page, and the Solutions scene on the homepage.
+Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Mission section (planets and Starship) on the careers page, the Solutions scene and the scroll film (Austin, Earth, Mars) on the homepage.
 
 ## Files
 
@@ -17,6 +17,11 @@ Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Miss
 - `home3d.js`: homepage entry (ES module). Finds the Solutions section, lazy-loads three and `solutions/` within ~1.5 viewports, listens to `tf:solutions`, frames the scene into the spacer, renders only while visible.
 - `solutions/solutions.js`: `createSolutions({ THREE, host, quality })` returns `{ ready, canvas, setFrame, setMode, start, step, stop, resize, warm, onTelemetry, onGame, dispose }`. Dot grid terrain plus the three modes. No assets: the grid is procedural.
 - `solutions/sol-machines.js`: procedural wireframe excavator, backhoe loader and roller. `solutions/sol-game.js`: the Mission Control dig game.
+- `film/mount.js`: film entry, imported by `home3d.js` when `section[data-three="film"]` exists. Lazy-loads three and the film modules within ~1.5 viewports, reads `film/assets/manifest.json`, fades the canvas in.
+- `film/film.js`: `createFilm({ THREE, host, section, scenes, sol, quality, files })` returns `{ ready, canvas, start, stop, step, resize, relayout, snap, state, dispose }`. One canvas, scroll scrubbed: Austin lot timelapse, pull up to Earth (orbiting Moon), over Earth to Mars, "One day on Mars" title, SpaceX line, atmospheric entry, Jezero colony timelapse with rockets, launch, SOL counter.
+- `film/colony.js`, `planets.js`, `sky.js`, `site.js`, `habitat.js`, `machines.js`, `rockets.js`, `post.js`, `util.js`: ported from the prototype (`tf-d5` `d5/`) with the 6.1 flags hard-coded. `colony.js` builds the Jezero colony lazily in idle time. Rockets import `footer/foot-model-starship.js` and `footer/foot-model-kit.js` (no copy).
+- `film/assets/`: WebP textures per tier plus `manifest.json`. Rebuild with `python3 film/tools/build-assets.py <d5-assets> [<extra-dir>]`.
+- `test/film.html`: local film test page that mimics the Webflow DOM. Scene heights via `?h=austin,earth,title,reind,colony,launch` in viewports. Not for production.
 - `test/home.html`: local Solutions test page that mimics the Webflow DOM (three tabs dispatch `tf:solutions`). Not for production.
 - `test/mission.html`: local Mission test page (1600 wide, scales down under 600 px). Not for production.
 - `test/careers.html`: local test page that mimics the Webflow DOM. Not for production.
@@ -60,6 +65,23 @@ Switches: `?sol=0` bails, `?q=low|high` forces a quality tier (same logic as `ca
 TODO (Tim's notes): one excavator is to be replaced by a new vehicle and Execution gets new vehicles. Marked in `solutions/solutions.js` above the machine slots; not modelled yet.
 
 Load: same importmap as below, then `<script type="module" src="https://cdn.jsdelivr.net/gh/devinscottfountain/terrafirma-site@SHA/home3d.js"></script>`.
+
+## Film DOM contract (homepage, `film/mount.js`)
+
+- `section[data-section="film"][data-three="film"]`: the whole film track, normal flow, no overflow clip on the sticky.
+- `[data-three-mount="film"]`: `position: sticky; top: 0; height: 100vh`, empty, `aria-hidden`; the canvas is created inside it.
+- Six scenes, in order, which set the scroll timing. Each is read from the DOM, so any height works: `austin`, `earth`, `mars-title` (holds the `[data-split]` spans of "One day / on Mars"), `reindustrialize` (the SpaceX lines), `colony`, `launch`. The text in each scene is Webflow copy.
+- `[data-sol]`: SOL counter, written by the film (0000 to 0206). The film sets its opacity and visibility.
+
+Recommended scene heights (vh): austin 2, earth 1.5, title 3.5, reindustrialize 4, colony 3, launch 2, about 16 vh in all.
+
+Lifecycle: `html[data-film3d="on"]` is set before the first frame and `tf:film-ready` fires when the canvas is live. On reduced motion, no WebGL2, `?film=0` or any error there is no canvas and no flag; an error after the flag was set removes it and fires `tf:film-fail`. The 2D script should listen for both. Renders only while the section intersects; shaders and the colony are compiled off screen first.
+
+Switches: `?film=0` bails, `?q=low|high` forces a tier, `?qa` exposes `window.TFFilm`.
+
+Assets (WebP, transferred): high about 1.55 MB (Earth 2K 154 KB, clouds 292, lights 77, spec 31, normal 22, Moon 1K 69, Mars 610, Mars normal 43, Milky Way 11, stars.bin 244). Low about 0.37 MB (Earth 41, clouds 82, lights 17, spec 11, Moon 13, Mars 161, Milky Way 3, stars.bin 40). Earth loads first, Moon and Mars on demand. Code is extra (three itself is shared with the other modules).
+
+Open issues: the Webflow-hosted ortho tiles (Austin 8 km / 80 km) and Jezero terrain files are not in the repo, so the Austin neighbourhood is procedural and the Mars terrain is flat (visible seam); add them to the manifest `ortho` and `jezero` keys. The perf governor is not wired in. Phone pacing is untuned.
 
 ## Loading on Webflow
 
