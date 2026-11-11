@@ -14,6 +14,7 @@ import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
 import { createAustinCam, sunAt, exposureAt } from './austin.js';
+import { createAircraft } from './aircraft.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 
@@ -99,6 +100,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const L0 = C0.clone().addScaledVector(toSun, 60).addScaledVector(upP, -9);
   const SITE0 = new THREE.Vector3(0, 40000, 0);
   const site = createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: planets.earth.material.uniforms, orthoUrl: files.ortho });
+  const aircraft = createAircraft({ THREE, parent: site.group, high: HIGH }); // night traffic: nav lights only, lives (and compiles) with the site set
   const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
   const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
   const austinLocal = new THREE.Vector3(-Math.cos(2 * Math.PI * lonU) * Math.cos(latR), Math.sin(latR), Math.sin(2 * Math.PI * lonU) * Math.cos(latR));
@@ -150,6 +152,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   }
   const austin = createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }), AC = { pos: new THREE.Vector3(), look: new THREE.Vector3(), up: new THREE.Vector3() };
   const LAMH = austin.LAMH, LAM1 = austin.LAM1, sunO = {};
+  // the camera where its distance from the lot is D (bisect on its ln distance, up to the world swap): the aircraft are placed from it
+  const acO = { pos: new THREE.Vector3(), look: new THREE.Vector3(), up: new THREE.Vector3() };
+  const camAtDist = (D, out) => { const l = Math.log(D); let lo = austin.k.yA, hi = austin.k.yH; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; austin.at(m, acO); if (acO.lam < l) lo = m; else hi = m; } return austin.at((lo + hi) / 2, out); };
 
   // ---------- colony camera: descent onto Jezero, a slow push round the ships and the build pad, then the tilt up after the ship ----------
   const C_PIV = [15, 0, -135], cAt = (R, a, h) => [C_PIV[0] + R * Math.sin(a * Math.PI / 180), h, C_PIV[2] + R * Math.cos(a * Math.PI / 180)];
@@ -242,6 +247,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const aK = [sc.austin.top - vh, Yt('austin', 0), Yt('austin', 0.5), keys[0][0]];
     for (let i = aK.length - 2; i >= 0; i--) if (aK[i] >= aK[i + 1] - 1) aK[i] = aK[i + 1] - Math.max(1, 0.25 * vh);
     austin.layout({ yA: aK[0], yT: aK[1], yX: aK[2], yE: aK[3], S: LAY.S });
+    aircraft.layout(camAtDist, W / H);
     measureTitle(); measureBeat();
   }
   // title: the two [data-split] words flank the planet. Row layout: the planet fills the gap between them. Column layout (narrow):
@@ -285,7 +291,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const camUp = new THREE.Vector3(0, 1, 0), mcv = new THREE.Vector3();
   const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
   const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
-  const siteArg = { g: 0, t: 0 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
+  const siteArg = { g: 0, t: 0 }, acArg = { lam: 0, t: 0, sinE: 1, proj: 1, pr: 1 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
   const moonP = new THREE.Vector3();
   // light rig + shadow box per set
   function rig(inSite) {
@@ -386,6 +392,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       fov = AC.fov; focus = dist; siteDist = dist;
       setClip(Math.max(0.3, dist * 0.004), dist * 8 + 3000);
       siteArg.g = AC.g; siteArg.hour = AC.hour; siteArg.t = t; siteInfo = site.update(siteArg);
+      { const pr = renderer.getPixelRatio(); acArg.lam = lam; acArg.t = t; acArg.sinE = siteInfo.sinE; acArg.pr = pr; acArg.proj = H * pr / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2)); aircraft.update(acArg); }
       site.follow(tmp, dist); scene.fog.near = 1e8; scene.fog.far = 1e9;
       hemi.intensity *= 1 - sstep(lam, Math.log(3e3), Math.log(60e3)); // moonlight on the photos dies away so the ground meets the black night side of the globe
       // long-exposure trails only after dark (work lights, street traffic); by day the machines read clean
@@ -565,7 +572,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   }
   const loop = now => { raf = requestAnimationFrame(loop); const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
   const api = {
-    ready: readyP, canvas, renderer, post, scene, cam,
+    ready: readyP, canvas, renderer, post, scene, cam, aircraft,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the film runs its own rAF loop
     start(external = false) { if (running) return; running = true; ext = external; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
@@ -576,6 +583,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);
       for (const k of ['Ls', 'Rs']) if (tG && tG[k]) tG[k].style.transform = '';
+      aircraft.dispose();
       scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });
       renderer.dispose(); canvas.remove();
     }
