@@ -1,0 +1,58 @@
+{
+ "tiers": {
+  "high": {
+   "tex": {
+    "earth": "high/earth.webp",
+    "earthSpec": "high/earthSpec.webp",
+    "earthNorm": "high/earthNorm.webp",
+    "earthLights": "high/earthLights.webp",
+    "clouds": "high/clouds.webp",
+    "moon": "high/moon.webp",
+    "mars": "high/mars.webp",
+    "marsNorm": "high/marsNorm.webp"
+   },
+   "ortho": [],
+   "jezero": {},
+   "milky": "high/milkyway.webp",
+   "stars": "high/stars.bin"
+  },
+  "low": {
+   "tex": {
+    "earth": "low/earth.webp",
+    "earthSpec": "low/earthSpec.webp",
+    "earthLights": "low/earthLights.webp",
+    "clouds": "low/clouds.webp",
+    "moon": "low/moon.webp",
+    "mars": "low/mars.webp"
+   },
+   "ortho": [],
+   "jezero": {},
+   "milky": "low/milkyway.webp",
+   "stars": "low/stars.bin"
+  }
+ },
+ "bytes": {
+  "high/earth.webp": 158188,
+  "low/earth.webp": 41812,
+  "high/earthSpec.webp": 31986,
+  "low/earthSpec.webp": 11228,
+  "high/earthNorm.webp": 23012,
+  "high/earthLights.webp": 79062,
+  "low/earthLights.webp": 17434,
+  "high/clouds.webp": 298604,
+  "low/clouds.webp": 84136,
+  "high/moon.webp": 71066,
+  "low/moon.webp": 13506,
+  "high/mars.webp": 624394,
+  "low/mars.webp": 164618,
+  "high/marsNorm.webp": 43866,
+  "high/milkyway.webp": 11012,
+  "low/milkyway.webp": 3288,
+  "high/stars.bin": 249900,
+  "low/stars.bin": 41440
+ },
+ "totals": {
+  "high": 1591090,
+  "low": 377462
+ }
+}

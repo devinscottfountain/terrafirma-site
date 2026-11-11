@@ -141,3 +141,7 @@ if (!bail) {
   const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); boot(); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
   near.observe(root);
 }
+
+// ---------------------------------------------------------------- the scroll film (Austin -> Earth -> Mars -> colony -> launch)
+// Its own page integration lives in film/mount.js (DOM contract, bail rules, lazy trigger). Loaded only when the film section exists.
+if (document.querySelector('section[data-three="film"]')) import('./film/mount.js').catch(err => console.warn('TerraFirma film: not loaded.', err));
