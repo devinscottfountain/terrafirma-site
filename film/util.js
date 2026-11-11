@@ -9,6 +9,8 @@ export const lerp = (a, b, t) => a + (b - a) * t;
 // so the camera can't stop dead on a key, fire off again, or swing past a framing and come back.
 export function pchip(xs, ys, m0, mN) {
   const n = xs.length, h = [], d = [], m = new Array(n);
+  if (n === 2) { const k = (ys[1] - ys[0]) / (xs[1] - xs[0] || 1); return x => (x >= xs[1] ? ys[1] : ys[0] + k * (x - xs[0])); } // two keys: the 3-point end slopes need a third
+
   for (let i = 0; i < n - 1; i++) { h[i] = xs[i + 1] - xs[i]; d[i] = (ys[i + 1] - ys[i]) / h[i]; }
   for (let i = 1; i < n - 1; i++) { if (d[i - 1] * d[i] <= 0) m[i] = 0; else { const w1 = 2 * h[i] + h[i - 1], w2 = h[i] + 2 * h[i - 1]; m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]); } }
   const end = (h0, h1, d0, d1) => { let v = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1); if (Math.sign(v) !== Math.sign(d0)) v = 0; else if (Math.sign(d0) !== Math.sign(d1) && Math.abs(v) > 3 * Math.abs(d0)) v = 3 * d0; return v; };
@@ -20,6 +22,20 @@ export function pchip(xs, ys, m0, mN) {
     const t = (x - xs[i]) / h[i], t2 = t * t, t3 = t2 * t;
     return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h[i] * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h[i] * m[i + 1];
   };
+}
+
+// monotone C1 map through [x, y] keys (x ascending, y non-decreasing): passes exactly through every key, no velocity step at any of them.
+// Below the first key it extrapolates along the end slope, above the last it holds the last y.
+export function pmap(keys) { return pchip(keys.map(k => k[0]), keys.map(k => k[1])); }
+
+// arc-length clock for a curve whose keys sit at uniform t (CatmullRomCurve3): x -> curve t, with key i reached at xs[i] and the
+// distance along the curve following a pchip through the key distances, so speed is continuous through every key
+export function arcClock(curve, xs, m0, mN) {
+  curve.arcLengthDivisions = Math.max(curve.arcLengthDivisions, 4000); curve.needsUpdate = true;
+  const L = curve.getLengths(), n = xs.length, end = L[L.length - 1];
+  const at = t => { const f = t * (L.length - 1), i = Math.floor(f); return i >= L.length - 1 ? end : L[i] + (L[i + 1] - L[i]) * (f - i); };
+  const dist = pchip(xs, xs.map((x, i) => at(i / (n - 1))), m0, mN);
+  return x => curve.getUtoTmapping(0, Math.min(end, Math.max(0, dist(x))));
 }
 
 // piecewise-linear map through [x, y] keys (x ascending), extrapolating the end segments

@@ -14,7 +14,7 @@ import { createSky } from './sky.js';
 import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
-import { clamp01, sstep, smoother, pchip, plin, lerp } from './util.js';
+import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 
 const CA = 0.46;                     // the entry swap: everything past this is the Jezero timelapse
 const E0 = 0.40, E1 = 0.60;          // atmospheric entry window
@@ -171,7 +171,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     [1.12, cAt(340, 11, 40), [-14, 50, -118], 52]
   ].map(([p, a, b, f]) => ({ p, pos: new THREE.Vector3(...a).add(COLV), look: new THREE.Vector3(...b).add(COLV), fov: f }));
   const cPosC = new THREE.CatmullRomCurve3(CSH.map(k => k.pos), false, 'centripetal'), cLookC = new THREE.CatmullRomCurve3(CSH.map(k => k.look), false, 'centripetal');
-  const cIdx = pchip(CSH.map(k => k.p), CSH.map((k, i) => i / (CSH.length - 1))), cFov = pchip(CSH.map(k => k.p), CSH.map(k => k.fov));
+  // position and aim each run on their own arc-length clock (like spaceCam): same keys at the same S, no speed step at any key
+  const CP = CSH.map(k => k.p), cPosU = arcClock(cPosC, CP), cLookU = arcClock(cLookC, CP), cFov = pchip(CP, CSH.map(k => k.fov));
   // scroll -> the colony's build clock gR (rockets.js table: land 0-0.064, ARRIVE 0.1, ignite 0.8, liftoff 0.83, 1.0 ~1.2 km up)
   const gOf = (() => { const f = pchip([0.49, 0.62, 0.88, 0.9, 1.12], [0, 0.1, 0.8, 0.83, 1]); return p => (p <= 0.49 ? 0 : p >= 1.12 ? 1 : clamp01(f(p))); })();
   const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3(), camUpY = new THREE.Vector3(0, 1, 0);
@@ -182,8 +183,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const k = Math.max(0, g - LIFT_G), y = 42000 * k * k, d = 0.00025 * y * y; return out.set(ROCK_SITES.build[0] - 0.952 * d, 26 + y, ROCK_SITES.build[1] - 0.305 * d).add(COLV);
   }
   function colCam(p, outPos, outLook) {
-    const q = Math.min(Math.max(p, CA), P_END), u = cIdx(q);
-    cPosC.getPoint(u, outPos); cLookC.getPoint(u, outLook);
+    const q = Math.min(Math.max(p, CA), P_END);
+    cPosC.getPoint(cPosU(q), outPos); cLookC.getPoint(cLookU(q), outLook);
     // launch: from liftoff the aim leaves the pivot for the climbing ship, a beat behind it
     const g = gOf(q), k = sstep(g, LIFT_G + 0.004, LIFT_G + 0.05);
     if (k > 0) { shipAt(g, rockL); rockW.copy(rockL).sub(outLook); outLook.addScaledVector(rockW, k * 0.85); } // never quite on it: the column trails into frame from below
@@ -244,7 +245,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     // the Austin leg: timelapse while the Austin copy is up, then the pull out until the Earth frame
     const sKeys = [[Yt('austin', -1.0), 0], [Yt('austin', 0.3), TL], [keys[0][0], 1]];
     for (let i = 1; i < sKeys.length; i++) if (sKeys[i][0] <= sKeys[i - 1][0] + 1) sKeys[i][0] = sKeys[i - 1][0] + 1;
-    LAY = { vh, yEnd, S: plin(keys), s: plin(sKeys), sc };
+    LAY = { vh, yEnd, S: pmap(keys), s: pmap(sKeys), sc }; // monotone C1 through the keys: text-anchored beats land exactly, no speed step at any key
     measureTitle(); measureBeat();
   }
   // title: the two [data-split] words flank the planet. Row layout: the planet fills the gap between them. Column layout (narrow):
