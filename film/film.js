@@ -21,7 +21,7 @@ import { clamp01, sstep, pchip, pmap, arcClock, lerp } from './util.js';
 import LOOK from './look.json.js';
 
 // CA = 0.46 the entry swap (everything past it is the Jezero timelapse), E0..E1 = 0.40..0.60 the atmospheric entry window (flight.js)
-const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40]; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean
+const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40], HOLD_CREEP = 0.3; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean; held disc growth per unit S
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
 // per beat look offsets blend on S: Austin -> space over the first beat of space, space -> Mars orbit as the disc grows, Mars orbit -> colony across the swap flash (CA)
 const BEAT_X = [[-1, -0.9], [-0.3, -0.1], [0.43, 0.49]];
@@ -43,7 +43,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const scene = new THREE.Scene(); scene.background = new THREE.Color(0x010103);
   const cam = new THREE.PerspectiveCamera(42, W / H, 0.1, 9000);
   const post = createPost({ THREE, renderer, scene, cam, low: !HIGH }), { bloom } = post;
-  // the look: grade, lens and per beat offsets (look.json.js). One live object; the ?dial panel writes the same one
+  // the look: grade, lens and per beat offsets (look.json.js). One live object; the ?grade panel writes the same one
   const tune = JSON.parse(JSON.stringify(LOOK));
   let freeze = false; // dial: hold the film clock (machines, crew, strobes, grain); scroll still drives the film
   function applyTune() {
@@ -60,7 +60,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // UnrealBloom's blurs use sigma = kernel radius, so a lone bright pixel blooms into a soft square. A proper Gaussian keeps the glow round.
   (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 
-  // ---------- the solar system and the space camera (flight.js): Earth at the origin, Mars ~570 out behind its limb ----------
+  // ---------- the solar system and the space camera (flight.js): Earth at the origin, Mars ~480 out beyond its top as seen on the copy frame ----------
   const flight = createFlight({ THREE }), { toSun, EARTH, MARS, C0, L0 } = flight;
   const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON: flight.moonAt(-1, new THREE.Vector3()), MARS, files: files.tex });
   planets.moon.material.uniforms.uRelief.value = 0.35; planets.mars.material.uniforms.uRelief.value = 0.4; // relief is synthesized, keep it a whisper so the real maps lead
@@ -96,7 +96,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const SPIN_LAND = Math.atan2(austinLocal.z, austinLocal.x) - Math.atan2(C0.z, C0.x);
   const AUS = austinLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), SPIN_LAND).multiplyScalar(10), AUSn = AUS.clone().normalize();
 
-  // ---------- camera: one move, Earth frame -> whole Earth (copy) -> Mars over the limb -> title -> SpaceX hold -> down the entry line.
+  // ---------- camera: one move, Earth frame -> whole Earth (copy) -> over the top of Earth, Mars rising ahead -> title -> SpaceX hold -> down the entry line.
   // Position, aim, up and lens all live in flight.js on the film clock; the Moon orbits on it too.
   const spaceCam = flight.spaceCam;
   const austin = createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }), AC = { pos: new THREE.Vector3(), look: new THREE.Vector3(), up: new THREE.Vector3() };
@@ -160,7 +160,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   { const u = planets.marsAtmo.material.uniforms; u.uBetaR.value.multiplyScalar(0.25); u.uSunCol.value.set(1, 0.86, 0.66); u.uK.value = 15; } // dust only, warm: no blue haze over the far side
   halo.position.copy(MARS); halo.renderOrder = 3; halo.frustumCulled = false; scene.add(halo);
   function litMars(t, S) {
-    planets.mars.rotation.y = 0.26 + (S - 0.28) * 0.45 + t * 0.002;
+    flight.marsQ(t, planets.mars.quaternion); // fixed tilt + a slow spin on the clock only: nothing turns with scroll
     litL.copy(LIT_DIR).applyQuaternion(cam.quaternion);
     planets.marsAtmo.material.uniforms.uSun.value.copy(litL);
     litQ.copy(planets.mars.quaternion).invert(); planets.mars.material.uniforms.uSun.value.copy(litL).applyQuaternion(litQ);
@@ -291,8 +291,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const nx = mcv.x / -mcv.z / (th * cam.aspect), ny = mcv.y / -mcv.z / th, px = W / 2 + nx * W / 2, py = H / 2 - ny * H / 2; // natural screen position of the centre
     let rT = Math.tan(Math.asin(6.05 / d)) / th * H / 2, tx = px, ty = py;
     // the planet holds the viewport centre while the title scrolls past it: the words flank it exactly when the title is centred (S = 0)
-    if (k1 > 0) { const tb = rectOf(tG.h2), mr = rectOf(host); rT = lerp(rT, tG.r, k1); tx = lerp(tx, tb.left - mr.left + tG.x, k1); ty = lerp(ty, H / 2, k1); }
-    if (k2 > 0) { rT = lerp(rT, bT.r, k2); tx = lerp(tx, bT.x, k2); ty = lerp(ty, bT.y, k2); }
+    const creep = 1 + HOLD_CREEP * S; // the held disc keeps growing slowly (exact title size at S = 0): a steady creep in, never frozen
+    if (k1 > 0) { const tb = rectOf(tG.h2), mr = rectOf(host); rT = lerp(rT, tG.r * creep, k1); tx = lerp(tx, tb.left - mr.left + tG.x, k1); ty = lerp(ty, H / 2, k1); }
+    if (k2 > 0) { rT = lerp(rT, bT.r * creep, k2); tx = lerp(tx, bT.x, k2); ty = lerp(ty, bT.y, k2); }
     const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2;
     if (Math.abs(rT - rNat) > 0.01) {
       const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
@@ -385,7 +386,6 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       // portrait: open the lens like the colony does, ramped in off the hand-off (Austin lands at 38), so the whole Earth and the crest share the width
       if (cam.aspect < 1) fov = 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(fov / 2)) * (1 + sstep(S, -1, -0.9) * (Math.min(2.2, 1.12 / cam.aspect) - 1))));
       focus = lerp(pos.distanceTo(AUS), pos.distanceTo(look), sstep(S, -1, -0.92)); // from the globe leg's focus (the city) onto the aim point
-      pos.x += ms.x * 2.2 * live; pos.y -= ms.y * 1.4 * live;
       setClip(0.1, 12000); // far enough for Mars down its sight line (marsFar)
     }
     if (!inSite) post.trails.enabled = false;
@@ -422,7 +422,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
     // operator layer: only a faint handheld drift
     const dist = pos.distanceTo(look);
-    if (!introOn) pos.add(tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live));
+    if (!introOn) {
+      tmp.set(Math.sin(t * 0.21) * 0.6 + Math.sin(t * 0.53 + 1.3) * 0.25, Math.sin(t * 0.17 + 2.1) * 0.5 + Math.sin(t * 0.41) * 0.2, Math.sin(t * 0.13 + 4) * 0.4).multiplyScalar(dist * 0.002 * live);
+      // space: mouse drift too, trimmed by flight.js (none at the skim, and in the move's plane where it only pitches)
+      if (mode === 'space') { tmp.x += ms.x * 2.2 * live; tmp.y -= ms.y * 1.4 * live; flight.drift(S, pos, tmp); }
+      pos.add(tmp);
+    }
     cam.up.copy(camUp);
     if (Math.abs(cam.fov - fov) > 0.0005) { cam.fov = fov; cam.updateProjectionMatrix(); } // fine enough that slow zooms never step
     cam.position.copy(pos); cam.lookAt(look);
@@ -442,9 +447,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const flare = sstep(f2, 0.55, 1) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colonyW.sun.y, 0.02, -0.04)) : 0); // the Mars key light is behind the lens: no sun in frame there
     sunCore.scale.setScalar(260 * flare + 40); sunCore.material.opacity = Math.min(1, flare * 1.3);
     bloom.strength = 0.6 + flare * 0.3;
-    // focus: deep on the lot and the globe, opening over the first beat of space, shallower close to a subject, onto the colony's
+    // focus: deep on the lot and the globe, opening over the first beat of space, shallower only very close to a subject (under 4
+    // units: the skim's horizon is ~5 out and stays deep, so Earth never reads as a miniature), onto the colony's
     // lens by the swap. All ramps (in S and focus distance), so nothing steps. kA = aperture x focus (the blur depth scale).
-    { const near = 1 - sstep(focus, 9, 16), w = introOn ? 0 : sstep(S, -1, -0.92), wc = inCol ? 1 : sstep(S, E0, CA);
+    { const near = 1 - sstep(focus, 2, 4), w = introOn ? 0 : sstep(S, -1, -0.92), wc = inCol ? 1 : sstep(S, E0, CA);
       const kA = lerp(lerp(0.0004, 0.003 + 0.017 * near, w), 0.006, wc), mb = lerp(lerp(0.0008, 0.0018 + 0.0032 * near, w), 0.0042, wc);
       postArg.dt = dt; postArg.t = t; postArg.focus = focus; postArg.aperture = kA / focus; postArg.maxblur = HIGH ? mb : 0; postArg.ca = 0.012; dofK.k = kA; dofK.mb = mb; }
     lensCine(inCol);

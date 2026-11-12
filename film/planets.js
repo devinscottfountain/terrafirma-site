@@ -86,7 +86,8 @@ void main(){
   float F = 0.02 + 0.98 * pow(1. - max(dot(p, V), 0.), 5.);
   float glint = pow(nh, 2400.) * 70. + pow(nh, 420.) * 6. + pow(nh, 90.) * 0.12;
   float lit = smoothstep(0.0, 0.12, mu);
-  col += ocean * lit * (1. - smoothstep(0.1, 0.8, cover)) * vec3(1.0, 0.93, 0.82) * sunCol * glint * (0.35 + 1.6 * F);
+  float gl = glint * (0.35 + 1.6 * F); gl /= 1. + gl / 8.;   // soft cap: at grazing the Fresnel boost made the glint a white sun disc on the skim
+  col += ocean * lit * (1. - smoothstep(0.1, 0.8, cover)) * vec3(1.0, 0.93, 0.82) * sunCol * gl;
   col += ocean * vec3(0.10, 0.20, 0.42) * F * 1.4 * smoothstep(-0.2, 0.5, mu);
 
   // night lights: real NASA map, warm sodium, switched on region by region as 'uGrow' rises
@@ -114,9 +115,10 @@ ${GLSL_COMMON}
 void main(){
   vec3 p = normalize(vP), V = normalize(vV), L = normalize(uSun);
   float mu = dot(p, L);
-  vec2 px = vec2(1. / 2048., 1. / 1024.);
-  float d0 = texture2D(tClouds, vUv).r;
-  float dx = texture2D(tClouds, vUv + vec2(px.x, 0.)).r, dy = texture2D(tClouds, vUv + vec2(0., px.y)).r;
+  // B-spline taps (density and its slope): bilinear texels read as hard squares once the camera skims the deck
+  vec2 res = vec2(textureSize(tClouds, 0)), px = 1. / res;
+  float d0 = bicubicR(tClouds, vUv, res);
+  float dx = bicubicR(tClouds, vUv + vec2(px.x, 0.), res), dy = bicubicR(tClouds, vUv + vec2(0., px.y), res);
   // fine detail so the 2k map holds up in close shots; only inside existing cloud
   float nz = fbm3(p * 26.) - 0.5;
   float dens = clamp(d0 + nz * 0.55 * smoothstep(0.03, 0.4, d0) * (1.1 - d0), 0., 1.);
