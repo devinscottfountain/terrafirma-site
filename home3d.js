@@ -1,13 +1,18 @@
-// TerraFirma homepage 3D: mounts the Solutions scene (dot grid, machines, dig game) into the Webflow section.
+// TerraFirma homepage 3D: mounts the Solutions scene (one jobsite, three camera shots, the dig) into the Webflow section.
 // Load with <script type="module"> after an importmap for "three" (0.160.0).
 //
 // DOM contract (built in Webflow, see README):
 //   section[data-three="solutions"]#solutions   position: relative; overflow: hidden
 //   [data-three-mount="solutions"]              absolute inset-0 empty div, aria-hidden; the canvas is added inside it
-//   [data-solutions-spacer]                     the box the 3D action is framed into (between the heading and the tabs)
+//   [data-solutions-spacer]                     still observed for layout changes (the framing now uses the safe insets)
 //   [data-tabs="solutions"] [data-tab]          owned by the page script, which dispatches window "tf:solutions"
 //                                               with detail.mode = 'orchestration' | 'planning' | 'execution'
+//   data-sol-safe-top / data-sol-safe-bottom    on the section or mount: fractions of its height kept clear of the subject
+//                                               (heading on top, tabs at the bottom). Defaults .2 and .3. CSS custom
+//                                               properties --sol-safe-top / --sol-safe-bottom on the section win (per breakpoint).
+//   data-sol-*                                  every word drawn in the canvas (hint, tags, HUD labels), see README
 // The canvas only listens to tf:solutions; it never owns the tabs. Mode changes only on a tab click (no scroll scrubbing).
+// Phones (coarse pointer or a viewport under 768 px): same scene, lighter, the dig plays itself, nothing is captured.
 // Anything that goes wrong leaves the section as it is (no canvas). Switches: ?sol=0 bails, ?q=low|high forces a tier,
 // ?qa exposes window.TFSolutions.
 
@@ -39,6 +44,21 @@ function pickQuality() {
   return coarse || weak || saveData ? 'low' : 'high';
 }
 
+// phones: no drag handling at all (the page scroll must never be captured), the dig runs on autopilot
+const phone = matchMedia('(pointer: coarse)').matches || innerWidth < 768;
+const SAFE_DEF = { top: 0.2, bottom: 0.3 };
+// Safe insets: CSS custom property --sol-safe-top / --sol-safe-bottom on the section (can change per breakpoint), else the
+// data-sol-safe-top / data-sol-safe-bottom attribute, else the default. Read again on every resize.
+function safeInsets() {
+  const cs = getComputedStyle(root);
+  const read = n => {
+    let v = parseFloat(cs.getPropertyValue('--sol-safe-' + n));
+    if (!Number.isFinite(v)) v = parseFloat(root.getAttribute('data-sol-safe-' + n) ?? mount.getAttribute('data-sol-safe-' + n));
+    return Number.isFinite(v) ? v : SAFE_DEF[n];
+  };
+  return { top: read('top'), bottom: read('bottom') };
+}
+
 if (!bail) {
   let sol = null, booted = false, dead = false, ready = false, visible = false;
   let wantMode = MODES.orchestration;   // default tab; the page script's first tf:solutions event overrides it
@@ -60,15 +80,8 @@ if (!bail) {
   window.addEventListener('tf:solutions', onMode);
   cleanups.push(() => window.removeEventListener('tf:solutions', onMode));
 
-  // ---------------------------------------------------------------- frame: the spacer's rect relative to the mount
-  // If the spacer collapses (0 height under 992 px), the action is framed from the spacer's top to the bottom of the section.
-  function frame() {
-    if (!sol) return;
-    const m = mount.getBoundingClientRect(), s = spacer ? spacer.getBoundingClientRect() : null;
-    if (!s) { sol.setFrame({ top: 0, bottom: m.height, dotTop: 0 }); return; }
-    const top = s.top - m.top, bottom = s.height >= 120 ? s.bottom - m.top : m.height;
-    sol.setFrame({ top, bottom, dotTop: Math.max(0, top - 24) });
-  }
+  // ---------------------------------------------------------------- frame: safe insets (read again on every layout change)
+  function frame() { if (sol) sol.setSafe(safeInsets()); }
 
   // ---------------------------------------------------------------- tick (gsap.ticker when present, else the scene's own rAF)
   function tick() {
@@ -106,11 +119,11 @@ if (!bail) {
     try {
       const [THREE, mod] = await Promise.all([import('three'), import('./solutions/solutions.js')]);
       if (dead) return;
-      sol = mod.createSolutions({ THREE, host: mount, quality });   // adds its own absolute-fill canvas to the mount
+      sol = mod.createSolutions({ THREE, host: mount, root, quality: phone && !qs.get('q') ? 'low' : quality, interactive: !phone, safe: safeInsets() });   // adds its canvases to the mount
       const cv = sol.canvas;
       Object.assign(cv.style, { opacity: '0', transition: `opacity ${FADE_MS}ms ease` });   // pointer-events stay owned by the dig game
       cv.addEventListener('webglcontextlost', e => { e.preventDefault(); fail(new Error('webgl context lost')); });
-      if (qs.has('qa')) window.TFSolutions = { sol, quality, get mode() { return sol?.mode; } };
+      if (qs.has('qa')) window.TFSolutions = { sol, quality: phone && !qs.get('q') ? 'low' : quality, phone, get mode() { return sol?.mode; } };
 
       sol.setMode(wantMode, true);
       frame();

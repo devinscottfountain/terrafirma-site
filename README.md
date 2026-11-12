@@ -14,9 +14,12 @@ Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Miss
 - `mission/mission3d.js`: `createMission({ THREE, section, quality, base })` returns `{ ready, start, stop, resize, dispose, stats, capture, canvas, renderer }`. Orthographic camera in section pixels, analytic planet quads, the footer's Starship on the SVG arc.
 - `mission/mission-glsl.js`: Earth, Mars, engine plume and environment shaders.
 - `mission/assets/`: planet textures. High tier (2048 colour, 1024 normals, Earth clouds) about 0.70 MB, low tier (1024 colour) about 0.14 MB. See `CREDITS.md`.
-- `home3d.js`: homepage entry (ES module). Finds the Solutions section, lazy-loads three and `solutions/` within ~1.5 viewports, listens to `tf:solutions`, frames the scene into the spacer, renders only while visible.
-- `solutions/solutions.js`: `createSolutions({ THREE, host, quality })` returns `{ ready, canvas, setFrame, setMode, start, step, stop, resize, warm, onTelemetry, onGame, dispose }`. Dot grid terrain plus the three modes. No assets: the grid is procedural.
-- `solutions/sol-machines.js`: procedural wireframe excavator, backhoe loader and roller. `solutions/sol-game.js`: the Mission Control dig game.
+- `home3d.js`: homepage entry (ES module). Finds the Solutions section, lazy-loads three and `solutions/` within ~1.5 viewports, listens to `tf:solutions`, reads the safe insets, renders only while visible.
+- `solutions/solutions.js`: `createSolutions({ THREE, host, root, quality, interactive, safe })` returns `{ ready, canvas, setSafe, setMode, start, step, stop, resize, warm, stats, dispose }` (`setFrame`, `onTelemetry`, `onGame` stay as no-ops for the old contract). One jobsite, three camera shots, flights between them, the governor. No assets: everything is procedural.
+- `solutions/sol-terrain.js`: the height field (JS + GLSL), the design surface, the site layout (`SITE`: pit, pad, platform, road, sun), the persistent edit field (dig delta + track marks) and the dot cloud.
+- `solutions/sol-fx.js`: palette, the dot shader, screen-space lines, dust motes, GPU dirt particles, sky haze, post (bloom, the film's grade, vignette, grain, soft edges).
+- `solutions/sol-game.js`: the dig (excavator rig, IK, autopilot, drag input, carving and dumping). `solutions/sol-crew.js`: the loader (haul) and roller (grade) loops. `solutions/sol-hud.js`: the 2D overlay (operator HUD, machine tags, zone labels).
+- `solutions/sol-machines.js`: procedural wireframe excavator, backhoe loader and roller.
 - `film/mount.js`: film entry, imported by `home3d.js` when `section[data-three="film"]` exists. Lazy-loads three and the film modules within ~1.5 viewports, reads `film/assets/manifest.json`, fades the canvas in.
 - `film/film.js`: `createFilm({ THREE, host, section, scenes, sol, quality, files })` returns `{ ready, canvas, start, stop, step, resize, relayout, snap, state, dispose }`. One canvas, scroll scrubbed: the Austin lot over one day (dawn to dusk) in one continuous pull-back out to the whole Earth (orbiting Moon), Mars rising over its limb, out to Mars, "One day on Mars" title, SpaceX line, atmospheric entry, Jezero colony timelapse with rockets, launch, SOL counter.
 - `film/look.json.js`: the film's grade and lens defaults (see Look below). `film/dial.js`: the `?grade` look panel, never loaded without `?grade`.
@@ -50,21 +53,44 @@ Switches: `?mission=0` keeps the posters, `?q=low|high` applies to both. QA hook
 
 ## Solutions DOM contract (homepage, `home3d.js`)
 
-- `section[data-three="solutions"]#solutions`: `position: relative; overflow: hidden`
-- `[data-three-mount="solutions"]#solutions-stage`: absolute inset-0 empty div, `aria-hidden`; the canvas is created inside it
-- a `.container` above it with `pointer-events: none`, holding the heading, `[data-solutions-spacer]` and the tab row `[data-tabs="solutions"]` (buttons `[data-tab="orchestration|planning|execution"]`, `pointer-events: auto`)
-- `[data-solutions-spacer]`: the scene is framed into this box (its rect relative to the mount). If it is shorter than 120 px (0 under 992 px) the frame runs from the spacer's top to the bottom of the section.
+- `section[data-three="solutions"]#solutions`: `position: relative; overflow: hidden`, dark background. The canvas is transparent and fades out at its edges, so it sits on whatever dark colour the section has.
+- `[data-three-mount="solutions"]#solutions-stage`: absolute inset-0 empty div, `aria-hidden`; the WebGL canvas and a 2D HUD canvas are created inside it
+- a `.container` above it with `pointer-events: none`, holding the heading and the tab row `[data-tabs="solutions"]` (buttons `[data-tab="orchestration|planning|execution"]`, `pointer-events: auto`)
+- `[data-solutions-spacer]`: still observed for layout changes; the framing no longer depends on it.
 - The page script owns the tabs and dispatches `window` event `tf:solutions` with `detail.mode` = `orchestration | planning | execution` on every selection, including once on load. The canvas only listens. If the event fired before the module ran, the selected tab (`aria-selected="true"` or `.w--current`) is read instead; default is orchestration.
 
-Modes: orchestration = Mission Control (3/4 view, rolling terrain, dig game), planning = Planning, execution = Accelerated Operations. The mode changes only on a tab click, over about 1.2 s (the machines in execution then drive in over about 3.6 s). Off screen it jumps. The mission topography is 2D in Webflow and does not morph into the grid, so the scene starts as the dot grid.
+Layout: the stage can be anything from 16:9 at 100svh down to 390 x 400. Each shot is fitted so the subject stays clear of the top and bottom safe insets (fractions of the section height): `--sol-safe-top` / `--sol-safe-bottom` CSS custom properties on the section (these can change per breakpoint), else `data-sol-safe-top` / `data-sol-safe-bottom` attributes on the section or mount, else .2 and .3. The canvas edges fade top and bottom in proportion to the insets.
 
-The canvas takes `pointer-events: auto` only in Mission Control (the dig game arms it), with `touch-action: pan-y`; clicks above the spacer pass to the page.
+Words: nothing client-facing is hardcoded. Add these attributes to the section (or the mount); the fallback in brackets is used when one is missing.
 
-Starts only when the section is within ~1.5 viewports; renders only while it is on screen (25% margin); shaders are compiled on idle after load. Drives frames from `gsap.ticker` when present, else its own rAF. Leaves the section untouched (no canvas) on `prefers-reduced-motion`, no WebGL2, `?sol=0`, context loss or any error.
+| Attribute | Where it shows | Fallback |
+| --- | --- | --- |
+| `data-sol-hint` | Orchestration, one-line hint, desktop only, fades after the first drag | Drag to dig |
+| `data-sol-tag-dig` | Execution tag on the excavator | Excavator 01 |
+| `data-sol-tag-haul` | Execution tag on the loader | Loader 02 |
+| `data-sol-tag-grade` | Execution tag on the roller | Roller 03 |
+| `data-sol-hud-auto` / `data-sol-hud-manual` | HUD state (autopilot or a person driving) | Autopilot / Manual |
+| `data-sol-hud-swing`, `-reach`, `-depth`, `-load` | HUD telemetry labels | Swing, Reach, To grade, Load |
+| `data-sol-hud-grade` | label on the grade ladder | Grade |
+| `data-sol-label-cut` / `data-sol-label-fill` | Planning zone labels | Cut / Fill |
 
-Switches: `?sol=0` bails, `?q=low|high` forces a quality tier (same logic as `careers.js`), `?qa` exposes `window.TFSolutions`.
+Colours: `--sol-dot`, `--sol-cut`, `--sol-fill`, `--sol-haze`, `--sol-accent` (6-digit hex) on the section override the palette in `solutions/sol-fx.js`.
 
-TODO (Tim's notes): one excavator is to be replaced by a new vehicle and Execution gets new vehicles. Marked in `solutions/solutions.js` above the machine slots; not modelled yet.
+Modes (one site, three shots; the mode changes only on a tab click, never on scroll):
+- orchestration = the dig. A drone chase cam behind one excavator with a little handheld life; HUD: reticle on the teeth, a grade ladder (teeth elevation against the design grade), telemetry strip, a cut/fill heat patch on the ground under the bucket. Desktop: press and drag on the ground to dig there (the bucket follows the pointer, fills, curls itself when full), keep dragging to carry, let go to dump: the load piles where you let go. Nobody touching it: an autopilot dig loop that takes over again 4 s after the last touch. The ground really changes and stays changed for the page session; every view shows it.
+- planning = the blueprint. Near top-down; the ground slowly morphs from existing to the design surface and back, design contours draw on, cut and fill in two colours, zones with handles, machine footprints and the excavator's reach.
+- execution = breadth. High three-quarter view of the whole site: excavator digging, loader hauling spoil to the fill pad, roller compacting it. Live path lines with a head at each machine, tags with live numbers, data links pulsing between them.
+- Tab clicks fly the camera between the shots (about 1.4 s, eased). A click mid-flight retargets from the current pose. A scan pulse sweeps the point cloud during the flight and the dots take the new look behind it. Off screen it jumps.
+
+Input: the canvas takes pointer events only in orchestration on desktop, once the flight has landed (`touch-action: pan-y`, no wheel listener, so the wheel and vertical touch pan always scroll the page). Phones (coarse pointer, or a viewport under 768 px) get the same scene on the low tier, no listeners, no hint; the dig plays itself.
+
+Performance: about 225k dots on high and 48k on low, one draw each; machines are line art; 21 to 56 draw calls depending on the view. DPR capped at 1.5. An adaptive governor watches the frame time and steps down (DPR, then 70% dots, then 50% dots with no motes and no bloom) and back up. Every program is compiled by `warm()` on idle (12 programs; the count stays flat across tab switches). The site is pre-aged (about 75 s of work, simulated in small chunks before `ready`) so the first look already has a pit, a pile and tracks.
+
+Starts only when the section is within ~1.5 viewports; renders only while it is on screen (25% margin). Drives frames from `gsap.ticker` when present, else its own rAF. Leaves the section untouched (no canvas) on `prefers-reduced-motion`, no WebGL2, `?sol=0`, context loss or any error.
+
+Switches: `?sol=0` bails, `?q=low|high` forces a tier, `?qa` exposes `window.TFSolutions`. Test page: `test/home.html` (`?layout=stage` for the planned 100svh stage with the tabs overlaid).
+
+TODO (Tim's notes): one machine is to be replaced by a new vehicle and Execution gets new vehicles. Each job has one slot (`SLOT` in `solutions/solutions.js`: `dig`, `haul`, `grade`); model the new vehicle in `solutions/sol-machines.js` and swap the factory there.
 
 Load: same importmap as below, then `<script type="module" src="https://cdn.jsdelivr.net/gh/devinscottfountain/terrafirma-site@SHA/home3d.js"></script>`.
 

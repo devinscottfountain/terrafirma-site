@@ -6,7 +6,9 @@
 
 const EDGE_DEG = 26;
 
-export function createMachineKit(THREE) {
+// opts.line: line art colour (any THREE.Color input), opts.solid: the hidden-line occluder colour
+export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = {}) {
+  const LINE = new THREE.Color(line), SOLID = new THREE.Color(solid);
   const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(), V = new THREE.Vector3(), S1 = new THREE.Vector3(1, 1, 1);
   const UP = new THREE.Vector3(0, 1, 0), A = new THREE.Vector3(), B = new THREE.Vector3(), D = new THREE.Vector3();
 
@@ -153,8 +155,8 @@ export function createMachineKit(THREE) {
     return mat;
   };
   function mats() {
-    const solid = clipped(new THREE.MeshBasicMaterial({ color: 0x000000, polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 2 }), true);
-    const line = clipped(new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 }), false);
+    const solid = clipped(new THREE.MeshBasicMaterial({ color: SOLID, polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 2 }), true);
+    const line = clipped(new THREE.LineBasicMaterial({ color: LINE, transparent: true, opacity: 0.92 }), false);
     return { solid, line };
   }
   const node = (tpl, m) => {
