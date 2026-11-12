@@ -461,7 +461,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
       try {
         scenePass.enabled = false; mbPass.enabled = true; dof.enabled = true; trails.enabled = false; ao.enabled = fx;
         mbPass.blur = true; mbPass.taa = true; C.render(true, 0);
-        mbPass.blur = false; mbPass.taa = false; ao.enabled = false; C.render(true, 1);
+        mbPass.blur = false; mbPass.taa = false; ao.enabled = false; trails.enabled = fx; C.render(true, 1); // trails: the lot after dark (high tier), else it compiles on the first night frame
       } finally {
         [scenePass.enabled, mbPass.enabled, mbPass.blur, mbPass.taa, dof.enabled, trails.enabled, ao.enabled] = keep;
         mbPass.histOk = false; tonePass.snap = true; resetNext = true;
@@ -490,7 +490,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     snapExposure() { tonePass.snap = true; },     // jump exposure to target next frame (no adaptation)
     getExposure,
     // cine only (D6.1): live lens knobs, look tunables, quality ladder 0..3 (see createCine)
-    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (...a) => C.scrim(...a) : () => {},
+    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, grade: C ? C.grade : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (...a) => C.scrim(...a) : () => {},
     setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
     gpuTimes: C ? () => C.gpuTimes() : () => null
   };
@@ -555,6 +555,8 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     vignette: 0.3, grain: 0.04,
     taaStill: 0.9, taaMove: 0.7   // history weight, camera still / moving fast
   };
+  // dial grade (film.tune via film.js): all identity by default. Uniforms only; the tone pass skips the maths while every one is at identity
+  const grade = { expK: 1, wr: 1, wg: 1, wb: 1, contrast: 1, saturation: 1, lift: 0, gamma: 1, gain: 1 };
   const QL = [
     { aa: 0, div: 2, lv: 3, streak: false },
     { aa: 1, div: 2, lv: 4, streak: true },
@@ -643,11 +645,20 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   const toneU = { tDiffuse: { value: null }, tExp: { value: null }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture },
     tB3: { value: rtL[3].texture }, tB4: { value: rtL[4].texture }, tS: { value: rtS[1].texture }, tDirt: { value: dirt },
     uBw: { value: new THREE.Vector4() }, uBw4: { value: 0 }, uBloom: { value: 0.3 }, uStreak: { value: 0 }, uSTint: { value: look.streakTint },
-    uFlash: { value: 0 }, uDirt: { value: 0 } };
+    uFlash: { value: 0 }, uDirt: { value: 0 },
+    uDial: { value: 0 }, uExpK: { value: 1 }, uWB: { value: new THREE.Vector3(1, 1, 1) }, uCon: { value: 1 }, uSat: { value: 1 }, uLift: { value: 0 }, uGam: { value: 1 }, uGain: { value: 1 } };
   tonePass.mTone = mat(`
     uniform sampler2D tDiffuse, tExp, tB0, tB1, tB2, tB3, tB4, tS, tDirt; uniform vec4 uBw; uniform float uBw4, uBloom, uStreak, uFlash, uDirt; uniform vec3 uSTint;
+    uniform float uDial, uExpK, uCon, uSat, uLift, uGam, uGain; uniform vec3 uWB;
     varying vec2 vUv;
     ${CINE_GLSL}
+    // dial grade on display values: lift raises the blacks, gain scales, uGam = 1/gamma, contrast about mid grey, then saturation
+    vec3 dialGrade(vec3 o){
+      o=max((o+uLift*(1.-o))*uGain,0.);
+      o=pow(o,vec3(uGam));
+      o=max((o-.46)*uCon+.46,0.);
+      float l=dot(o,vec3(.2126,.7152,.0722)); o=max(mix(vec3(l),o,uSat),0.);
+      return clamp(o,0.,1.); }
     void main(){
       vec3 c=texture2D(tDiffuse,vUv).rgb; c=any(isnan(c)) ? vec3(0.) : min(c,vec3(6e4));
       vec3 b=texture2D(tB0,vUv).rgb*uBw.x+texture2D(tB1,vUv).rgb*uBw.y+texture2D(tB2,vUv).rgb*uBw.z+texture2D(tB3,vUv).rgb*uBw.w+texture2D(tB4,vUv).rgb*uBw4;
@@ -657,7 +668,9 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       if(uDirt>0.) c+=texture2D(tDirt,vUv).rgb*(texture2D(tB2,vUv).rgb*.3+texture2D(tB3,vUv).rgb+texture2D(tB4,vUv).rgb)*uDirt*1.6;
       c+=f2*vec3(1.,.72,.5)*.9;                                       // warm wash in HDR: the tone curve rolls it to cream, never flat orange
       float e=texture2D(tExp,vec2(.5)).r*(1.+1.6*f2);
+      if(uDial>.5){ e*=uExpK; c*=uWB; }                              // dial exposure and white balance (scene linear)
       vec3 o=cineGrade(cineOETF(cineTone(c*e/.6)));
+      if(uDial>.5) o=dialGrade(o);
       gl_FragColor=vec4(o,1.); }`, toneU);
 
   // ---------------------------------------------------------------- lens: heat shimmer, FXAA, vignette, grain, dither
@@ -783,6 +796,9 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     const bl = bloom.strength;
     toneU.uBloom.value = look.bloom * bl * (1 + fx.bloom); toneU.uStreak.value = sOn ? look.streak * fx.streak : 0;
     toneU.uFlash.value = force ? 0.5 : Math.min(1, Math.max(0, fx.flash)); toneU.uDirt.value = force ? 1 : Math.max(0, fx.dirt);
+    const G = grade, gOn = G.expK !== 1 || G.wr !== 1 || G.wg !== 1 || G.wb !== 1 || G.contrast !== 1 || G.saturation !== 1 || G.lift !== 0 || G.gamma !== 1 || G.gain !== 1;
+    toneU.uDial.value = gOn ? 1 : 0;
+    if (gOn) { toneU.uExpK.value = G.expK; toneU.uWB.value.set(G.wr, G.wg, G.wb); toneU.uCon.value = G.contrast; toneU.uSat.value = G.saturation; toneU.uLift.value = G.lift; toneU.uGam.value = 1 / Math.max(0.05, G.gamma); toneU.uGain.value = G.gain; }
     let X = other(cur); fakeRead.texture = cur; tonePass.render(r, X, fakeRead); cur = X.texture;
     tEnd(e);
     e = tBeg('aa');
@@ -798,7 +814,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   }
 
   const api = {
-    fx, look, level, time: 0,
+    fx, look, grade, level, time: 0,
     taaOn: () => (level < 0 ? !low : Q.aa === 3),
     jitter, render, setSize, setQuality,
     profile(on = true) { profiling = !!on && !!tq; return profiling; },

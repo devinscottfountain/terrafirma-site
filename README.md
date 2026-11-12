@@ -19,6 +19,7 @@ Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Miss
 - `solutions/sol-machines.js`: procedural wireframe excavator, backhoe loader and roller. `solutions/sol-game.js`: the Mission Control dig game.
 - `film/mount.js`: film entry, imported by `home3d.js` when `section[data-three="film"]` exists. Lazy-loads three and the film modules within ~1.5 viewports, reads `film/assets/manifest.json`, fades the canvas in.
 - `film/film.js`: `createFilm({ THREE, host, section, scenes, sol, quality, files })` returns `{ ready, canvas, start, stop, step, resize, relayout, snap, state, dispose }`. One canvas, scroll scrubbed: the Austin lot over one day (dawn to dusk) in one continuous pull-back out to the whole Earth (orbiting Moon), Mars rising over its limb, out to Mars, "One day on Mars" title, SpaceX line, atmospheric entry, Jezero colony timelapse with rockets, launch, SOL counter.
+- `film/look.json.js`: the film's grade and lens defaults (see Look below). `film/dial.js`: the `?dial` look panel, never loaded without `?dial`.
 - `film/flight.js`: the space camera from the Earth frame (S = -1) to the entry swap, the Moon's orbit and Mars's far-off size. Pure math, so node tests import it as shipped.
 - `film/colony.js`, `planets.js`, `sky.js`, `site.js`, `habitat.js`, `machines.js`, `rockets.js`, `post.js`, `util.js`: ported from the prototype (`tf-d5` `d5/`) with the 6.1 flags hard-coded. `colony.js` builds the Jezero colony lazily in idle time. Rockets import `footer/foot-model-starship.js` and `footer/foot-model-kit.js` (no copy).
 - `film/assets/`: WebP textures per tier plus `manifest.json`. Rebuild with `python3 film/tools/build-assets.py <d5-assets> [<extra-dir>]`.
@@ -84,7 +85,15 @@ Space camera (`film/flight.js`): one move from the Austin hand-off to the swap. 
 
 Lifecycle: `html[data-film3d="on"]` is set before the first frame and `tf:film-ready` fires when the canvas is live. On reduced motion, no WebGL2, `?film=0` or any error there is no canvas and no flag; an error after the flag was set removes it and fires `tf:film-fail`. The 2D script should listen for both. Renders only while the section intersects; shaders and the colony are compiled off screen first.
 
-Switches: `?film=0` bails, `?q=low|high` forces a tier, `?qa` exposes `window.TFFilm`.
+Switches: `?film=0` bails, `?q=low|high` forces a tier, `?qa` exposes `window.TFFilm`, `?dial` opens the look panel.
+
+Look (`film/look.json.js`): the grade, lens and per beat offsets the film renders with, as one plain object (`film.tune` at runtime). Grade and lens are global; each beat (Austin, space, Mars orbit, colony) adds an exposure (stops) and warmth offset, blended on S (Austin to space over S -1 to -0.9, space to Mars orbit over -0.3 to -0.1, Mars orbit to colony over 0.43 to 0.49, across the swap flash). Exposure, contrast, saturation, warmth, tint, lift, gamma and gain are uniforms in the existing tone pass; the pass skips them while all are at identity, so the defaults render exactly as before. Bloom strength, threshold, vignette and grain are the cine `look` values.
+
+Look panel (`?dial`, dev only): `film/dial.js`, imported by `mount.js` only when the URL has `?dial`. It loads DialKit's plain JS adapter (`dialkit@2.2.0/dist/vanilla`, no React) from jsDelivr, or lil-gui 0.21.0 if that fails (`?dial=lil` forces it). Folders: Grade, Lens, Per beat, Camera debug (film clock scrub that drives the page scroll, -2 to -1 is the Austin leg; freeze timelapse; S, scroll px and fps readout bottom left). Escape hides it. Values persist for the tab in `sessionStorage` (`tf-film-dial`); Reset goes back to `look.json.js`.
+
+Round trip: open the page with `?dial`, tune, press Copy JSON (clipboard, and logged in the console).
+Send the JSON back; it replaces the object in `film/look.json.js` (keep `export default`).
+Commit, pin the new SHA: the published film renders the new look with no panel code loaded.
 
 Assets (WebP, transferred): high about 1.55 MB (Earth 2K 154 KB, clouds 292, lights 77, spec 31, normal 22, Moon 1K 69, Mars 610, Mars normal 43, Milky Way 11, stars.bin 244). Low about 0.37 MB (Earth 41, clouds 82, lights 17, spec 11, Moon 13, Mars 161, Milky Way 3, stars.bin 40). Earth loads first, Moon and Mars on demand. Code is extra (three itself is shared with the other modules).
 

@@ -18,10 +18,14 @@ import { createAircraft } from './aircraft.js';
 import { createFlight, CA, E0, E1 } from './flight.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, pchip, pmap, arcClock, lerp } from './util.js';
+import LOOK from './look.json.js';
 
 // CA = 0.46 the entry swap (everything past it is the Jezero timelapse), E0..E1 = 0.40..0.60 the atmospheric entry window (flight.js)
 const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40]; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
+// per beat look offsets blend on S: Austin -> space over the first beat of space, space -> Mars orbit as the disc grows, Mars orbit -> colony across the swap flash (CA)
+const BEAT_X = [[-1, -0.9], [-0.3, -0.1], [0.43, 0.49]];
+const beatVal = (B, k, a, b, c) => lerp(lerp(lerp(B.austin[k], B.space[k], a), B.marsOrbit[k], b), B.colony[k], c);
 
 export function createFilm({ THREE, host, section, scenes, sol, quality, files }) {
   const HIGH = quality === 'high';
@@ -39,6 +43,20 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const scene = new THREE.Scene(); scene.background = new THREE.Color(0x010103);
   const cam = new THREE.PerspectiveCamera(42, W / H, 0.1, 9000);
   const post = createPost({ THREE, renderer, scene, cam, low: !HIGH }), { bloom } = post;
+  // the look: grade, lens and per beat offsets (look.json.js). One live object; the ?dial panel writes the same one
+  const tune = JSON.parse(JSON.stringify(LOOK));
+  let freeze = false; // dial: hold the film clock (machines, crew, strobes, grain); scroll still drives the film
+  function applyTune() {
+    const G = tune.grade, L = tune.lens, B = tune.beats, X = BEAT_X, look = post.look, gr = post.grade;
+    if (look) { look.bloom = L.bloomStrength; look.threshold = L.bloomThreshold; look.vignette = L.vignette; look.grain = L.grain; }
+    if (!gr) return;
+    const a = sstep(S, X[0][0], X[0][1]), b = sstep(S, X[1][0], X[1][1]), c = sstep(S, X[2][0], X[2][1]);
+    const w = G.warmth + beatVal(B, 'warmth', a, b, c), t = G.tint;
+    gr.expK = 2 ** (G.exposure + beatVal(B, 'exposure', a, b, c));
+    if (w === 0 && t === 0) gr.wr = gr.wg = gr.wb = 1;
+    else { const r = 2 ** (0.25 * w), g = 2 ** (-0.2 * t), bl = 2 ** (-0.25 * w), n = 1 / (0.2126 * r + 0.7152 * g + 0.0722 * bl); gr.wr = r * n; gr.wg = g * n; gr.wb = bl * n; } // warm/cool on red-blue, tint on green-magenta, luminance kept
+    gr.contrast = G.contrast; gr.saturation = G.saturation; gr.lift = G.lift; gr.gamma = G.gamma; gr.gain = G.gain;
+  }
   // UnrealBloom's blurs use sigma = kernel radius, so a lone bright pixel blooms into a soft square. A proper Gaussian keeps the glow round.
   (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 
@@ -387,6 +405,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       post.ao.enabled = inSite && HIGH; // contact shadows, only on the job site (trails are set per frame above)
       if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
       lastMode = mode; forceShadow = true; // never show a shadow map left over from another set
+      // the shadow pass runs before render() sets up this frame's lights, and depth program keys hold the light counts:
+      // set them now from the new set's lights, or the first shadow frame compiles depth programs keyed on the old set's
+      renderer.compile(NOOP, cam, scene);
     }
     if (mode === 'space') { const near = S > -0.12; for (const m of earthSide) m.visible = !near; } // Earth is behind us once Mars is ahead
     const sunDir = inCol ? colonyW.sun : toSun;
@@ -432,6 +453,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       const r = rectOf(scenes.austin.firstElementChild), mr = rectOf(host), on = r.bottom > mr.top && r.top < mr.bottom;
       post.scrim(((r.left + r.right) / 2 - mr.left) / W, 1 - ((r.top + r.bottom) / 2 - mr.top) / H, 0.66 * r.width / W + 0.05, 0.8 * r.height / H + 0.07, on ? 0.45 * (1 - AC.upk) : 0);
     } else post.scrim(0.5, 0.5, 1, 1, 0);
+    applyTune();
     post.update(postArg);
     solFrame();
     post.render();
@@ -467,7 +489,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const roots = [site.group, colonyGroup, ...spaceRoots()], vis = roots.map(o => o.visible), rt = renderer.getRenderTarget();
     site.group.visible = w === 'site'; colonyGroup.visible = w === 'colony'; for (const o of spaceRoots()) o.visible = w === 'space';
     renderer.setRenderTarget(rtWarm);
-    try { return fn(); } finally { roots.forEach((o, i) => (o.visible = vis[i])); renderer.setRenderTarget(rt); }
+    try { return fn(); } finally {
+      roots.forEach((o, i) => (o.visible = vis[i])); renderer.setRenderTarget(rt);
+      renderer.compile(NOOP, cam, scene); // light state back to the live set: a warm-up must not leave its world's light counts for the next shadow pass
+    }
   }
   // one draw of a world into the 4x4 target with every object in it shown and nothing culled
   function throwaway(w) {
@@ -522,7 +547,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   addEventListener('load', relayout);
   function step(dt) {
     if (!running || !booted || dead) return;
-    dt = Math.max(0, dt || 0); tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
+    dt = Math.max(0, dt || 0); if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
     frame(Math.min(0.05, dt));
   }
   const loop = now => { raf = requestAnimationFrame(loop); const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
@@ -533,6 +558,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
     step, resize, relayout,
     snap() { snapNext = true; },
+    tune, look: LOOK, // the live look object and its shipped defaults (look.json.js)
+    get freeze() { return freeze; }, set freeze(v) { freeze = !!v; },
+    // track px for a film clock value v: -2..-1 runs the Austin leg (first frame to the Earth frame), -1..P_END is S (dial scrub)
+    yOfClock(v) { if (!LAY) measure(); const k = austin.k; return v <= -1 ? lerp(k.yA, k.yE, clamp01(v + 2)) : this.yOf(Math.min(v, P_END)); },
+    setClock(v) { tEl = v; }, // QA: set the film clock (grain, machines, strobes) for repeatable frames
     yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
     get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh },
       dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
