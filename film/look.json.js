@@ -1,4 +1,4 @@
-// look.json.js: the film's grade and lens defaults. The ?dial panel's "Copy JSON" gives an object of exactly this shape:
+// look.json.js: the film's grade and lens defaults. The ?grade panel's "Copy JSON" gives an object of exactly this shape:
 // paste it over the object below (keep "export default"). Every value here at its default renders the film as shipped.
 export default {
   "grade": { "exposure": 0, "contrast": 1, "saturation": 1, "warmth": 0, "tint": 0, "lift": 0, "gamma": 1, "gain": 1 },

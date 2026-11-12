@@ -1,6 +1,6 @@
-// dial.js: dev-only look panel for the scroll film. mount.js imports it only when the page URL has ?dial; visitors never load it.
+// dial.js: dev-only look panel for the scroll film. mount.js imports it only when the page URL has ?grade; visitors never load it.
 // Panel: DialKit's plain JS adapter (dialkit/vanilla, no React, no runtime deps), from jsDelivr, pinned. If it will not load or mount,
-// lil-gui loads the same way instead (?dial=lil forces it). Both write film.tune, the object look.json.js seeds.
+// lil-gui loads the same way instead (?grade=lil forces it). Both write film.tune, the object look.json.js seeds.
 //
 // mountDial({ film, section, prefer }) -> Promise<{ lib, destroy }>
 //   film     the createFilm api (tune, look, state, yOfClock, freeze)

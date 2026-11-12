@@ -10,7 +10,7 @@
 // Bails (the 2D text scenes stay, no canvas, no flag) on reduced motion, no WebGL2, ?film=0, or any error. While running it sets
 // <html data-film3d="on"> (so the page's 2D script stands down), fires window "tf:film-ready", then "tf:film" { p, beat } as it moves.
 // If it fails after setting the flag it removes it and fires "tf:film-fail". Switches: ?film=0, ?q=low|high, ?qa (window.TFFilm),
-// ?dial (dev look panel, film/dial.js: only then is it fetched; ?dial=lil forces the lil-gui fallback).
+// ?grade (dev look panel, film/dial.js: only then is it fetched; ?grade=lil forces the lil-gui fallback).
 
 const qs = new URLSearchParams(location.search);
 const BASE = new URL('./', import.meta.url).href;       // film/ : modules and assets, pinned with this file's SHA
@@ -111,7 +111,7 @@ if (!bail) {
       void cv.offsetWidth;
       cv.style.opacity = '1';
       window.dispatchEvent(new CustomEvent('tf:film-ready'));
-      if (qs.has('dial')) import('./dial.js').then(m => m.mountDial({ film, section: root, prefer: qs.get('dial') }))
+      if (qs.has('grade')) import('./dial.js').then(m => m.mountDial({ film, section: root, prefer: qs.get('grade') }))
         .then(d => { if (dead) d.destroy(); else cleanups.push(() => d.destroy()); }).catch(err => console.warn('TerraFirma dial: no panel.', err));
     } catch (err) { fail(err); }
   }
