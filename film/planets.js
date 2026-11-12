@@ -455,18 +455,7 @@ export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS
   // ---------- cine: Mars air (entry veil + colony sky dome with the Jezero far ground), driven by main.js through entry(e, ctx) ----------
   let air = null;
   air = createMarsAir({ THREE }); scene.add(air.dome, air.veil);
-  // cine: beats 1-2 are clean space (stars, Milky Way, Phobos). main.js's velocity-streak space dust read as film scratches there, so
-  // until the entry starts (e > 0) its brightness is held at 0, capped by a ramp over e 0..0.1. Found once by its uniforms (vel + amt + spd);
-  // onBeforeRender runs after main.js has written amt for the frame and before the uniforms upload. CHOREOGRAPHER: a one-line gate in
-  // main.js (dust.visible / dustU.amt) can replace this; then delete it.
-  let dustGate = null;
-  const entry = air ? (e, ctx) => {
-    if (!dustGate) { dustGate = [];
-      scene.traverse(o => { const u = o.material && o.material.uniforms; if (u && u.vel && u.amt && u.spd && (o.isLineSegments || o.isPoints || o.isLine)) dustGate.push(o); });
-      for (const o of dustGate) { const prev = o.onBeforeRender; o.onBeforeRender = function (...a) { prev.apply(this, a);
-        const k = THREE.MathUtils.smoothstep(air.state.e, 0, 0.1); const u = this.material.uniforms.amt; if (k < u.value) u.value = k; }; } } // min, not multiply: lines and heads share one uniform
-    air.entry(e, ctx);
-  } : undefined;
+  const entry = air ? (e, ctx) => air.entry(e, ctx) : undefined;
   return { earth, moon, mars, clouds, earthAtmo, marsAtmo, phobos, air, entry, entryRoots: air ? air.roots : undefined,
     ready: Promise.all(pending), loadDeferred, update };
 }

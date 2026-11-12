@@ -352,14 +352,14 @@ ${AIR_NOISE}
 float fb(vec2 p){ return afbm(p, 0.); }
 void main(){
   float e = uE; vec2 s = vS * vec2(uAsp, 1.); float r = length(s), ang = atan(s.y, s.x), lr = log(max(r, 1e-3));
-  // ---- heat: glow builds at the frame edges, plasma streaks stream outward past the lens
+  // ---- heat: glow builds at the frame edges; the plasma streaks are cut to a trace (they read as a warp jump), the lens pass shimmers
   float heat = smoothstep(0.03, 0.20, e) * (1. - smoothstep(0.31, 0.40, e));
   float edge = smoothstep(0.62, 1.55, r);
   float fl = 0.8 + 0.2 * an(vec2(uT * 9., 3.)) + 0.15 * an(vec2(ang * 3., uT * 4.));
   float str = pow(an(vec2(ang * 46. / 6.2832 * 6.2832, lr * 2.2 - uFlow * 9.)), 5.) + 0.6 * pow(an(vec2(ang * 120. / 6.2832 * 6.2832 + 40., lr * 3. - uFlow * 13.)), 8.);
   vec3 plasma = mix(vec3(1.0, 0.34, 0.12), vec3(1.0, 0.50, 0.38), edge);         // hot orange, pinker where it is thinnest
   float hk = heat * heat;
-  vec3 add = plasma * fl * (edge * edge * 0.9 * heat + str * edge * edge * 1.1 * hk);
+  vec3 add = plasma * fl * (edge * edge * 0.9 * heat + str * edge * edge * 0.1 * hk);
   add += vec3(1.0, 0.45, 0.2) * hk * 0.06 * (1. - smoothstep(0., 0.9, r));        // faint shock-layer glow ahead
   // ---- haze: dust layers we fall through (infinite zoom, layers flow outward), heaviest at the swap, then they part
   float cover = smoothstep(0.15, 0.27, e) * (1. - smoothstep(0.36, 0.66, e));

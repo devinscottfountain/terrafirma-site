@@ -1,5 +1,5 @@
-// film.js: the homepage scroll film on one canvas. Austin lot, one day dawn to dusk, one continuous pull up to Earth (Moon orbiting) -> up and over Earth
-// toward Mars -> "One day on Mars" title -> SpaceX lines -> atmospheric entry -> Jezero colony timelapse, rockets, launch.
+// film.js: the homepage scroll film on one canvas. Austin lot, one day dawn to dusk, one continuous pull out to the whole Earth (Moon orbiting),
+// Mars rising over its limb, out to Mars -> "One day on Mars" title -> SpaceX lines -> atmospheric entry -> Jezero colony timelapse, rockets, launch.
 // Ported from the prototype's d5/main.js with the D5 intro (text, button, veil, scroll lock, Moon stop) and every flag branch removed.
 //
 // createFilm({ THREE, host, section, scenes, sol, quality, files }) -> { ready, canvas, renderer, start, stop, step, resize, snap, dispose, state }
@@ -15,12 +15,12 @@ import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
 import { createAustinCam, sunAt, exposureAt } from './austin.js';
 import { createAircraft } from './aircraft.js';
+import { createFlight, CA, E0, E1 } from './flight.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
-import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
+import { clamp01, sstep, pchip, pmap, arcClock, lerp } from './util.js';
 
-const CA = 0.46;                     // the entry swap: everything past this is the Jezero timelapse
-const E0 = 0.40, E1 = 0.60;          // atmospheric entry window
-const MM_R = 0.14, B2 = [0.04, 0.12, 0.34, 0.42]; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S)
+// CA = 0.46 the entry swap (everything past it is the Jezero timelapse), E0..E1 = 0.40..0.60 the atmospheric entry window (flight.js)
+const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40]; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
 
 export function createFilm({ THREE, host, section, scenes, sol, quality, files }) {
@@ -42,12 +42,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // UnrealBloom's blurs use sigma = kernel radius, so a lone bright pixel blooms into a soft square. A proper Gaussian keeps the glow round.
   (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 
-  // ---------- the solar system, laid out along -z so the camera can fly outward ----------
-  const toSun = new THREE.Vector3(-1, 0.22, -0.55).normalize();
-  const SPREAD = 1.9;
-  const MARS0 = new THREE.Vector3(-36, -4, -300);
-  const EARTH = new THREE.Vector3(0, 0, 0), MARS = MARS0.clone().multiplyScalar(SPREAD), MOON = new THREE.Vector3(-30, 4, -22);
-  const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, files: files.tex });
+  // ---------- the solar system and the space camera (flight.js): Earth at the origin, Mars ~570 out behind its limb ----------
+  const flight = createFlight({ THREE }), { toSun, EARTH, MARS, C0, L0 } = flight;
+  const planets = createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON: flight.moonAt(-1, new THREE.Vector3()), MARS, files: files.tex });
   planets.moon.material.uniforms.uRelief.value = 0.35; planets.mars.material.uniforms.uRelief.value = 0.4; // relief is synthesized, keep it a whisper so the real maps lead
   let sky = null;
   const skyP = createSky({ THREE, scene, starsUrl: files.stars, milkyUrl: files.milky, milkyWayIntensity: 0.14 }).then(s => { sky = s; }).catch(() => {});
@@ -68,36 +65,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const sunCore = new THREE.Sprite(new THREE.SpriteMaterial({ map: radialTex([[0, 'rgba(255,255,255,1)'], [0.12, 'rgba(255,236,200,0.9)'], [0.35, 'rgba(255,170,80,0.25)'], [1, 'rgba(0,0,0,0)']]), color: 0xffffff, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
   scene.add(sunCore);
 
-  // ---------- space dust: wraps around the lens; streaks along the camera's velocity ----------
-  const DUST = 1800, BOX = 36, dustU = { cp: { value: new THREE.Vector3() }, vel: { value: new THREE.Vector3() }, t: { value: 0 }, amt: { value: 1 }, spd: { value: 0 } };
-  const dustVS = `attribute vec3 seed; attribute float tip; uniform vec3 cp; uniform vec3 vel; uniform float t; varying float vA;
-    void main(){
-      vec3 p=seed*${BOX}.+vec3(t*0.35,t*0.12,-t*0.22)+seed.yzx*sin(t*0.3+seed.x*6.)*0.6;
-      vec3 rel=mod(p-cp,${BOX}.)-${BOX}.*0.5;
-      vec3 w=cp+rel-vel*tip;
-      float d=length(rel)/(${BOX}.*0.5);
-      vA=(1.-smoothstep(0.5,1.,d))*smoothstep(0.04,0.14,d);
-      gl_PointSize=1.6; gl_Position=projectionMatrix*viewMatrix*vec4(w,1.); }`;
-  const dustFS = `uniform float amt; uniform float spd; varying float vA; void main(){ gl_FragColor=vec4(vec3(0.75,0.85,1.)*vA*amt*(0.16+0.5*spd),1.); }`;
-  const dustMat = new THREE.ShaderMaterial({ uniforms: dustU, vertexShader: dustVS, fragmentShader: dustFS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  const dust = new THREE.Group(); scene.add(dust);
-  {
-    const sd = new Float32Array(DUST * 6), tp = new Float32Array(DUST * 2), hd = new Float32Array(DUST * 3);
-    for (let i = 0; i < DUST; i++) { const x = Math.random(), y = Math.random(), z = Math.random(); sd.set([x, y, z, x, y, z], i * 6); tp.set([0, 1], i * 2); hd.set([x, y, z], i * 3); }
-    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(DUST * 6), 3)); lg.setAttribute('seed', new THREE.BufferAttribute(sd, 3)); lg.setAttribute('tip', new THREE.BufferAttribute(tp, 1));
-    const pg = new THREE.BufferGeometry(); pg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(DUST * 3), 3)); pg.setAttribute('seed', new THREE.BufferAttribute(hd, 3)); pg.setAttribute('tip', new THREE.BufferAttribute(new Float32Array(DUST), 1));
-    const lines = new THREE.LineSegments(lg, dustMat), heads = new THREE.Points(pg, dustMat);
-    lines.frustumCulled = heads.frustumCulled = false; dust.add(lines, heads);
-  }
-  const lastPos = new THREE.Vector3(), camVel = new THREE.Vector3(), velTmp = new THREE.Vector3(), shutterV = new THREE.Vector3(); let hasLast = false;
-  const cut = () => { post.resetMotion(); hasLast = false; camVel.set(0, 0, 0); }; // hard cut: no motion blur, TAA/trail history or dust streak across it
+  const cut = () => post.resetMotion(); // hard cut: no motion blur or TAA/trail history across it
 
   // ---------- Austin: the opening lot, then a powers-of-ten pull out to the Earth frame below (camera in austin.js) ----------
-  const V = a => (a.isVector3 ? a.clone() : new THREE.Vector3(...a));
-  const M3 = (b, o) => b.clone().add(new THREE.Vector3(...o));
-  const upP = new THREE.Vector3(0, 1, 0).addScaledVector(toSun, -toSun.y).normalize();
-  const C0 = EARTH.clone().addScaledVector(toSun, -23).addScaledVector(upP, 10.4);   // Earth's night side, sun about to crest the limb
-  const L0 = C0.clone().addScaledVector(toSun, 60).addScaledVector(upP, -9);
   const SITE0 = new THREE.Vector3(0, 40000, 0);
   const site = createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: planets.earth.material.uniforms, orthoUrl: files.ortho });
   const aircraft = createAircraft({ THREE, parent: site.group, high: HIGH }); // night traffic: nav lights only, lives (and compiles) with the site set
@@ -108,48 +78,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const SPIN_LAND = Math.atan2(austinLocal.z, austinLocal.x) - Math.atan2(C0.z, C0.x);
   const AUS = austinLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), SPIN_LAND).multiplyScalar(10), AUSn = AUS.clone().normalize();
 
-  // ---------- Moon: orbits Earth with the scroll, so it drifts across the frame instead of sitting still ----------
-  const MOON_R = 34, moonAt = (S, out) => {
-    const a = THREE.MathUtils.lerp(2.35, 0.55, clamp01((S + 1) / 0.5));   // sweeps from the left, behind Earth, to the right
-    return out.set(EARTH.x + MOON_R * Math.cos(a) * 1.0, EARTH.y + 3 + MOON_R * 0.12 * Math.sin(a), EARTH.z - MOON_R * Math.sin(a) * 0.9 + 4);
-  };
-
-  // ---------- camera: one flight, Earth -> over the pole -> Mars -> dive. Shots are [clock S, position, look, lens] ----------
-  // Position rides a centripetal spline; the clock maps to distance along it through a monotone curve, so it slows near each
-  // planet (the copy reads) and runs between them without stopping. The look direction slerps between subjects.
-  const EN1 = new THREE.Vector3(0.15, 0.55, 0.82).normalize(), ENT = new THREE.Vector3(-1, 0, 0).addScaledVector(EN1, EN1.x).normalize();
-  const ENP = MARS.clone().addScaledVector(EN1, 6.65), ENL = ENP.clone().addScaledVector(ENT, 10).addScaledVector(EN1, -2.6);
-  const SHOTS = [
-    [-1.00, C0, L0, 38],                                               // Earth frame the pull out lands on
-    [-0.90, [6, 9, 36], [0, 1.5, 0], 34],                              // the whole Earth, long lens
-    [-0.78, [-8, 17, 28], [0, 1, 0], 32],                              // lifting off it, the Moon sweeping behind
-    [-0.64, [-3, 28, -2], [0, -1, 0], 34],                             // over the pole
-    [-0.50, [-6, 26, -46], M3(MARS, [0, 0, 0]), 30],                   // past it, Mars ahead
-    [-0.32, [-18, 22, -250], MARS, 28],
-    [-0.15, M3(MARS, [92, 26, 132]), MARS, 28],                        // Mars small among the stars
-    [0.00, M3(MARS, [70, 20, 100]), MARS, 30],                         // the title frames the planet here
-    [0.16, M3(MARS, [30, 10, 38]), MARS, 30],
-    [0.34, M3(MARS, [21, 6, 36]), MARS, 32],                           // the SpaceX hold lets go
-    [0.41, M3(MARS, [11, 4.5, 17]), MARS, 40],                         // approach
-    [0.44, ENP.clone().addScaledVector(ENT, -5).addScaledVector(EN1, 2.2), MARS.clone().addScaledVector(EN1, 6.05).addScaledVector(ENT, 3), 46], // turning onto the entry line
-    [CA, ENP, ENL, 52]                                                 // skimming the top of the air: the swap to Jezero happens here
-  ].map(([p, pos, look, fov]) => ({ p, pos: V(pos), look: V(look), fov }));
-  const posC = new THREE.CatmullRomCurve3(SHOTS.map(k => k.pos), false, 'centripetal'); posC.arcLengthDivisions = 4000;
-  const NK = SHOTS.length, PX = SHOTS.map(k => k.p), arcLens = posC.getLengths();
-  const arcAt = t => { const f = t * (arcLens.length - 1), i = Math.floor(f); return i >= arcLens.length - 1 ? arcLens[arcLens.length - 1] : arcLens[i] + (arcLens[i + 1] - arcLens[i]) * (f - i); };
-  const arcP = pchip(PX, SHOTS.map((k, i) => arcAt(i / (NK - 1))), 0.6, 2.2); // ease off the Earth frame; accelerate into the dive
-  const idxP = pchip(PX, SHOTS.map((k, i) => i)), fovP = pchip(PX, SHOTS.map(k => k.fov), 0); // fov leaves the Earth frame level: C1 with the Austin lens (38)
-  const dA = new THREE.Vector3(), dB = new THREE.Vector3(), qL = new THREE.Quaternion(), qL0 = new THREE.Quaternion();
-  function spaceCam(p, outPos, outLook) {
-    const q = Math.min(Math.max(p, PX[0]), CA), u = posC.getUtoTmapping(0, Math.max(0, arcP(q)));
-    posC.getPoint(u, outPos);
-    const f = THREE.MathUtils.clamp(idxP(q), 0, NK - 1.0001), i = Math.floor(f), t = f - i;
-    dA.copy(SHOTS[i].look).sub(outPos); dB.copy(SHOTS[i + 1].look).sub(outPos);
-    const fa = dA.length(), fb = dB.length(); dA.normalize(); dB.normalize();
-    qL.setFromUnitVectors(dA, dB); qL0.identity().slerp(qL, smoother(t)); // eased per pan: it settles onto each subject instead of snapping
-    outLook.copy(dA).applyQuaternion(qL0).multiplyScalar(fa + (fb - fa) * t).add(outPos);
-    return fovP(q);
-  }
+  // ---------- camera: one move, Earth frame -> whole Earth (copy) -> Mars over the limb -> title -> SpaceX hold -> down the entry line.
+  // Position, aim, up and lens all live in flight.js on the film clock; the Moon orbits on it too.
+  const spaceCam = flight.spaceCam;
   const austin = createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }), AC = { pos: new THREE.Vector3(), look: new THREE.Vector3(), up: new THREE.Vector3() };
   const LAMH = austin.LAMH, LAM1 = austin.LAM1, sunO = {};
   // the camera where its distance from the lot is D (bisect on its ln distance, up to the world swap): the aircraft are placed from it
@@ -204,7 +135,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     void main(){ float q = length(vQ), d = max(q / uR - 1., 0.); vec2 dir = vQ / max(q, 1e-4);
       float side = smoothstep(-0.6, 1., dot(dir, uL2));
       float g = exp(-d * 14.) * 0.55 + exp(-d * 4.) * 0.16 + exp(-d * 1.6) * 0.04;
-      gl_FragColor = vec4(vec3(1.0, 0.52, 0.24) * g * mix(0.1, 1., side) * uI, 0.); }`,
+      float edge = 1. - smoothstep(11., 15., max(abs(vQ.x), abs(vQ.y))); // fade before the plane's edge: its square never shows on black
+      gl_FragColor = vec4(vec3(1.0, 0.52, 0.24) * g * mix(0.1, 1., side) * uI * edge, 0.); }`,
     transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor
   }));
   { const u = planets.marsAtmo.material.uniforms; u.uBetaR.value.multiplyScalar(0.25); u.uSunCol.value.set(1, 0.86, 0.66); u.uK.value = 15; } // dust only, warm: no blue haze over the far side
@@ -214,9 +146,33 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     litL.copy(LIT_DIR).applyQuaternion(cam.quaternion);
     planets.marsAtmo.material.uniforms.uSun.value.copy(litL);
     litQ.copy(planets.mars.quaternion).invert(); planets.mars.material.uniforms.uSun.value.copy(litL).applyQuaternion(litQ);
-    const d = cam.position.distanceTo(MARS); halo.quaternion.copy(cam.quaternion); halo.material.uniforms.uR.value = 6 / Math.sqrt(Math.max(0.05, 1 - 36 / (d * d)));
+    const d = cam.position.distanceTo(marsV); halo.quaternion.copy(cam.quaternion); halo.material.uniforms.uR.value = 6 / Math.sqrt(Math.max(0.05, 1 - 36 / (d * d)));
   }
-  const spaceMeshes = [planets.earth, planets.clouds, planets.moon, planets.mars, planets.earthAtmo, planets.marsAtmo, halo];
+  // Mars far off: drawn further down its own sight line (flight.marsFar), so it keeps its place on screen but starts sub-pixel.
+  // A warm star of fixed pixel size carries it until the disc has a few pixels, then fades. Earth hides both by depth, so it
+  // rises over the limb (through the air shell, which dims it on the way) instead of popping in.
+  const starU = { uPx: { value: 1 }, uI: { value: 0 } };
+  const marsStar = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3)), new THREE.ShaderMaterial({
+    uniforms: starU,
+    vertexShader: 'uniform float uPx; void main(){ gl_PointSize = uPx; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }',
+    fragmentShader: `uniform float uI; void main(){ vec2 q = gl_PointCoord * 2. - 1.; float r2 = dot(q, q); if (r2 > 1.) discard;
+      gl_FragColor = vec4(vec3(1.0, 0.52, 0.3) * (exp(-r2 * 10.) + exp(-r2 * 3.) * 0.1) * uI, 1.); }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+  }));
+  marsStar.frustumCulled = false; marsStar.renderOrder = 1; scene.add(marsStar);
+  const marsV = MARS.clone(), marsShown = [planets.mars, planets.marsAtmo, halo];
+  function placeMars(S, on) {
+    const f = on ? flight.marsFar(S) : 1;
+    marsV.copy(MARS).sub(cam.position).multiplyScalar(f).add(cam.position);
+    planets.mars.position.copy(marsV); planets.marsAtmo.position.copy(marsV); planets.marsAtmo.material.uniforms.uCenter.value.copy(marsV);
+    halo.position.copy(marsV); marsStar.position.copy(marsV);
+    const rpx = 6 / marsV.distanceTo(cam.position) * H / 2 / Math.tan(cam.fov * Math.PI / 360); // disc radius, px
+    const k = on ? 1 - sstep(rpx, 1.2, 4) : 0;
+    for (const m of marsShown) m.visible = on && rpx > 0.9;
+    marsStar.visible = k > 0.001; starU.uI.value = 5 * k; starU.uPx.value = 9 * renderer.getPixelRatio();
+    return rpx;
+  }
+  const spaceMeshes = [planets.earth, planets.clouds, planets.moon, planets.mars, planets.earthAtmo, planets.marsAtmo, halo, marsStar];
   const earthSide = [planets.earth, planets.clouds, planets.moon, planets.earthAtmo];
 
   // ================================================================ layout: scene anchors from the DOM -> scroll positions
@@ -242,6 +198,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     ];
     for (let i = 1; i < keys.length; i++) if (keys[i][0] <= keys[i - 1][0] + 1) keys[i][0] = keys[i - 1][0] + 1; // always increasing, whatever the heights
     LAY = { vh, yEnd, S: pmap(keys), sc }; // monotone C1 through the keys: text-anchored beats land exactly, no speed step at any key
+    flight.layout({ S: LAY.S, yE: keys[0][0], y1: yEnd }); // the space camera's speed curve is authored in px: place it on this layout
     // the Austin leg: from the scene's first frame on screen (its top at the viewport bottom) to the Earth frame (S = -1),
     // anchored on the H2 (centred, then near the top edge). Kept in order whatever the heights.
     const aK = [sc.austin.top - vh, Yt('austin', 0), Yt('austin', 0.5), keys[0][0]];
@@ -292,7 +249,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const COLOR_SPACE_SUN = new THREE.Color(0xfff1dc);
   const setClip = (n, f) => { if (cam.near !== n || cam.far !== f) { cam.near = n; cam.far = f; cam.updateProjectionMatrix(); } };
   const siteArg = { g: 0, t: 0 }, acArg = { lam: 0, t: 0, sinE: 1, proj: 1, pr: 1 }, planetArg = { t: 0, intro: 1, camPos: pos, spin: 0, hole: AUSn }, postArg = { dt: 0, t: 0, focus: 0, aperture: 0, maxblur: 0, ca: 0 };
-  const moonP = new THREE.Vector3();
+  const moonP = new THREE.Vector3(), dofK = { k: 0, mb: 0 };
   // light rig + shadow box per set
   function rig(inSite) {
     const c = sunLight.shadow.camera;
@@ -406,10 +363,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       // near plane rides the camera height: at 0.1 the depth buffer had ~10 cm steps at 400 m, so hab floors, gardens and pads z-fought
       setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
     } else {
-      fov = spaceCam(S, pos, look); pos.add(austin.corr(S, tmp)); focus = pos.distanceTo(look); // corr: the hand-off's outward push, zero past S ~ -0.95
-      { const w = sstep(S, 0.4, 0.45); if (w > 0) camUp.lerp(tmp.copy(pos).sub(MARS).normalize(), w).normalize(); } // entry: the planet's up, so the horizon lies level
+      fov = spaceCam(S, pos, look, camUp); // position, aim, up and lens on the film clock (flight.js)
+      // portrait: open the lens like the colony does, ramped in off the hand-off (Austin lands at 38), so the whole Earth and the crest share the width
+      if (cam.aspect < 1) fov = 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(fov / 2)) * (1 + sstep(S, -1, -0.9) * (Math.min(2.2, 1.12 / cam.aspect) - 1))));
+      focus = lerp(pos.distanceTo(AUS), pos.distanceTo(look), sstep(S, -1, -0.92)); // from the globe leg's focus (the city) onto the aim point
       pos.x += ms.x * 2.2 * live; pos.y -= ms.y * 1.4 * live;
-      setClip(0.1, 9000);
+      setClip(0.1, 12000); // far enough for Mars down its sight line (marsFar)
     }
     if (!inSite) post.trails.enabled = false;
     // camera motion blur opens up through the fast part of the rise
@@ -429,7 +388,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       if ((lastMode === 'site' && mode === 'globe') || lastMode === '') post.resetMotion();
       lastMode = mode; forceShadow = true; // never show a shadow map left over from another set
     }
-    if (mode === 'space') { const near = S > -0.12; for (const m of earthSide) m.visible = !near; planets.mars.visible = planets.marsAtmo.visible = halo.visible = S > -0.8; } // Earth is behind us once Mars is ahead
+    if (mode === 'space') { const near = S > -0.12; for (const m of earthSide) m.visible = !near; } // Earth is behind us once Mars is ahead
     const sunDir = inCol ? colonyW.sun : toSun;
     const built = inCol && colonyW.api.build(gOf(S), t);
     if (mode !== 'site' && mode !== 'globe') entryFrame(inCol, t, dt);
@@ -447,15 +406,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     if (Math.abs(cam.fov - fov) > 0.0005) { cam.fov = fov; cam.updateProjectionMatrix(); } // fine enough that slow zooms never step
     cam.position.copy(pos); cam.lookAt(look);
     frameMars(mode === 'space');
-    // dust: smoothed camera velocity drives streak length (a short virtual shutter)
-    if (hasLast && dt > 0) { velTmp.copy(pos).sub(lastPos).divideScalar(dt); if (velTmp.length() > 4000) velTmp.set(0, 0, 0); camVel.lerp(velTmp, Math.min(1, dt * 6)); }
-    lastPos.copy(pos); hasLast = true;
-    shutterV.copy(camVel).multiplyScalar(0.025).clampLength(0, BOX * 0.4);
-    dustU.cp.value.copy(pos); dustU.vel.value.copy(shutterV); dustU.t.value = t; dustU.spd.value = Math.min(1, shutterV.length() / 6);
-    dust.visible = mode === 'space' && S > E0; dustU.amt.value = 1;
-    // Earth: parked on Austin through the pull out, then it turns a little as we go over the pole; the Moon orbits with the scroll
+    if (!inSite && !inCol) placeMars(S, mode === 'space'); // behind Earth through the globe leg anyway: hidden there
+    // Earth: parked on Austin through the pull out, then it turns a little as we leave it; the Moon orbits with the scroll (flight.js)
     planetArg.t = t; planetArg.spin = SPIN_LAND - t * EARTH_SPIN + (introOn ? 0 : (S + 1) * 0.5); planets.update(planetArg);
-    if ((mode === 'space' || mode === 'globe') && S < -0.12) planets.moon.position.copy(moonAt(S, moonP));
+    if ((mode === 'space' || mode === 'globe') && S < -0.12) planets.moon.position.copy(flight.moonAt(S, moonP));
     if (mode === 'space') litMars(t, S);
     planets.mars.material.uniforms.uDomes.value = 1 - sstep(pos.distanceTo(MARS), 14, 30); // the night-side dome lights are sub-pixel from far out and read as specks
     if (sky) { sky.update(pos); sky.group.visible = !inCol && !inSite; }
@@ -467,10 +421,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const flare = sstep(f2, 0.55, 1) * (0.25 + facing * 0.9) * (inCol ? 0.22 * (1 - sstep(colonyW.sun.y, 0.02, -0.04)) : 0); // the Mars key light is behind the lens: no sun in frame there
     sunCore.scale.setScalar(260 * flare + 40); sunCore.material.opacity = Math.min(1, flare * 1.3);
     bloom.strength = 0.6 + flare * 0.3;
-    // focus: deep everywhere except the colony
-    const deep = inSite || mode === 'globe';
-    postArg.dt = dt; postArg.t = t; postArg.focus = focus; postArg.aperture = (deep ? 0.0004 : inCol ? 0.006 : focus < 12 ? 0.02 : 0.003) / focus;
-    postArg.maxblur = !HIGH ? 0 : deep ? 0.0008 : inCol ? 0.0042 : focus < 12 ? 0.005 : 0.0018; postArg.ca = 0.012;
+    // focus: deep on the lot and the globe, opening over the first beat of space, shallower close to a subject, onto the colony's
+    // lens by the swap. All ramps (in S and focus distance), so nothing steps. kA = aperture x focus (the blur depth scale).
+    { const near = 1 - sstep(focus, 9, 16), w = introOn ? 0 : sstep(S, -1, -0.92), wc = inCol ? 1 : sstep(S, E0, CA);
+      const kA = lerp(lerp(0.0004, 0.003 + 0.017 * near, w), 0.006, wc), mb = lerp(lerp(0.0008, 0.0018 + 0.0032 * near, w), 0.0042, wc);
+      postArg.dt = dt; postArg.t = t; postArg.focus = focus; postArg.aperture = kA / focus; postArg.maxblur = HIGH ? mb : 0; postArg.ca = 0.012; dofK.k = kA; dofK.mb = mb; }
     lensCine(inCol);
     // the Austin H2 sits over the lot: a soft burn behind it while it is on screen (read from its box, nothing added to the DOM)
     if (inSite && scenes.austin && scenes.austin.firstElementChild) {
@@ -506,7 +461,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
   const compileIn = root => PARALLEL ? renderer.compileAsync(root, cam, scene) : (renderer.compile(root, cam, scene), Promise.resolve());
-  const spaceRoots = () => [...spaceMeshes, sunCore, dust, ...(sky ? [sky.group] : []), ...planets.entryRoots()];
+  const spaceRoots = () => [...spaceMeshes, sunCore, ...(sky ? [sky.group] : []), ...planets.entryRoots()];
   // run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights, so its visibility sets the light count in the program keys.
   function inWorld(w, fn) {
     const roots = [site.group, colonyGroup, ...spaceRoots()], vis = roots.map(o => o.visible), rt = renderer.getRenderTarget();
@@ -572,13 +527,15 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   }
   const loop = now => { raf = requestAnimationFrame(loop); const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
   const api = {
-    ready: readyP, canvas, renderer, post, scene, cam, aircraft,
+    ready: readyP, canvas, renderer, post, scene, cam, aircraft, flight,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the film runs its own rAF loop
     start(external = false) { if (running) return; running = true; ext = external; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
     step, resize, relayout,
     snap() { snapNext = true; },
+    yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
     get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh },
+      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
       site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);

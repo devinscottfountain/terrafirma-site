@@ -2,21 +2,19 @@
 // first frame, accelerating into the rise, then a sideways swing onto the Earth frame (C0) that hands over to spaceCam at S = -1
 // with matching position, velocity, look direction and look turn rate (C1). Pure math on THREE, so node can test it as shipped.
 //
-// createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }) -> { layout(L), at(y, out), corr(S, out), k }
+// createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }) -> { layout(L), at(y, out), k }
 //   layout({ yA, yT, yX, yE, S })   scroll anchors (px into the film track): yA the scene's first frame on screen, yT the H2 centred,
 //                                   yX the H2 near the top edge, yE the Earth frame (S = -1); S = the film's scroll -> S map
 //   at(y, out)                      fills out: { world: 'site' | 'globe', pos, look, up, fov, lam, dist, s, g, hour }
 //                                   site: metres in the lot frame (y up, origin = lot centre); globe: Earth units (world)
-//   corr(S, out)                    hand-off term spaceCam needs just after S = -1 (see below); zero from S = -1 + 7 tau on
 // Hand-off at S = -1: pos = C0, look direction = normalize(L0 - C0), up = (0, 1, 0), fov = 38, velocity = spaceCam's own at S = -1
-// plus a small outward push along (C0 - AUS) so the distance to the lot never dips (spaceCam alone starts 3 deg inward of tangent).
+// (flight.js leaves outward from the lot, so the distance to it never dips).
 import { pchip, smoother, clamp01 } from './util.js';
 
 export function createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCam }) {
   const FOV = 38, PITCH0 = 56, TZ = -10;                            // opening lens, tilt (deg from level) and aim offset (m, north): lot sits low, H2 over the calmer houses
   const D_A = 125, D_T = 170, D_X = 290, D_M = 40000;                // metres from the lot: first frame, H2 centred, H2 leaving, mid rise
   const LAMH = Math.log(650e3), LAM1 = Math.log(C0.distanceTo(AUS) / U_PER_M), LAM_P = LAMH; // world swap, Earth frame; the tilt lands straight down exactly at the swap
-  const RADIAL = 0.2;                                             // outward speed at the hand-off as a share of spaceCam's speed there
   const AUSn = AUS.clone().normalize(), negN = AUSn.clone().negate(), bE = C0.clone().sub(AUS).normalize(), D1 = C0.distanceTo(AUS);
   const v = () => new THREE.Vector3(), q = new THREE.Quaternion(), qI = new THREE.Quaternion();
   const a0 = v(), a1 = v(), a2 = v(), lk = v(), P = v(), T1 = v(), tL = v(), vr = v();
@@ -32,17 +30,15 @@ export function createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCa
     const h = 0.5, dSdy = (-3 * S(yE) + 4 * S(yE + h) - S(yE + 2 * h)) / (2 * h);
     spaceCam(-1, a0, lk); spaceCam(S(yE + h), a1, lk); spaceCam(S(yE + 2 * h), a2, lk);
     const v0 = a0.clone().multiplyScalar(-3).addScaledVector(a1, 4).addScaledVector(a2, -1).divideScalar(2 * h);
-    const r0 = v0.dot(bE), r = Math.max(r0, RADIAL * v0.length());
+    const r0 = v0.dot(bE), r = Math.max(r0, 1e-6);                // outward speed at the hand-off (spaceCam's own; the floor only guards a bad key)
     k.dSdy = dSdy; k.v0 = v0.length(); k.r0 = r0; k.r = r;
-    // outward push for the first few hundred px after the hand-off: amplitude per unit S, decay tau in S (150 px)
-    k.corrA = (r - r0) / dSdy; k.corrTau = 150 * dSdy;
     // distance from the lot, ln metres: slow drift while the H2 is up, accelerating into the rise, then easing so the outward speed
     // at S = -1 is exactly r (the swing round onto the Earth frame carries the rest of the speed)
     // keys: first frame, H2 centred, H2 leaving, mid rise, then two keys that spread the landing on the Earth frame distance
     const yM = yX + 0.46 * (yE - yX), yN = yX + 0.64 * (yE - yX), yQ = yX + 0.82 * (yE - yX), lamE = r / D1, dLast = 0.4 / (yE - yQ);
     lamF = pchip([yA, yT, yX, yM, yN, yQ, yE], [D_A, D_T, D_X, D_M].map(Math.log).concat(LAM1 - 1.4, LAM1 - 0.4, LAM1), 0.7, lamE / dLast); // 0.7: already drifting on the first frame
     k.yH = solve(lamF, LAMH, yA, yE);                              // the world swap: site set -> globe
-    vr.copy(v0).addScaledVector(bE, -r0);                          // tangential part (units/px), unchanged by the push
+    vr.copy(v0).addScaledVector(bE, -r0);                          // tangential part (units/px)
     T1.copy(vr).multiplyScalar((yE - k.yH) / D1);                  // direction tangent at the end of the globe leg, per unit of its parameter
     const yL = l => solve(lamF, Math.log(l), yA, yE);
     // sun: one day, dawn on the first frame to full night before the city lights matter. Hours, Austin late October (CDT).
@@ -79,16 +75,7 @@ export function createAustinCam({ THREE, SITE_ROT, AUS, U_PER_M, C0, L0, spaceCa
     return o;
   }
 
-  // hand-off term added to spaceCam's position just after S = -1: (S + 1) A e^(-(S + 1)/tau) along bE, gone by 7 tau. Value 0 and
-  // slope A at S = -1, so position stays C1 and the outward speed is r. Delete it when spaceCam's early keys are re-authored.
-  function corr(S, out) {
-    const u = S + 1; out.set(0, 0, 0);
-    if (!L || u <= 0 || u >= 7 * k.corrTau) return out;
-    const fade = 1 - smoother(clamp01((u - 3 * k.corrTau) / (4 * k.corrTau)));
-    return out.copy(bE).multiplyScalar(k.corrA * u * Math.exp(-u / k.corrTau) * fade);
-  }
-
-  return { layout, at, corr, k, LAMH, LAM1 };
+  return { layout, at, k, LAMH, LAM1 };
 }
 
 // sun over the lot at a local hour (CDT), Austin late October: hour angle from solar noon (~13:06), declination -13 deg.

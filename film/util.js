@@ -24,6 +24,24 @@ export function pchip(xs, ys, m0, mN) {
   };
 }
 
+// cubic Hermite through (xs, ys) with slopes ms; a null slope is filled like pchip (0 at a turn, else the weighted harmonic mean).
+// Holds the end values outside the keys. C1 everywhere, so nothing steps at a key.
+export function herm(xs, ys, ms) {
+  const n = xs.length, h = [], d = [], m = ms ? ms.slice() : new Array(n).fill(null);
+  for (let i = 0; i < n - 1; i++) { h[i] = xs[i + 1] - xs[i]; d[i] = (ys[i + 1] - ys[i]) / h[i]; }
+  for (let i = 0; i < n; i++) {
+    if (m[i] != null) continue;
+    if (i === 0 || i === n - 1) { m[i] = 0; continue; }
+    if (d[i - 1] * d[i] <= 0) m[i] = 0; else { const w1 = 2 * h[i] + h[i - 1], w2 = h[i] + 2 * h[i - 1]; m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]); }
+  }
+  return x => {
+    if (x <= xs[0]) return ys[0]; if (x >= xs[n - 1]) return ys[n - 1];
+    let i = 0; while (x > xs[i + 1]) i++;
+    const t = (x - xs[i]) / h[i], t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h[i] * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h[i] * m[i + 1];
+  };
+}
+
 // monotone C1 map through [x, y] keys (x ascending, y non-decreasing): passes exactly through every key, no velocity step at any of them.
 // Below the first key it extrapolates along the end slope, above the last it holds the last y.
 export function pmap(keys) { return pchip(keys.map(k => k[0]), keys.map(k => k[1])); }
