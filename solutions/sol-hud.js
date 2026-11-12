@@ -21,9 +21,43 @@ export function createHud(host, words, pal) {
     g.font = `${weight} ${size}px ${font}`; g.textAlign = align; g.fillStyle = color; g.fillText(s, x, y); return g.measureText(s).width;
   }
 
-  // the dig: reticle on the bucket teeth, a grade ladder beside it, the telemetry strip, the hint
+  const DASH = [5, 5], DASH_S = [3, 4], NODASH = [];
+  // click markers: a ring on the ground where the visitor clicked. Dig = cut colour, solid ring with four ticks pointing in;
+  // drop = fill colour, double ring with a down arrow. A queued click is dashed and dimmer. It pops in at once.
+  function marker(H, a) {
+    if (H.a < 0.01 || H.n < 3) return;
+    const k = a * H.a * (H.queued ? 0.6 : 1), col = H.kind === 'dig' ? pal.cut : pal.fill, P = H.pts, n = H.n, [cx, cy] = H.c;
+    g.lineWidth = H.queued ? 1.5 : 2; g.setLineDash(H.queued ? DASH_S : NODASH);
+    g.strokeStyle = rgba(col, 0.95 * k); g.fillStyle = rgba(col, 0.2 * k);
+    g.beginPath(); g.moveTo(P[0], P[1]); for (let q = 1; q < n; q++) g.lineTo(P[q * 2], P[q * 2 + 1]); g.closePath(); g.fill(); g.stroke();
+    g.setLineDash(NODASH);
+    if (H.kind === 'dig') { // four ticks from the ring toward the centre
+      g.beginPath();
+      for (let q = 0; q < 4; q++) { const i = Math.round(q * n / 4) % n, x = P[i * 2], y = P[i * 2 + 1]; g.moveTo(x, y); g.lineTo(x + (cx - x) * 0.45, y + (cy - y) * 0.45); }
+      g.stroke();
+      g.fillStyle = rgba(col, k); g.beginPath(); g.arc(cx, cy, 2.5, 0, Math.PI * 2); g.fill();
+    } else { // inner ring + a down arrow above the spot
+      g.beginPath(); for (let q = 0; q < n; q++) { const x = cx + (P[q * 2] - cx) * 0.55, y = cy + (P[q * 2 + 1] - cy) * 0.55; q ? g.lineTo(x, y) : g.moveTo(x, y); } g.closePath(); g.stroke();
+      const ay = cy - 16; g.fillStyle = rgba(col, k);
+      g.beginPath(); g.moveTo(cx, ay + 9); g.lineTo(cx - 5, ay + 2); g.lineTo(cx + 5, ay + 2); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(cx, ay - 6); g.lineTo(cx, ay + 2); g.stroke();
+    }
+  }
+  // ghost path: a dashed line on the ground from the machine to where it will stop, and its footprint there
+  function ghost(G, a) {
+    if (G.a < 0.01 || G.n < 2) return;
+    const k = a * G.a, P = G.pts;
+    g.lineWidth = 1.75; g.setLineDash(DASH); g.lineDashOffset = -s0t * 18; g.strokeStyle = rgba(pal.accent, 0.9 * k);
+    g.beginPath(); g.moveTo(P[0], P[1]); for (let q = 1; q < G.n; q++) g.lineTo(P[q * 2], P[q * 2 + 1]); g.stroke();
+    if (G.footOn) { const F = G.foot; g.lineWidth = 1.25; g.strokeStyle = rgba(pal.accent, 0.75 * k); g.fillStyle = rgba(pal.accent, 0.08 * k); g.beginPath(); g.moveTo(F[0], F[1]); for (let q = 1; q < 4; q++) g.lineTo(F[q * 2], F[q * 2 + 1]); g.closePath(); g.fill(); g.stroke(); }
+    g.setLineDash(NODASH); g.lineDashOffset = 0;
+  }
+  let s0t = 0;
+
+  // the dig: click markers, ghost path, reticle on the bucket teeth, a grade ladder beside it, the autopilot readout, the hint
   function dig(s, a) {
     const A = pal.accent, cream = k => rgba(A, a * k), small = W < 600;
+    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a);
     if (s.tip) {
       const [x, y] = s.tip, r = small ? 13 : 17;
       const gv = s.tel.grade, col = Math.abs(gv) < 0.12 ? cream(0.95) : rgba(gv > 0 ? pal.cut : pal.fill, a * 0.95);
@@ -44,36 +78,42 @@ export function createHud(host, words, pal) {
       g.fillStyle = col; g.beginPath(); g.moveTo(lx - 2, my); g.lineTo(lx - 9, my - 4.5); g.lineTo(lx - 9, my + 4.5); g.closePath(); g.fill();
       text(pad(gv, 1, 2) + ' m', lx - 13, my + 3.5, small ? 10 : 11, col, { align: 'right' });
     }
-    // telemetry strip, bottom of the safe band (the hint sits above it)
+    // autopilot readout, bottom of the safe band (the hint sits above it): only while the autopilot drives
     const ty = (1 - s.safeBottom) * H - (small ? 12 : 16), x0 = Math.max(16, Math.min(40, W * 0.03)), T = s.tel, sz = small ? 9 : 10.5;
-    let x = x0;
-    const item = (label, val) => { x += text(label.toUpperCase(), x, ty, sz, cream(0.5), { font: sans, weight: 500 }) + 6; x += text(val, x, ty, sz, cream(0.92)) + (small ? 12 : 22); };
-    const blink = 0.55 + 0.45 * Math.sin(s.t * 4);
-    g.fillStyle = T.auto ? cream(0.9 * blink) : rgba(pal.cut, a * blink); g.beginPath(); g.arc(x + 3, ty - 3.5, 3, 0, Math.PI * 2); g.fill(); x += 12;
-    x += text((T.auto ? words.auto : words.manual).toUpperCase(), x, ty, sz, cream(0.92), { font: sans, weight: 600 }) + (small ? 12 : 22);
-    item(words.swing, pad(T.swing, 3, 1) + '°');
-    item(words.reach, T.reach.toFixed(2).padStart(5, '0') + ' m');
-    if (!small) item(words.depth, pad(T.grade, 1, 2) + ' m');
-    item(words.load, String(Math.round(T.load * 100)).padStart(3, '0') + '%');
-    g.strokeStyle = cream(0.18); g.beginPath(); g.moveTo(x0, ty - 15); g.lineTo(Math.min(W - x0, x - 10), ty - 15); g.stroke();
+    if (s.autoA > 0.01) {
+      const b = a * s.autoA, cr = k => rgba(A, b * k);
+      let x = x0;
+      const item = (label, val) => { x += text(label.toUpperCase(), x, ty, sz, cr(0.5), { font: sans, weight: 500 }) + 6; x += text(val, x, ty, sz, cr(0.92)) + (small ? 12 : 22); };
+      const blink = 0.55 + 0.45 * Math.sin(s.t * 4);
+      g.fillStyle = cr(0.9 * blink); g.beginPath(); g.arc(x + 3, ty - 3.5, 3, 0, Math.PI * 2); g.fill(); x += 12;
+      x += text(words.auto.toUpperCase(), x, ty, sz, cr(0.92), { font: sans, weight: 600 }) + (small ? 12 : 22);
+      item(words.swing, pad(T.swing, 3, 1) + '°');
+      item(words.reach, T.reach.toFixed(2).padStart(5, '0') + ' m');
+      if (!small) item(words.depth, pad(T.grade, 1, 2) + ' m');
+      item(words.load, String(Math.round(T.load * 100)).padStart(3, '0') + '%');
+      g.strokeStyle = cr(0.18); g.beginPath(); g.moveTo(x0, ty - 15); g.lineTo(Math.min(W - x0, x - 10), ty - 15); g.stroke();
+    }
     // hint
-    if (s.hint > 0.01 && words.hint) {
-      const hy = (1 - s.safeBottom) * H - 52, hx = W / 2;
-      g.font = `500 12px ${sans}`; const tw = g.measureText(words.hint).width + 28;
+    const ht = s.hintText;
+    if (s.hint > 0.01 && ht) { // bottom right of the safe band, level with the readout (clear of the machine at the centre)
+      g.font = `500 12px ${sans}`; const tw = g.measureText(ht).width + 28;
+      const hy = ty - 4, hx = W - x0 - tw / 2;
       g.strokeStyle = cream(0.45 * s.hint); g.fillStyle = `rgba(0,0,0,${(0.35 * a * s.hint).toFixed(3)})`;
       g.beginPath(); g.roundRect ? g.roundRect(hx - tw / 2, hy - 15, tw, 26, 13) : g.rect(hx - tw / 2, hy - 15, tw, 26); g.fill(); g.stroke();
-      text(words.hint, hx, hy + 2.5, 12, cream(0.95 * s.hint), { font: sans, align: 'center', weight: 500 });
+      text(ht, hx, hy + 2.5, 12, cream(0.95 * s.hint), { font: sans, align: 'center', weight: 500 });
+      hintBox[0] = hx - tw / 2; hintBox[1] = hy - 15; hintBox[2] = hx + tw / 2; hintBox[3] = hy + 11;
     }
   }
 
   // execution: one tag per machine, a leader up to a label with a live number
   // execution: one tag per machine, a leader up to a label with a live number. Labels never overlap: each takes the first
   // free slot going up from its machine, and flips to the left near the right edge.
-  const boxes = [];
+  const boxes = [], tagOut = [0, 1, 2].map(() => [0, 0, 0, 0, 0]), hintBox = [0, 0, 0, 0];
   let s0 = null;
   let nb = 0;
   function tags(list, a) {
     nb = 0;
+    for (let j = 0; j < 3; j++) { const M = s0.mbox[j], B = boxes[nb] || (boxes[nb] = [0, 0, 0, 0]); B[0] = M[0]; B[1] = M[1]; B[2] = M[2]; B[3] = M[3]; nb++; }   // machines first: labels keep off them
     for (let i = 0; i < list.length; i++) {
       const T = list[i];
       if (!T || !T.p || T.a < 0.01) continue;
@@ -82,11 +122,12 @@ export function createHud(host, words, pal) {
       const tw = w1 + 8 + w2 + 12, flip = x + 18 + tw > W - 12;
       let ly = y - (small ? 26 : 34), lx = flip ? x - 18 : x + 18;
       const bx = flip ? lx - tw : lx;
-      const minY = s0.safeTop * H + fs + 6; let dir = -1; if (ly < minY) { ly = y + fs + 14; dir = 1; }   // never up into the heading
-      for (let n = 0; n < 8; n++) {
+      const minY = s0.safeTop * H + fs + 6, maxY = (1 - s0.safeBottom) * H - 8; let dir = -1; if (ly < minY) { ly = y + fs + 14; dir = 1; }   // never up into the heading
+      for (let n = 0; n < 24; n++) {
         let hit = false; for (let q = 0; q < nb && !hit; q++) { const B = boxes[q]; hit = bx < B[2] && bx + tw > B[0] && ly - fs < B[3] && ly + 4 > B[1]; }
-        if (!hit) break; ly += dir * (fs + 6); if (ly < minY) { ly = y + fs + 14; dir = 1; } }
+        if (!hit && ly <= maxY) break; ly += dir * (fs + 6) * 0.5; if (ly < minY) { ly = y + fs + 14; dir = 1; } }   // up past its machine, else down below it
       const B = boxes[nb] || (boxes[nb] = [0, 0, 0, 0]); B[0] = bx; B[1] = ly - fs; B[2] = bx + tw; B[3] = ly + 4; nb++;
+      const O = tagOut[i]; O[0] = B[0]; O[1] = B[1]; O[2] = B[2]; O[3] = B[3]; O[4] = 1;
       g.strokeStyle = rgba(pal.accent, 0.6 * k); g.lineWidth = 1;
       g.beginPath(); g.moveTo(x, y); g.lineTo(lx, ly); g.lineTo(lx + (flip ? -8 : 8), ly); g.stroke();
       g.fillStyle = rgba(pal.accent, 0.95 * k); g.beginPath(); g.arc(x, y, 2.5, 0, Math.PI * 2); g.fill();
@@ -107,13 +148,14 @@ export function createHud(host, words, pal) {
   }
 
   return {
-    canvas: cv, resize,
+    canvas: cv, resize, tagOut, hintBox,
     draw(s) {
       const any = s.wDig > 0.01 || s.wExec > 0.01 || s.wPlan > 0.01;
       if (!any) { if (!blank) { g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height); blank = true; } return; }
       blank = false;
       g.setTransform(pr, 0, 0, pr, 0, 0); g.clearRect(0, 0, W, H);
       if (s.wDig > 0.01) dig(s, s.wDig);
+      for (const O of tagOut) O[4] = 0;
       if (s.wExec > 0.01) { s0 = s; tags(s.tags, s.wExec); }
       if (s.wPlan > 0.01) zones(s.zones, s.wPlan);
     },

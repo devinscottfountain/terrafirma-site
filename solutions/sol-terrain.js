@@ -27,18 +27,27 @@ export function hF(x, z) {
 }
 
 // ------------------------------------------------------------------ site layout (one place)
-// E: the dig excavator (home, heading). Pit: the cut it digs to grade. Pile: where it dumps (swing angle). Pad: the fill pad
-// the loader feeds and the roller compacts. Plat: a building platform (part cut, part fill). Road: pit to pad.
+// E: the dig excavator's home (where the autopilot works from, and its heading). Pit: the cut it digs to grade. Pile: where
+// it dumps (swing angle and radius from home). Pad: the fill pad; the loader dumps on its near end, the roller compacts the
+// far end. Plat: a building platform (part cut, part fill). Road: pile to pad.
+// Working zones: every machine keeps its body inside its own zone, and the zones sit at least 1.5 lengths of the shorter
+// machine of each pair apart (excavator 5.2 m, loader 9.2 m, roller 7.2 m footprints), so
+// the three never crowd each other in any view. digZone bounds the excavator's centre when a visitor drives it; the loader
+// and roller zones follow from their routes (sol-crew.js). FOOT: footprint half sizes (m, world) and the offset of the
+// rectangle centre ahead of the machine origin; the plan view draws these and the QA gap check measures them.
 const E = { x: 2, z: 6, yaw: Math.PI };
 export const SITE = {
   E,
   pit: { x: -5.4, z: 5.4, hx: 4.4, hz: 5.0, rot: 0.06, ws: 2.4, cut: 2.3 },
-  pad: { x: 27, z: -17, hx: 9, hz: 5.5, rot: 0.25, ws: 3.2, fill: 1.3 },
+  pad: { x: 32.3, z: -21.7, hx: 14, hz: 5.5, rot: 0.5, ws: 3.2, fill: 1.3 },
   plat: { x: -22, z: -15, hx: 10, hz: 7, rot: -0.2, ws: 3.2 },
-  road: { ax: 1, az: -4.5, bx: 19.5, bz: -14.5, hw: 2.6, ws: 2.6 },
-  pileSw: -1.45, pileR: 7.8,   // dump swing (rad, turret) and radius (m) from E
+  road: { ax: 8, az: -8.5, bx: 17.5, bz: -13.5, hw: 2.6, ws: 2.6 },
+  pileSw: -1.85, pileR: 11,    // dump swing (rad, turret) and radius (m) from E
+  digZone: { x: -4, z: 10, hx: 8, hz: 4, rot: 0 },   // where the excavator's centre may drive (contains E)
+  FOOT: { dig: { hx: 2.6, hz: 1.95, off: 0 }, house: { hx: 2.1, hz: 2.1 }, haul: { hx: 4.6, hz: 1.75, off: 1.5 }, grade: { hx: 3.6, hz: 1.6, off: 0.4 } },
   dots: { x: -1.5, z: 3 },     // centre of the densest dots (the dig)
-  field: { x: 4, z: -4, size: 64, n: 256 },
+  centre: { x: 8, z: -8 },     // middle of the site (plan fade, contours)
+  field: { x: 8, z: -8, size: 80, n: 320 },
   sun: { az: Math.atan2(-0.62, -0.78), el: 13 * Math.PI / 180 },   // low sun to the west-north-west
 };
 SITE.pile = { x: E.x + Math.cos(E.yaw + SITE.pileSw) * SITE.pileR, z: E.z - Math.sin(E.yaw + SITE.pileSw) * SITE.pileR };
@@ -204,7 +213,7 @@ export function buildDots(THREE, { low = false } = {}) {
 
 // ------------------------------------------------------------------ design contours (marching squares, static)
 // Returns segment endpoints [x0, y0, z0, x1, y1, z1, t, major] where t = 0..1 distance from the plan centre (draw-on order).
-export function buildContours({ cx = 4, cz = -4, half = 46, step = 0.8, interval = 0.5 } = {}) {
+export function buildContours({ cx = SITE.centre.x, cz = SITE.centre.z, half = 50, step = 0.8, interval = 0.5 } = {}) {
   const n = Math.round((2 * half) / step) + 1, H = new Float32Array(n * n), X = i => cx - half + i * step, Z = j => cz - half + j * step;
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) H[j * n + i] = hD(X(i), Z(j));
   const out = []; let lo = 1e9, hi = -1e9; for (const v of H) { lo = Math.min(lo, v); hi = Math.max(hi, v); }

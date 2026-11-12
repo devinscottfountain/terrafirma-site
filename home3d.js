@@ -44,7 +44,7 @@ function pickQuality() {
   return coarse || weak || saveData ? 'low' : 'high';
 }
 
-// phones: no drag handling at all (the page scroll must never be captured), the dig runs on autopilot
+// phones: no pointer handling at all (the page scroll must never be captured), the dig runs on autopilot
 const phone = matchMedia('(pointer: coarse)').matches || innerWidth < 768;
 const SAFE_DEF = { top: 0.2, bottom: 0.3 };
 // Safe insets: CSS custom property --sol-safe-top / --sol-safe-bottom on the section (can change per breakpoint), else the

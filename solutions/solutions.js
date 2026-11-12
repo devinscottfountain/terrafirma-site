@@ -1,6 +1,7 @@
 // solutions.js: TerraFirma homepage Solutions scene. One continuous jobsite seen three ways, chosen by the page's tabs (never
 // by scroll), with a real camera flight between them:
-//   Orchestration (mode 1) = the dig: a drone chase cam behind one excavator, an operator HUD, drag to dig (desktop).
+//   Orchestration (mode 1) = the dig: a drone chase cam behind one excavator, an operator HUD, click to dig and click to
+//                            drop (desktop); it drives to the spot when it has to and the camera follows.
 //   Planning (mode 0)      = the blueprint: top down, the ground morphs to the design surface, contours, cut and fill.
 //   Execution (mode 2)     = breadth: high and wide, three machines on three jobs, live paths, tags, data links.
 // The ground is a procedural survey point cloud lit by a low sun; the dig edits a persistent height field that the dots
@@ -25,12 +26,48 @@ const PR_MAX = 1.5;
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
 const WORDS = {
-  hint: ['hint', 'Drag to dig'],
+  hint: ['hint', 'Click to dig'], hintDrop: ['hint-drop', 'Click to drop'],
   dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Loader 02'], grade: ['tag-grade', 'Roller 03'],
   auto: ['hud-auto', 'Autopilot'], manual: ['hud-manual', 'Manual'], swing: ['hud-swing', 'Swing'], reach: ['hud-reach', 'Reach'],
   depth: ['hud-depth', 'To grade'], load: ['hud-load', 'Load'], grade_: ['hud-grade', 'Grade'],
   cut: ['label-cut', 'Cut'], fill: ['label-fill', 'Fill'],
 };
+
+// Working zones as ground polygons [[x, z], ...] (dig, haul, grade): the excavator's drive zone grown by its house radius,
+// the hull of every loader footprint along its routes (pivots included), and the roller's lanes grown by its footprint.
+// Built once; the plan view draws them and QA checks they never overlap.
+const rectPts = (x, z, yaw, hx, hz, off = 0) => {
+  const c = Math.cos(yaw), s = Math.sin(yaw); x += c * off; z -= s * off;
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [x + a * hx * c + b * hz * s, z - a * hx * s + b * hz * c]);
+};
+function hull(P) {   // monotone chain convex hull
+  P = P.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]), lo = [], up = [];
+  for (const p of P) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+export function machineZones(crew) {
+  const F = SITE.FOOT, Z = SITE.digZone, hr = Math.hypot(F.house.hx, F.house.hz);
+  const dig = rectPts(Z.x, Z.z, Z.rot, Z.hx + hr, Z.hz + hr);
+  const pts = [], add = (x, z, yaw) => pts.push(...rectPts(x, z, yaw, F.haul.hx, F.haul.hz, F.haul.off));
+  for (const V of crew.VAR) {
+    let prev = null;
+    for (const g of V) {
+      const P = g.p; let first = true;
+      for (let s = 0; s <= P.len + 0.01; s += 0.5) {
+        const a = P.at(s), yaw = g.dir > 0 ? Math.atan2(-a.dz, a.dx) : Math.atan2(a.dz, -a.dx);
+        if (first && prev != null) for (let k = 1; k < 8; k++) { const y = prev + Math.atan2(Math.sin(yaw - prev), Math.cos(yaw - prev)) * k / 8; add(a.x, a.z, y); }   // pivot between legs
+        add(a.x, a.z, yaw); prev = yaw; first = false;
+      }
+    }
+  }
+  const haul = hull(pts);
+  const P = SITE.pad, R = crew.roll, c = Math.cos(P.rot), s = Math.sin(P.rot);
+  const lx0 = R.x0 - F.grade.hx + F.grade.off, lx1 = R.x1 + F.grade.hx + F.grade.off, lzh = R.zh + F.grade.hz, mx = (lx0 + lx1) / 2;
+  const grade = rectPts(P.x + mx * c, P.z - mx * s, P.rot, (lx1 - lx0) / 2, lzh);
+  return [dig, haul, grade];
+}
 
 export function createSolutions({ THREE, host, root = host, quality = 'high', interactive = true, safe = null }) {
   const LOW = quality === 'low';
@@ -63,7 +100,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   const U = {
     uT: TU, uPx: { value: 1000 }, uPR: PRU, uSun: { value: sun }, uCamP: { value: new THREE.Vector3() },
     uDot: { value: col(pal.dot) }, uCut: { value: col(pal.cut) }, uFill: { value: col(pal.fill) }, uHaze: { value: col(pal.haze) },
-    uAmb: { value: new THREE.Vector3(0.2, 0.22, 0.27) }, uSunC: { value: new THREE.Vector3(2.0, 1.42, 0.95) },
+    uAmb: { value: new THREE.Vector3(0.2, 0.22, 0.27) }, uSunC: { value: new THREE.Vector3(2.4, 1.7, 1.12) },
     uField: { value: null }, uFieldT: { value: null }, uMorph: { value: 0 }, uDensity: { value: 1 }, uMinS: { value: 0 }, uSizeK: { value: 0.3 }, uNear: { value: 2 }, uMaxPx: { value: 7 },
     uWA: { value: new THREE.Vector3(0, 1, 0) }, uWB: { value: new THREE.Vector3(0, 1, 0) },
     uPulse: { value: new THREE.Vector4(0, 0, -100, 0) }, uScan: { value: new THREE.Vector4(0, 0, -100, 0) }, uBucket: { value: new THREE.Vector4(0, 0, 3, 0) },
@@ -120,6 +157,17 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     }
     return i;
   }
+  // a dashed closed outline (0.8 m dashes), draped on the design surface
+  function dashed(set, i, pts) {
+    for (let a = 0; a < pts.length; a++) {
+      const p = pts[a], q = pts[(a + 1) % pts.length], L0 = Math.hypot(q[0] - p[0], q[1] - p[1]), n = Math.max(1, Math.round(L0 / 1.6));
+      for (let k = 0; k < n; k++) {
+        const f0 = k / n, f1 = (k + 0.5) / n, x0 = lerp(p[0], q[0], f0), z0 = lerp(p[1], q[1], f0), x1 = lerp(p[0], q[0], f1), z1 = lerp(p[1], q[1], f1);
+        set.set(i++, x0, drapeY(x0, z0), z0, x1, drapeY(x1, z1), z1, 0, 0, 0.6);
+      }
+    }
+    return i;
+  }
   const handles = (set, i, pts, s = 0.7) => { for (const [x, z] of pts) i = polyline(set, i, [[x - s, z - s], [x + s, z - s], [x + s, z + s], [x - s, z + s]], true, 0, 0, 1.6, drapeY, 1); return i; };
   { // static plan zones: pit (cut), pad (fill), platform + road (accent), corner handles
     let i = polyline(zCut, 0, rectPoly(SITE.pit), true); i = handles(zCut, i, rectPoly(SITE.pit)); zCut.commit(i);
@@ -129,14 +177,18 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     i = polyline(zAcc, i, [[R.ax + nx, R.az + nz], [R.bx + nx, R.bz + nz]], false, 0, 1, 0.4); i = polyline(zAcc, i, [[R.ax - nx, R.az - nz], [R.bx - nx, R.bz - nz]], false, 0, 1, 0.4);
     zAcc.commit(i); zAcc.base = i;
   }
-  const foot = L(col(pal.accent), 1, 96);   // machine footprints + the excavator's reach circle (live)
+  const foot = L(col(pal.accent), 1, 96);   // machine footprints (live)
+  // working zones (plan): where each machine's body goes. They never overlap (see SITE in sol-terrain.js).
+  const ZONES = machineZones(crew);
+  const zoneL = [L(col(pal.cut), 1, 120), L(col(pal.accent), 1, 120), L(col(pal.fill), 1, 120)];
+  ZONES.forEach((z, j) => zoneL[j].commit(dashed(zoneL[j], 0, z)));
 
   // ------------------------------------------------------------------ exec graphics: live paths + data links
   const pathL = L(col(pal.accent), 1.3, 400), pathR = L(col(pal.fill), 1.3, 200), pathE = L(col(pal.cut), 1.3, 64), links = L(col(pal.accent), 1, 3, { depthTest: false });
   const gY = (x, z) => field.ground(x, z) + 0.25;
   { let i = 0; for (const p of crew.paths()) i = polyline(pathL, i, p.pts, false, p.t0, p.t1, 1, gY, 1); pathL.commit(i); }
   { let i = 0; const n = crew.lanes.length; for (let k = 0; k < n; k++) { const a = crew.rollPath[k * 2], b = crew.rollPath[k * 2 + 1]; i = polyline(pathR, i, [a, b], false, k / n, (k + 1) / n, 1, gY, 12); } pathR.commit(i); }
-  { const pts = []; for (let k = 0; k <= 24; k++) { const sw = lerp(0.5, SITE.pileSw, k / 24), a = SITE.E.yaw + sw; pts.push([SITE.E.x + Math.cos(a) * 7.8, SITE.E.z - Math.sin(a) * 7.8]); } polyline(pathE, 0, pts, false, 0, 1, 1, gY, 1); pathE.commit(24); }
+  { const pts = []; for (let k = 0; k <= 24; k++) { const sw = lerp(0.5, SITE.pileSw, k / 24), a = SITE.E.yaw + sw, r = lerp(8.4, SITE.pileR, k / 24); pts.push([SITE.E.x + Math.cos(a) * r, SITE.E.z - Math.sin(a) * r]); } polyline(pathE, 0, pts, false, 0, 1, 1, gY, 1); pathE.commit(24); }
   links.commit(3);
   const PATHS = [pathL, pathR, pathE];
 
@@ -151,17 +203,18 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     2: { pitch: 39 * DEG, fov: 30, fogD: 290, siteR: 1e4, siteW: 1, minS: 4.2, sizeK: 0.42, near: 0, moteA: 0.55, skyA: 0.85, moteW: 120, maxPx: 3.6 },
   };
   const SAFE = { top: 0.2, bottom: 0.3, ...(safe || {}) };
-  const planC = { x: -1, z: -5 }, execC = { x: 2.5, z: -7.5 };
-  const TUNE = { execYaw: 0.8, execK: 1.3, digYaw: 0.95, digAhead: 6.6, digK: 1.12 };
+  const TUNE = { execYaw: 0.8, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.22 };
   const keyPlan = [], keyExec = [], keyDig = [];
-  for (const P of [SITE.pit, SITE.pad, SITE.plat]) for (const [x, z] of rectPoly({ ...P, hx: P.hx + P.ws * 0.6, hz: P.hz + P.ws * 0.6 })) {
-    keyPlan.push(new THREE.Vector3(x, hD(x, z), z));
-    if (P !== SITE.plat) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));   // exec frames the work; the platform sits at the edge
-  }
+  for (const P of [SITE.pit, SITE.pad, SITE.plat]) for (const [x, z] of rectPoly({ ...P, hx: P.hx + P.ws * 0.6, hz: P.hz + P.ws * 0.6 })) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));
+  for (const Zn of ZONES) for (const [x, z] of Zn) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));   // the machine zones too
+  // exec frames the three machines' work: the pit and the pile (excavator), the loader's zone, the roller's zone
+  const pitM = rectPoly({ ...SITE.pit, hx: SITE.pit.hx + 2, hz: SITE.pit.hz + 2 }), excM = [0, 1, 2, 3, 4, 5].map(k => [SITE.E.x + Math.cos(k * 1.047) * 4, SITE.E.z + Math.sin(k * 1.047) * 4]);
+  for (const [x, z] of [...pitM, ...excM, [SITE.pile.x, SITE.pile.z], ...ZONES[1], ...ZONES[2]]) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));
+  const mid = K => { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (const v of K) { x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z); } return { x: (x0 + x1) / 2, z: (z0 + z1) / 2 }; };
+  const planC = mid(keyPlan), execC = mid(keyExec);
   { const E = SITE.E;
     for (let a = 0; a < 12; a++) { const s = a / 12 * Math.PI * 2; keyDig.push(new THREE.Vector3(E.x + Math.cos(s) * 3.6, hF(E.x, E.z) + (a % 2 ? 5.2 : 0), E.z + Math.sin(s) * 3.6)); }
     for (const sw of [-0.5, 0, 0.5]) for (const r of [5, 11]) { const x = E.x + Math.cos(E.yaw + sw) * r, z = E.z - Math.sin(E.yaw + sw) * r; keyDig.push(new THREE.Vector3(x, hD(x, z), z)); }
-    keyDig.push(new THREE.Vector3(SITE.pile.x, hF(SITE.pile.x, SITE.pile.z), SITE.pile.z), new THREE.Vector3(SITE.pile.x, hF(SITE.pile.x, SITE.pile.z) + 4, SITE.pile.z));
   }
   const fitCam = new THREE.PerspectiveCamera(30, 1, 0.5, 4000), fv = new THREE.Vector3();
   function aim(cam, c) {
@@ -210,14 +263,39 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     base[1] = fit(c1, keyDig); base[1].dist *= TUNE.digK;   // a little air around the machine: a drone feed, not a portrait
   }
 
-  // live target pose for a mode (the dig shot breathes and follows the swing)
+  // live target pose for a mode (the dig shot breathes, drifts with the swing, and follows the machine when it drives)
   const live = { 0: pose(), 1: pose(), 2: pose() };
   let follow = 0;
+  const foc = { x: 0, z: 0, ok: false }, focW = { x: 0, z: 0 }, sv = [0, 1, 2, 3].map(() => new THREE.Vector3());
+  let zoom = 1;
+  // where the chase cam looks: ahead of the cab at home (the base shot); with a visitor driving, between the machine and
+  // the spot it is working, so both stay in frame
+  function focusGoal(out) {
+    const B = dig.body, O = dig.op;
+    if (dig.user && O.on) { let dx = O.x - B.x, dz = O.z - B.z; const d = Math.hypot(dx, dz), k = d > 0.01 ? Math.min(d * 0.6, TUNE.digAhead) / d : 0; out.x = B.x + dx * k; out.z = B.z + dz * k; return out; }
+    if (dig.user) return out;   // idle under a visitor: stay put
+    out.x = B.x + Math.cos(SITE.E.yaw) * TUNE.digAhead; out.z = B.z - Math.sin(SITE.E.yaw) * TUNE.digAhead; return out;
+  }
   function target(m, dt) {
     const o = Object.assign(live[m], base[m]);
     if (m === 1) {
       const T = dig.telemetry(tel);
-      if (!dig.dragging) follow += (Math.max(-0.25, Math.min(0.25, T.swing * DEG * 0.22)) - follow) * (1 - Math.exp(-dt * 0.7));   // a gentle drift with the swing, frozen while dragging
+      if (!foc.ok) { focW.x = o.tx; focW.z = o.tz; focusGoal(focW); foc.x = focW.x; foc.z = focW.z; foc.ok = true; }
+      focusGoal(focW); const kf = 1 - Math.exp(-dt * 1.1); foc.x += (focW.x - foc.x) * kf; foc.z += (focW.z - foc.z) * kf;
+      const bx = o.tx, bz = o.tz; o.tx = foc.x; o.tz = foc.z; o.ty += (hF(foc.x, foc.z) - hF(bx, bz)) * 0.6;
+      // soft fit: the boom elbow, the teeth, the cab top and the click marker stay inside the safe band; the shot eases out
+      // when one would leave it and back in when there is room again (measured on last frame's camera)
+      if (!fl && mode === 1) {
+        const yT = 1 - 2 * SAFE.top - 0.03, yB = 2 * SAFE.bottom - 1 + 0.03; let ex = -1;
+        exc.stick.getWorldPosition(sv[0]); sv[1].copy(dig.tip); sv[2].set(dig.body.x, field.ground(dig.body.x, dig.body.z) + 4.6, dig.body.z);
+        const M = dig.marks[0]; sv[3].set(M.x, field.ground(M.x, M.z), M.z); const nP = M.on && M.out < M.t0 ? 4 : 3;
+        for (let q = 0; q < nP; q++) { fv.copy(sv[q]).project(camera); if (fv.z < 1) ex = Math.max(ex, fv.y - yT, yB - fv.y, Math.abs(fv.x) - 0.94); }
+        const zg = ex > 0 ? Math.min(1.5, zoom * (1 + ex * 0.8)) : ex < -0.12 ? 1 : zoom;
+        zoom += (zg - zoom) * (1 - Math.exp(-dt * (zg > zoom ? 2.5 : 0.6)));
+      }
+      o.dist *= zoom;
+      const fg = dig.user ? 0 : Math.max(-0.25, Math.min(0.25, T.swing * DEG * 0.22));   // a gentle drift with the autopilot's swing
+      follow += (fg - follow) * (1 - Math.exp(-dt * 0.7));
       o.yaw += follow;
       o.yaw += Math.sin(clockT * 0.71) * 0.006 + Math.sin(clockT * 1.93 + 1) * 0.003;   // a little handheld life
       o.pitch += Math.sin(clockT * 1.13 + 2) * 0.004 + Math.sin(clockT * 2.7) * 0.0015;
@@ -245,10 +323,58 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // ------------------------------------------------------------------ per frame
   const tel = { swing: 0, reach: 0, grade: 0, load: 0, auto: true, ground: 0 };
   const v3 = new THREE.Vector3(), v4 = new THREE.Vector3(), pin = new THREE.Vector3(), bend = new THREE.Vector3();
-  let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0;
+  let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0, autoA = 1;
   const tipXY = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PH = [0, 0, 0];
   const LAB = [tagWords.dig, tagWords.haul, tagWords.grade], TCOL = [pal.cut, pal.accent, pal.fill];
-  const hudState = { wDig: 0, wPlan: 0, wExec: 0, tip: [0, 0], tipOn: false, tel, safeTop: 0.2, safeBottom: 0.3, hint: 0, t: 0, tags: [{}, {}, {}], zones: [{}, {}] };
+  const MRK = 28, GHOST = 18;   // points per marker ring, per ghost path
+  const hudState = { wDig: 0, wPlan: 0, wExec: 0, tip: [0, 0], tipOn: false, tel, safeTop: 0.2, safeBottom: 0.3, hint: 0, hintText: words.hint, autoA: 1, t: 0, tags: [{}, {}, {}], zones: [{}, {}],
+    // click markers (ring on the ground, projected) and the ghost path while it drives; mbox: machine screen boxes (tags avoid them)
+    marks: [0, 1].map(() => ({ a: 0, kind: 'dig', queued: false, pop: 1, n: 0, pts: new Float32Array(MRK * 2), c: [0, 0] })),
+    ghost: { a: 0, n: 0, pts: new Float32Array(GHOST * 2), foot: new Float32Array(8), footOn: false },
+    mbox: [new Float32Array(4), new Float32Array(4), new Float32Array(4)] };
+  const MRK_R = 1.6, pp = [0, 0], EXC_BOX = { hx: 3, hz: 3, off: 0 };
+  // project the click markers and the ghost path (no allocation: straight into the preallocated arrays)
+  function digMarks(dt) {
+    for (let j = 0; j < 2; j++) {
+      const M = dig.marks[j], H = hudState.marks[j];
+      const fade = M.out > M.t0 ? clamp01(1 - (clockT - M.out) / 0.6) : 1;
+      H.a = M.on ? fade : 0; H.kind = M.kind; H.queued = j === 1; H.pop = 1 + 0.6 * Math.exp(-(clockT - M.t0) * 9); H.n = 0;
+      if (H.a < 0.01) continue;
+      const R = MRK_R * H.pop * (H.queued ? 0.8 : 1);
+      for (let q = 0; q < MRK; q++) {
+        const a = q / MRK * Math.PI * 2, x = M.x + Math.cos(a) * R, z = M.z + Math.sin(a) * R;
+        if (!project(x, field.ground(x, z) + 0.08, z, pp)) { H.n = 0; break; }
+        H.pts[q * 2] = pp[0]; H.pts[q * 2 + 1] = pp[1]; H.n = q + 1;
+      }
+      if (project(M.x, field.ground(M.x, M.z) + 0.08, M.z, pp)) { H.c[0] = pp[0]; H.c[1] = pp[1]; } else H.n = 0;
+    }
+    const G = hudState.ghost, D = dig.drv, B = dig.body;
+    G.a += ((dig.driving && dig.user ? 1 : 0) - G.a) * (1 - Math.exp(-dt * 6)); G.n = 0; G.footOn = false;
+    if (G.a < 0.01) return;
+    for (let q = 0; q < GHOST; q++) {
+      const f = q / (GHOST - 1), x = lerp(B.x, D.x, f), z = lerp(B.z, D.z, f);
+      if (!project(x, field.ground(x, z) + 0.1, z, pp)) break;
+      G.pts[q * 2] = pp[0]; G.pts[q * 2 + 1] = pp[1]; G.n = q + 1;
+    }
+    // where it will stop: its footprint, facing the way it travels
+    const yaw = Math.atan2(-(D.z - D.z0), D.x - D.x0) + (D.rev ? Math.PI : 0), c = Math.cos(yaw), s = Math.sin(yaw), F = SITE.FOOT.dig;
+    G.footOn = true;
+    for (let q = 0; q < 4; q++) {
+      const lx = CORN[q * 2] * F.hx, lz = CORN[q * 2 + 1] * F.hz, x = D.x + lx * c + lz * s, z = D.z - lx * s + lz * c;
+      if (!project(x, field.ground(x, z) + 0.1, z, pp)) { G.footOn = false; break; }
+      G.foot[q * 2] = pp[0]; G.foot[q * 2 + 1] = pp[1];
+    }
+  }
+  // screen box of a machine: its footprint at the ground and h m up
+  function machineBox(out, x, z, yaw, F, h) {
+    const c = Math.cos(yaw), s = Math.sin(yaw), ox = x + c * (F.off || 0), oz = z - s * (F.off || 0);
+    out[0] = out[1] = 1e9; out[2] = out[3] = -1e9;
+    for (let q = 0; q < 8; q++) {
+      const lx = CORN[(q & 3) * 2] * F.hx, lz = CORN[(q & 3) * 2 + 1] * F.hz, px = ox + lx * c + lz * s, pz = oz - lx * s + lz * c;
+      if (!project(px, field.ground(px, pz) + (q > 3 ? h : 0), pz, pp)) continue;
+      out[0] = Math.min(out[0], pp[0]); out[1] = Math.min(out[1], pp[1]); out[2] = Math.max(out[2], pp[0]); out[3] = Math.max(out[3], pp[1]);
+    }
+  }
   const zoneVals = { cut: 0, fill: 0 }; let zoneAcc = 1, tagAcc = 1;
   const project = (x, y, z, out) => { v3.set(x, y, z).project(camera); out[0] = (v3.x + 1) / 2 * cw; out[1] = (1 - v3.y) / 2 * ch; return v3.z < 1; };
   function setBox(k, x, z, yaw, hx, hz, h, s) { U.uBoxA.value[k].set(x, z, Math.cos(yaw), Math.sin(yaw)); U.uBoxB.value[k].set(hx, hz, h, s); }
@@ -302,7 +428,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     U.uBucket.value.set(tip.x, tip.z, 3.4, wD * (0.35 + 0.65 * near));
 
     // machine shadows (boxes swept along the sun): excavator house + arm, loader, roller
-    { const E = SITE.E, sw = tel.swing * DEG, a = E.yaw + sw;
+    { const E = dig.body, sw = tel.swing * DEG, a = E.yaw + sw;
       setBox(0, E.x - Math.cos(a) * 0.6, E.z + Math.sin(a) * 0.6, a, 3.1, 2.1, 4.3, 0.72);
       dig.arm(pin, bend); const mx = (pin.x + tip.x) / 2, mz = (pin.z + tip.z) / 2, len = Math.hypot(tip.x - pin.x, tip.z - pin.z) / 2;
       setBox(1, mx, mz, a, Math.max(0.5, len), 0.45, Math.max(1, (pin.y + bend.y) / 2 - field.ground(mx, mz) + 1.2), 0.6);
@@ -315,15 +441,15 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     const pv = clamp01((wP - 0.25) / 0.75), zv = Math.max(pv, clamp01((wE - 0.3) / 0.7) * 0.4);   // zones: full in plan, faint in exec
     contours.mat.uniforms.uOpacity.value = 0.42 * pv; contours.mat.uniforms.uReveal.value = mode === 0 ? clamp01((planT - 0.2) / 2.2) * 1.08 : 1.08;
     for (const z of [zCut, zFill]) z.mat.uniforms.uOpacity.value = 0.95 * zv;
-    zAcc.mat.uniforms.uOpacity.value = 0.6 * zv;
+    zAcc.mat.uniforms.uOpacity.value = 0.6 * pv;   // platform + road: plan only (in exec it would sit up by the heading)
     contours.mesh.visible = pv > 0.004; zCut.mesh.visible = zFill.mesh.visible = zAcc.mesh.visible = zv > 0.004;
+    for (const z of zoneL) { z.mesh.visible = pv > 0.004; z.mat.uniforms.uOpacity.value = 0.75 * pv; }
     foot.mesh.visible = pv > 0.004 || wE > 0.004; foot.mat.uniforms.uOpacity.value = 0.7 * Math.max(pv, wE * 0.6);
     if (foot.mesh.visible) {
-      const E = SITE.E, sw = tel.swing * DEG; let i = 0;
-      i = rectFoot(foot, i, E.x, E.z, E.yaw, 2.6, 1.95); i = rectFoot(foot, i, E.x, E.z, E.yaw + sw, 2.1, 2.1);
-      i = rectFoot(foot, i, crew.L.x + Math.cos(crew.L.yaw) * 1.5, crew.L.z - Math.sin(crew.L.yaw) * 1.5, crew.L.yaw, 4.6, 1.75);
-      i = rectFoot(foot, i, crew.R.x + Math.cos(crew.R.yaw) * 0.4, crew.R.z - Math.sin(crew.R.yaw) * 0.4, crew.R.yaw, 3.6, 1.6);
-      if (pv > 0.004) for (let s = 0; s < 36; s += 2) { const a0 = s / 36 * Math.PI * 2, a1 = (s + 1) / 36 * Math.PI * 2; foot.set(i++, E.x + Math.cos(a0) * 12, drapeY(E.x + Math.cos(a0) * 12, E.z + Math.sin(a0) * 12), E.z + Math.sin(a0) * 12, E.x + Math.cos(a1) * 12, drapeY(E.x + Math.cos(a1) * 12, E.z + Math.sin(a1) * 12), E.z + Math.sin(a1) * 12, 0, 1, 0.5); }
+      const E = dig.body, sw = tel.swing * DEG, F = SITE.FOOT; let i = 0;
+      i = rectFoot(foot, i, E.x, E.z, E.yaw, F.dig.hx, F.dig.hz); i = rectFoot(foot, i, E.x, E.z, E.yaw + sw, F.house.hx, F.house.hz);
+      i = rectFoot(foot, i, crew.L.x + Math.cos(crew.L.yaw) * F.haul.off, crew.L.z - Math.sin(crew.L.yaw) * F.haul.off, crew.L.yaw, F.haul.hx, F.haul.hz);
+      i = rectFoot(foot, i, crew.R.x + Math.cos(crew.R.yaw) * F.grade.off, crew.R.z - Math.sin(crew.R.yaw) * F.grade.off, crew.R.yaw, F.grade.hx, F.grade.hz);
       foot.commit(i);
     }
     // exec graphics: live paths with a bright head where each machine is, data links pulsing between the machines
@@ -334,7 +460,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     }
     links.mesh.visible = ev > 0.004;
     if (links.mesh.visible) {
-      const A = ANCH, E = SITE.E;
+      const A = ANCH, E = dig.body;
       A[0][0] = E.x; A[0][1] = field.ground(E.x, E.z) + 7.5; A[0][2] = E.z;
       A[1][0] = crew.L.x; A[1][1] = field.ground(crew.L.x, crew.L.z) + 6.5; A[1][2] = crew.L.z;
       A[2][0] = crew.R.x; A[2][1] = field.ground(crew.R.x, crew.R.z) + 6; A[2][2] = crew.R.z;
@@ -348,11 +474,19 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     hudState.wDig = wD * (fl ? 0 : 1) + (fl ? Math.max(0, wTo.y * (k - 0.75) * 4) : 0); hudState.wPlan = clamp01((wP - 0.6) / 0.4); hudState.wExec = clamp01((wE - 0.6) / 0.4);
     hudState.safeTop = SAFE.top; hudState.safeBottom = SAFE.bottom; hudState.t = clockT;
     hudState.tip = project(tip.x, tip.y, tip.z, tipXY) ? tipXY : null;
-    const showHint = interactive && mode === 1 && !fl && !dig.hintGone;
-    hintA += ((showHint ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (showHint ? 2 : 5))); hudState.hint = hintA;
+    // hint: what a click does next ("Click to dig" / "Click to drop"); a change of text fades out and back in
+    const want = interactive && mode === 1 && !fl ? dig.hint : '', wantText = want === 'drop' ? words.hintDrop : want ? words.hint : '';
+    if (hintA < 0.03 && wantText) hudState.hintText = wantText;
+    const showHint = !!wantText && wantText === hudState.hintText;
+    hintA += ((showHint ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (showHint ? 3 : 8))); hudState.hint = hintA;
+    // the autopilot readout (state + telemetry strip) only while the autopilot drives
+    autoA += ((dig.user ? 0 : 1) - autoA) * (1 - Math.exp(-dt * 5)); hudState.autoA = autoA;
+    if (hudState.wDig > 0.01) digMarks(dt);
     if (hudState.wExec > 0.01 && hudState.anchors) {
       const A = hudState.anchors;
       for (let j = 0; j < 3; j++) { const T = hudState.tags[j]; T.p = T.p || [0, 0]; T.a = project(A[j][0], A[j][1], A[j][2], T.p) ? 1 : 0; T.label = LAB[j]; T.color = TCOL[j]; }
+      const F = SITE.FOOT, MB = hudState.mbox;
+      machineBox(MB[0], dig.body.x, dig.body.z, dig.body.yaw, EXC_BOX, 9.5); machineBox(MB[1], crew.L.x, crew.L.z, crew.L.yaw, F.haul, 4.2); machineBox(MB[2], crew.R.x, crew.R.z, crew.R.yaw, F.grade, 4);   // the excavator box is tall: its boom stands up to ~9 m
       if (tagAcc > 0.1) {   // the numbers tick at 10 Hz (fewer strings, and they stay readable)
         tagAcc = 0; const T = hudState.tags;
         T[0].value = Math.round(tel.load * 100) + '%'; T[1].value = (crew.L.speed * 3.6).toFixed(1) + ' km/h'; T[2].value = (crew.R.speed * 3.6).toFixed(1) + ' km/h';
@@ -501,7 +635,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     },
     // QA: camera pose (position + forward), the dig, the crew and the field
     camState() { camera.getWorldDirection(v4); return { p: camera.position.toArray(), d: v4.toArray(), fov: camera.fov }; },
-    qa: { dig, crew, field, SAFE, base, gov, hudState, renderer, project, SHOT, TUNE, U, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); } },
+    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); } },
     dispose() {
       this.stop(); clearTimeout(freeT); if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
       dig.dispose(); hud.dispose(); post.dispose(); field.dispose();

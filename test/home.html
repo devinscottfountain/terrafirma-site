@@ -22,17 +22,23 @@ html,body{margin:0;background:#000;color:#fff;font:16px/1.4 system-ui,sans-serif
 .tabs button[aria-selected="true"]{background:#151515;color:#fff}
 @media (max-width:991px){.spacer{min-height:0}.tabs{flex-direction:column}}
 /* ?layout=stage: the planned layout, a 100svh stage with the heading on top and the tab list overlaid at the bottom */
-html.lay-stage .sol{height:100svh;padding:0;box-sizing:border-box}
+html.lay-stage .sol{height:100svh;padding:0;box-sizing:border-box;--sol-safe-top:.3;--sol-safe-bottom:.28}
 html.lay-stage .container{position:absolute;inset:0;max-width:none;display:flex;flex-direction:column;justify-content:space-between;padding:48px 40px 32px}
 html.lay-stage .spacer{min-height:0;flex:1}
 html.lay-stage .tabs button{background:rgba(0,0,0,.55);backdrop-filter:blur(6px)}
+/* ?layout=tablet: a 713 x 560 stage with the heading above it and the tabs below (insets .06 / .1) */
+html.lay-tablet .sol{padding:32px 0;--sol-safe-top:.06;--sol-safe-bottom:.1}
+html.lay-tablet .stage{position:relative;width:713px;height:560px;margin:0 auto 24px}
+html.lay-tablet .container{max-width:713px;padding:0}
+html.lay-tablet .container h2{font-size:28px;position:absolute;top:-9999px}
+html.lay-tablet .spacer{display:none}
 /* small hosts: the heading takes half the stage, so the subject sits lower (per breakpoint safe insets) */
 @media (max-height:520px){html.lay-stage .sol{--sol-safe-top:.5;--sol-safe-bottom:.3}}
 @media (max-width:991px){html.lay-stage .container{padding:32px 20px 20px}html.lay-stage .container h2{font-size:28px}html.lay-stage .tabs{flex-direction:row;gap:8px}html.lay-stage .tabs button{padding:12px;font-size:12px}}
 </style>
-<script>if (new URLSearchParams(location.search).get('layout') === 'stage') document.documentElement.classList.add("lay-stage");</script></head><body>
+<script>{ const l = new URLSearchParams(location.search).get('layout'); if (l === 'stage' || l === 'tablet') document.documentElement.classList.add('lay-' + l); }</script></head><body>
 <div class="pre"></div>
-<section class="sol" id="solutions" data-three="solutions" data-sol-hint="Drag to dig" data-sol-tag-dig="Excavator 01" data-sol-tag-haul="Loader 02" data-sol-tag-grade="Roller 03">
+<section class="sol" id="solutions" data-three="solutions" data-sol-hint="Click to dig" data-sol-hint-drop="Click to drop" data-sol-tag-dig="Excavator 01" data-sol-tag-haul="Loader 02" data-sol-tag-grade="Roller 03">
   <div class="stage" id="solutions-stage" data-three-mount="solutions" aria-hidden="true"></div>
   <div class="container">
     <h2>Advancing construction with human-in-the-loop autonomy through Planning, Orchestration, and Operation</h2>

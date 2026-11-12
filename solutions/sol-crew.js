@@ -26,25 +26,33 @@ function smooth(p, n = 3) { for (let k = 0; k < n; k++) { const q = [p[0]]; for 
 const padW = (lx, lz) => { const P = SITE.pad, c = Math.cos(P.rot), s = Math.sin(P.rot); return [P.x + lx * c + lz * s, P.z - lx * s + lz * c]; };
 
 export function createCrew({ field, slot, parts, MSCALE }) {
-  const pile = SITE.pile, u = [-0.8, 0.6];
-  const S = [pile.x - u[0] * 6.3, pile.z - u[1] * 6.3], P0 = [pile.x - u[0] * 10.5, pile.z - u[1] * 10.5];
-  // loader legs: dir 1 forward, -1 reverse (heading opposite the path); act at the end. It dumps on the near end of the
-  // pad (the roller works the far end), so the two never stack up.
-  const Bd = padW(-6.2, -1.0), R1 = [14.2, -12.4], ad = Math.hypot(Bd[0] - R1[0], Bd[1] - R1[1]);
-  const W2 = [Bd[0] - (Bd[0] - R1[0]) / ad * 6.1, Bd[1] - (Bd[1] - R1[1]) / ad * 6.1];
-  const legsDef = [
-    { dir: 1, pts: [[15.2, -8.6], [12.2, -8.1], P0, S], act: 'scoop' },
-    { dir: -1, pts: [S, P0, [12.3, -10.0], R1] },
-    { dir: 1, pts: [R1, [(R1[0] + W2[0]) / 2, (R1[1] + W2[1]) / 2], W2], act: 'dump' },
-    { dir: -1, pts: [W2, [W2[0] - 2.4, W2[1] + 2.6], [16.6, -10.2], [15.2, -8.6]] },
-  ];
-  const legs = legsDef.map(d => ({ ...d, p: poly(smooth(d.pts, 2)) }));
-  let total = 0; for (const g of legs) { g.t0 = total; total += g.p.len; }
-  const L = { m: slot.haul, x: legs[0].pts[0][0], z: legs[0].pts[0][1], yaw: 0, leg: 0, s: 0, wait: 0, carry: 0, t: 0, speed: 0, dumpLeft: 0, jit: 0 };
+  // Loader: it scoops the far side of the excavator's pile (coming in from the north, so its body never gets near the
+  // excavator), K-turns, hauls down the road and dumps on the near end of the pad, on one of three lanes in turn so the
+  // fill spreads. The roller only works the far end of the pad: the two keep at least 1.5 machine lengths apart.
+  const pile = SITE.pile, u = [0.419, -0.908];
+  const at = (p, d, k) => [p[0] + d[0] * k, p[1] + d[1] * k];
+  const PL = [pile.x, pile.z], S = at(PL, u, 7.4), P0 = at(PL, u, 11.5), Y = at(PL, u, 15);
+  const R1 = [P0[0] - 3.4, P0[1] - 2.0], M = [P0[0], P0[1] + 2.0];
+  const DUMP_X = -18, LANES_D = [0, -2.4, 2.4];   // loader origin at the dump (pad local x; the bucket is 6 m ahead), three lanes
+  // legs: dir 1 forward, -1 reverse (heading opposite the motion); act at the end
+  const variant = lz => {
+    const D = padW(DUMP_X, lz), A = padW(DUMP_X - 5, lz), Q1 = padW(DUMP_X - 3.4, lz);
+    return [
+      { dir: 1, pts: [Y, P0, S], act: 'scoop' },                                        // in to the pile, nose first
+      { dir: -1, pts: [S, P0, R1] },                                                    // back out, swinging the tail west
+      { dir: 1, pts: [R1, M, A, D], act: 'dump' },                                      // down the road onto the pad
+      { dir: -1, pts: [D, Q1, [Y[0] + 0.2, Y[1] + 5.4], [Y[0] - 0.3, Y[1] + 2.9], Y] }, // back off the pad round to the pile line
+    ];
+  };
+  const VAR = LANES_D.map(lz => variant(lz).map(d => ({ ...d, p: poly(smooth(d.pts, 2)) })));
+  for (const V of VAR) { let t = 0; for (const g of V) { g.t0 = t; t += g.p.len; } V.total = t; }
+  let vi = 0, legs = VAR[0];
+  const total = VAR[0].total;
+  const L = { m: slot.haul, x: Y[0], z: Y[1], yaw: 0, leg: 0, s: 0, wait: 0, carry: 0, t: 0, speed: 0, dumpLeft: 0, jit: 0 };
   { const a = legs[0].p.at(0); L.yaw = Math.atan2(-a.dz, a.dx); }
 
   // roller lanes on the pad (pad local frame): forward along +x, reverse back on the same lane, step over
-  const lanes = [-3.8, -1.9, 0, 1.9, 3.8], DR = 2.5, D0 = -1.5, D1 = 7.5;   // DR: drum ahead of the origin; D0..D1: drum travel (pad local x), m
+  const lanes = [-3.8, -1.9, 0, 1.9, 3.8], DR = 2.5, D0 = 5.7, D1 = 12;   // DR: drum ahead of the origin; D0..D1: drum travel (pad local x), m (far end only)
   const R = { m: slot.grade, lane: 0, dirL: 1, pass: 0, d: D0, x: 0, z: 0, yaw: SITE.pad.rot, speed: 0, t: 0 };
   const rollPath = []; for (let i = 0; i < lanes.length; i++) { const a = padW(D0 - DR, lanes[i]), b = padW(D1 - DR, lanes[i]); rollPath.push(...(i % 2 ? [b, a] : [a, b])); }
 
@@ -85,8 +93,9 @@ export function createCrew({ field, slot, parts, MSCALE }) {
       if (g.act === 'scoop') { const fx = Math.cos(L.yaw), fz = -Math.sin(L.yaw); L.carry = field.take(L.x + fx * 6.0, L.z + fz * 6.0, 2.8, 3.4) + 0.6; L.wait = 1.6; }
       if (g.act === 'dump') { L.dumpLeft = L.carry; L.carry = 0; L.wait = 1.8; }
       L.leg = (L.leg + 1) % legs.length; L.s = 0;
+      if (L.leg === 0) { vi = (vi + 1) % VAR.length; legs = VAR[vi]; }   // next dump lane
     }
-    L.t = (g.t0 + Math.min(L.s, g.p.len)) / total;
+    L.t = (g.t0 + Math.min(L.s, g.p.len)) / legs.total;
   }
   function stepRoller(dt, t) {
     const dirX = R.pass === 0 ? 1 : -1, v = R.pass === 0 ? 2.4 : 2.0;
@@ -108,14 +117,14 @@ export function createCrew({ field, slot, parts, MSCALE }) {
   }
 
   const api = {
-    L, R, legs, total, rollPath, lanes,
+    L, R, get legs() { return legs; }, VAR, total, rollPath, lanes, roll: { x0: D0 - DR, x1: D1 - DR, zh: Math.max(...lanes.map(Math.abs)) },
     update(dt, t) {
       stepLoader(dt, t); stepRoller(dt, t);
       seat(L.m, L.x, L.z, L.yaw, 2.0); L.m.setDrive((L.dist = (L.dist || 0) + L.speed * dt * (legs[L.leg].dir || 1)) / MSCALE);
       seat(R.m, R.x, R.z, R.yaw, 2.0); R.m.setDrive(R.drive / MSCALE);
     },
     // loader route as one polyline per leg (for the path lines), t = 0..1 along the whole loop
-    paths() { return legs.map(g => ({ pts: g.p.pts, t0: g.t0 / total, t1: (g.t0 + g.p.len) / total })); },
+    paths() { const V = VAR[0]; return V.map(g => ({ pts: g.p.pts, t0: g.t0 / V.total, t1: (g.t0 + g.p.len) / V.total })); },
   };
   return api;
 }

@@ -1,7 +1,7 @@
 // sol-fx.js: materials and passes for the Solutions scene: the dot cloud shader, screen-space lines, dust motes, GPU dirt
 // particles, the sky haze behind everything, and a small post chain (bloom, the film's warm grade, vignette, grain, soft
 // canvas edges). Every program here is compiled by warm() in solutions.js.
-import { H_GLSL, D_GLSL } from './sol-terrain.js';
+import { H_GLSL, D_GLSL, SITE } from './sol-terrain.js';
 
 // Palette (display sRGB hex). The host can override any of these with CSS custom properties of the same name
 // (--sol-dot, --sol-cut, --sol-fill, --sol-haze, --sol-accent). Warm site palette, no red/green.
@@ -107,9 +107,9 @@ export function dotMaterial(THREE, U) {
         vec3 cDig = mix(lit, heat*(1.9 + 1.1*lam), bp*amt) + bp*atG*vec3(1.6, 1.5, 1.3);
         // plan: calm, near flat light, the whole site in cut and fill, design contours echoed in the dots
         float cl = fract(h / 1.0), con = 1. - smoothstep(0., .06, min(cl, 1. - cl));
-        vec3 cPlan = alb*(.26 + .14*lam) + mix(vec3(0.), (cf > 0. ? uCut : uFill)*1.7, smoothstep(.06, 1.3, abs(cf))) + alb*con*.14;
+        vec3 cPlan = alb*(.32 + .26*lam) + mix(vec3(0.), (cf > 0. ? uCut : uFill)*1.7, smoothstep(.06, 1.3, abs(cf))) + alb*con*.14;
         // exec: lit ground, a touch brighter so the whole site reads
-        vec3 cExec = lit*1.08;
+        vec3 cExec = lit*1.18;
         // as built: ground the machines have dug reads as a bright fresh scan in the survey views
         float asb = smoothstep(.08, .6, -fd.x);
         cPlan = mix(cPlan, vec3(1., .93, .8)*.9, asb*.75); cExec += vec3(1., .9, .72)*asb*.5;
@@ -121,12 +121,12 @@ export function dotMaterial(THREE, U) {
         col += vec3(1., .82, .62)*(ring*1.8 + scan*.55);
         // haze: distance from the camera, plus a site radius fade (plan and exec)
         float dist = length(mv.xyz), fogA = exp(-pow(dist / uFog.x, 2.));
-        float site = 1. - smoothstep(uFog.y - uFog.z, uFog.y, distance(p, vec2(${(4).toFixed(1)}, ${(-4).toFixed(1)})));
+        float site = 1. - smoothstep(uFog.y - uFog.z, uFog.y, distance(p, vec2(${SITE.centre.x.toFixed(1)}, ${SITE.centre.z.toFixed(1)})));
         col = mix(uHaze*.55, col, .2 + .8*fogA);
         // even density on screen: each dot knows the world spacing that lands uMinS px apart at its distance; finer rings
         // are thinned to it (by their random) and drawn at that size, coarser ones keep their own spacing
         float sT = uMinS*uPR*dist / uPx, keep = clamp(aD.x*aD.x / max(sT*sT, 1e-8), 0., 1.);
-        float a = (.62 + .38*aD.w)*(.12 + .88*fogA)*site*(1. - smoothstep(keep*.75, keep + 1e-4, aD.w));
+        float a = (.74 + .26*aD.w)*(.14 + .86*fogA)*site*(1. - smoothstep(keep*.75, keep + 1e-4, aD.w));
         a *= smoothstep(uNear, uNear*2.5, dist);
         float ps = max(aD.x, sT)*uSizeK*(1. + ring*.9 + scan*.3)*uPx / max(.1, -mv.z);
         if (ps < 1.1*uPR) { a *= ps / (1.1*uPR); ps = 1.1*uPR; }
@@ -324,7 +324,7 @@ export function createPost(THREE, renderer, { low = false } = {}) {
       c += (texture2D(tIn, vUv + uDir*3.231).rgb + texture2D(tIn, vUv - uDir*3.231).rgb)*.070;
       gl_FragColor = vec4(c, 1.);
     }`);
-  const P = { bloom: low ? 0.5 : 0.65, exposure: 1.0, vignette: 0.3, grain: 0.04, edge: new THREE.Vector4(0.07, 0.16, 0.16, 0) };
+  const P = { bloom: low ? 0.5 : 0.65, exposure: 1.12, vignette: 0.3, grain: 0.04, edge: new THREE.Vector4(0.07, 0.16, 0.16, 0) };
   const mComp = mat({ tScene: { value: rt.texture }, tBloom: { value: bA.texture }, uBloom: { value: P.bloom }, uExp: { value: 1 }, uVig: { value: 0.3 }, uGrain: { value: 0.04 }, uT: { value: 0 }, uEdge: { value: P.edge } }, /* glsl */ `
     uniform sampler2D tScene, tBloom; uniform float uBloom, uExp, uVig, uGrain, uT; uniform vec4 uEdge; varying vec2 vUv;
     ${CINE}
