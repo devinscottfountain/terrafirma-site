@@ -85,7 +85,7 @@ export async function mountDial({ film, section, prefer = '' }) {
   raf = requestAnimationFrame(count);
   const readout = () => {
     const s = film.state, a = s.s < 1 ? `Austin s ${s.s.toFixed(3)}` : `S ${s.S.toFixed(3)}`;
-    ro.textContent = `${a}  ${s.beat}\nscroll ${Math.round(s.y)} px  ${fps.toFixed(fps < 10 ? 1 : 0)} fps${film.freeze ? '  frozen' : ''}${note && performance.now() - noteT < 2500 ? '\n' + note : ''}`;
+    ro.textContent = `${a}  ${s.beat}\nscroll ${Math.round(s.y)} px  ${fps.toFixed(fps < 10 ? 1 : 0)} fps${s.perf ? '  quality ' + s.perf.level : ''}${film.freeze ? '  frozen' : ''}${note && performance.now() - noteT < 2500 ? '\n' + note : ''}`;
   };
   const roTimer = setInterval(readout, 250);
 

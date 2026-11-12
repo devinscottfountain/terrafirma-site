@@ -4,7 +4,7 @@
 // build(g, t) (on api, once populated) lays the city out for build clock g (0..1; the ships land first, then the city, see ARRIVE).
 import { createMarsEnv, createHabitatAssets, colonyLayout } from './habitat.js';
 import { createColonyLife } from './machines.js';
-import { easeOut, sstep } from './util.js';
+import { easeOut, sstep, snapShadow } from './util.js';
 import { JEZ_GROUND_GLSL } from './sky.js';
 
 export const COL = { x: 0, y: -6000, z: 0 };   // far below the solar system, inside its own sky dome
@@ -18,8 +18,8 @@ return mix(mix(mix(h3(i),h3(i+vec3(1,0,0)),f.x),mix(h3(i+vec3(0,1,0)),h3(i+vec3(
 mix(mix(h3(i+vec3(0,0,1)),h3(i+vec3(1,0,1)),f.x),mix(h3(i+vec3(0,1,1)),h3(i+vec3(1,1,1)),f.x),f.y),f.z);}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}`;
 
-// env: { THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files: { dtm, hiBump, ctxBump }, HIGH, lateRockets(rockets) }
-export function createColony({ THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files, HIGH, lateRockets }) {
+// env: { THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files: { dtm, hiBump, ctxBump }, HIGH, lateRockets(rockets), lodPath() -> [Vector3] }
+export function createColony({ THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files, HIGH, lateRockets, lodPath }) {
 const COLV = new THREE.Vector3(COL.x, COL.y, COL.z); // COL (module level) is plain numbers, COLV the Vector3
 const colony = new THREE.Group(); colony.position.copy(COLV); colony.visible = false; scene.add(colony);
 // sun shadow: orthographic box fitted around the colony (radius ~350 plus the solar farm). The map is wider than tall because a low sun
@@ -32,7 +32,7 @@ const colSun = new THREE.Vector3(); let colNight = 0; // colony sun direction + 
 let colonyAPI = null;               // { build(g, t), cranes, rockets } once populated
 // rockets.js + the footer's Starship hull builder load in the background and are normally ready long before the colony is built
 let rockMod = null; const rockP = Promise.all([import('./rockets.js'), import('../footer/foot-model-starship.js'), import('../footer/foot-model-kit.js')])
-  .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll } })).catch(e => console.warn('film rockets:', e));
+  .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll, steel: { STEEL_FLAT: s.STEEL_FLAT, steelUniforms: s.steelUniforms, steelShader: s.steelShader } } })).catch(e => console.warn('film rockets:', e));
 // Jezero maps: fetched at boot idle (loadMaps), uploaded on arrival, then each switch fades in over MAP_FADE ms instead of popping
 const terrU = { tDtm: { value: null }, tHi: { value: null }, tCtx: { value: null }, uOn: { value: new THREE.Vector3(0, 0, 0) }, uHB0: { value: 0 }, tMars: planets.mars.material.uniforms.tMap };
 // the sky dome's own uniforms (sun, air amount, ambient, origin): the terrain's far band shades with them (see JF below)
@@ -140,10 +140,15 @@ const JF = 'const float JF0=3300., JF1=4400.;\n';
           tA=c*.85; tR=mix(.9,1.,n3);
           diffuseColor.rgb=tA; }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor=tR;')
+      .replace('#include <fog_fragment>', `#ifdef USE_FOG
+        { vec3 roF=cameraPosition-uJOrigin, dvF=vTP-roF; float dF=length(dvF);           // sky.js jezHaze: the dome's floor hazes the same way
+          gl_FragColor.rgb=mix(gl_FragColor.rgb,jezHazeCol(dvF/dF,normalize(uJSun),uJK),jezHaze(dF,roF.y,fogNear,fogFar)); }
+        #endif`)
       .replace('#include <dithering_fragment>', `#include <dithering_fragment>
         { float fwJ=max(length(fwidth(vTP.xz)),1.), wJ=smoothstep(JF0,JF1,length(vTP.xz));   // fwidth in uniform flow
           if(wJ>0.){ vec3 ro=cameraPosition-uJOrigin, dv=vTP-ro, sJ=normalize(uJSun); float dJ=length(dv);
-            gl_FragColor.rgb=mix(gl_FragColor.rgb,jezAir(jezLit(vec3(vTP.x,0.,vTP.z),fwJ,sJ,uJAmb),ro,dv/dJ,0.,dJ,sJ,uJK),wJ); } }`)
+            vec3 gJ=mix(jezLit(vec3(vTP.x,0.,vTP.z),fwJ,sJ,uJAmb),jezHazeCol(dv/dJ,sJ,uJK),jezHaze(dJ,ro.y,fogNear,fogFar)); // the same haze as the mesh: only the ground shading blends
+            gl_FragColor.rgb=mix(gl_FragColor.rgb,gJ,wJ); } }`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         { vec2 p=vTP.xz; float w=max(length(fwidth(p)),1e-3), e=max(.3,w*.7);
           float gx=(bumpL(p+vec2(e,0.))-bumpL(p-vec2(e,0.)))/(2.*e), gz=(bumpL(p+vec2(0.,e))-bumpL(p-vec2(0.,e)))/(2.*e);
@@ -211,21 +216,36 @@ if (!HIGH) habAll.forEach((l, i) => (l.skip = i % 2 === 1));
 habAll.forEach(l => { // keep the landing spots and the build pad clear of habs
   if (ROCK_SITES.land.some(([x, z]) => Math.hypot(l.x - x, l.z - z) < l.r + 16) || Math.hypot(l.x - ROCK_SITES.build[0], l.z - ROCK_SITES.build[1]) < l.r + 30) l.skip = true; });
 const habI = habAll.filter(l => !l.skip);
-const shell = new THREE.InstancedMesh(HAB.habShellGeo, HAB.habShellMat, habI.length); shell.customDepthMaterial = HAB.habShellDepthMat;
-const habGlass = new THREE.InstancedMesh(HAB.habGlassGeo, HAB.habGlassMat, habI.length); habGlass.receiveShadow = true; // same matrices as shell (glass/opaque split is hashed from position)
-const frame = new THREE.InstancedMesh(HAB.habFrameGeo, HAB.habFrameMat, habI.length); frame.receiveShadow = true; frame.castShadow = false; // the shell silhouette already casts the dome
-const ringPad = new THREE.InstancedMesh(HAB.ringPadGeo, HAB.ringPadMat, habI.length);
-const skirt = new THREE.InstancedMesh(HAB.skirtGeo, HAB.skirtMat, habI.length);
+// LOD, fixed per hab (nothing swaps while scrolling): a hab the colony camera ever passes within ~55 of its radii (lodPath: samples of
+// the camera's path through the colony beat, colony space) gets the pillowed shell, real struts and the full ring pad; the rest
+// get flat panels with the struts painted on (habitat.js HAB_FAR) and a coarser pad. Under ~20 px of radius the difference is nil.
+const LOD_K = 0.028, camPath = lodPath ? lodPath() : [];
+habI.forEach(l => { let d = Infinity; for (const p of camPath) d = Math.min(d, Math.hypot(p.x - l.x, p.y, p.z - l.z)); l.near = !camPath.length || l.r / d > LOD_K; });
+const mkSet = (list, hi) => {
+  const n = Math.max(1, list.length), I = (geo, mat) => { const m = new THREE.InstancedMesh(geo, mat, n); m.count = 0; return m; };
+  const S = { list,
+    shell: I(hi ? HAB.habShellGeoHi : HAB.habShellGeo, hi ? HAB.habShellMat : HAB.habShellMatFar),
+    glass: I(hi ? HAB.habGlassGeoHi : HAB.habGlassGeo, hi ? HAB.habGlassMat : HAB.habGlassMatFar), // same matrices as shell (glass/opaque split is hashed from position)
+    frame: I(hi ? HAB.habFrameGeo : HAB.habFrameGeoFar, HAB.habFrameMat),
+    pad: I(hi ? HAB.ringPadGeo : HAB.ringPadGeoFar, HAB.ringPadMat) };
+  S.shell.customDepthMaterial = HAB.habShellDepthMat; S.glass.receiveShadow = S.frame.receiveShadow = true; S.frame.castShadow = false; // the shell silhouette already casts the dome
+  S.shell.castShadow = S.shell.receiveShadow = S.pad.castShadow = S.pad.receiveShadow = true;
+  list.forEach((l, i) => S.shell.setColorAt(i, l.col));
+  return S;
+};
+const habSets = [mkSet(habI.filter(l => l.near), true), mkSet(habI.filter(l => !l.near), false)];
+const skirt = new THREE.InstancedMesh(HAB.skirtGeo, HAB.skirtMat, habI.length); // contact shadows: every hab, one draw
 const sheds = new THREE.InstancedMesh(HAB.shedGeo, HAB.shedMat, fabs.length); sheds.customDepthMaterial = HAB.shedDepthMat;
-habI.forEach((l, i) => shell.setColorAt(i, l.col)); fabI.forEach((l, i) => sheds.setColorAt(i, l.col));
+fabI.forEach((l, i) => sheds.setColorAt(i, l.col));
 // instances outside .count are never drawn, so give each mesh a fixed bound instead of one computed from whatever prefix exists first
 const bnd = r => new THREE.Sphere(new THREE.Vector3(0, 10, 0), r);
-[shell, habGlass, frame, ringPad, skirt, sheds].forEach(m => (m.boundingSphere = bnd(270)));
+const habMeshes = habSets.flatMap(S => [S.shell, S.glass, S.frame, S.pad]);
+[...habMeshes, skirt, sheds].forEach(m => (m.boundingSphere = bnd(270)));
 yield; // instanced city meshes allocated
-colony.add(shell, habGlass, frame, ringPad, skirt, sheds);
+colony.add(...habMeshes, skirt, sheds);
 // shadows: shell/ringPad/sheds cast + receive; shell and sheds use customDepthMaterials that match their per-instance vertex toggles.
 // The frame does not cast (the shell silhouette covers it). Instances past .count are not drawn and cast nothing.
-shell.castShadow = shell.receiveShadow = ringPad.castShadow = ringPad.receiveShadow = sheds.castShadow = sheds.receiveShadow = true;
+sheds.castShadow = sheds.receiveShadow = true;
 
 // streetlights crawl outward along every road; red beacons blink on the crowns of the big domes
 const lp = [], lb = [];
@@ -284,39 +304,64 @@ const mtx = new THREE.Matrix4(), q4 = new THREE.Quaternion(), yAx = new THREE.Ve
 const skyCol = new THREE.Color(), dayH = new THREE.Color(0.78, 0.54, 0.36), duskH = new THREE.Color(0.2, 0.14, 0.13);
 const qPanel = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5)); // panels tilt toward the low western sun
 const started = (list, g) => { let n = 0; while (n < list.length && list[n].bt < g) n++; return n; }; // easeOut(x) > 0 exactly when bt < g
+// shadow light: the sun, its direction quantised to 0.1 deg so shadows hold still between steps while scrolling, its box snapped to
+// whole texels (util.snapShadow, as on the Austin lot). Through the launch the plume takes it over (rockets launch.light.k): a low warm
+// light over the pad throws long shadows away from it across the city, shortening as the ship climbs, flickering with the burn.
+const SUN_Q = THREE.MathUtils.degToRad(0.1), sunC = new THREE.Color(0xfff1dc), fireC = new THREE.Color(1, 0.66, 0.42);
+const lDir = new THREE.Vector3(), lLast = new THREE.Vector3(), lxb = new THREE.Vector3(), lyb = new THREE.Vector3(), lCtr = new THREE.Vector3();
+let sunI = 1;
+function placeLight() {
+  const L = rockets && rockets.launch, pk = L ? L.light.k : 0;
+  lDir.copy(colSun);
+  if (pk > 0.001) { lCtr.copy(L.light.pos); lCtr.y = Math.max(lCtr.y, 4); lDir.lerp(lCtr.normalize(), sstep(pk, 0, 1)); }
+  lDir.y = Math.max(lDir.y, 0.035); lDir.normalize();
+  const el = Math.round(Math.asin(lDir.y) / SUN_Q) * SUN_Q, az = Math.round(Math.atan2(lDir.x, lDir.z) / SUN_Q) * SUN_Q;
+  lDir.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+  sunLight.color.copy(sunC).lerp(fireC, pk); sunLight.intensity = THREE.MathUtils.lerp(sunI, 0.28 * (L ? L.light.i : 0), pk); // a directional light has no falloff: kept low, the fire light carries the near field
+  if (lDir.equals(lLast)) return false; lLast.copy(lDir);
+  // vertical half-extent = projected ground disc + tallest caster (cranes, domes)
+  const c = sunLight.shadow.camera, V = 390 * Math.max(lDir.y, 0.06) + 80; if (c.top !== V) { c.top = V; c.bottom = -V; c.updateProjectionMatrix(); }
+  snapShadow(sunLight, COLV, lDir, 600, lxb, lyb); return true;
+}
 // returns true when the build state (and so the shadow casters and sun) changed this frame
-function buildColony(g, t) {
+// gL: the launch clock. It equals the build clock g until the track ends, then keeps running on real time (film.js) while the
+// city holds at its final state: only the rockets read it.
+function buildColony(gB, t, gL = gB) {
   fadeMaps();
-  const gR = g; g = Math.max(0, (g - ARRIVE) / (1 - ARRIVE)); // rockets: the ships land first, the city build (and its day) runs on the rest
+  const gR = Math.min(gB, 1); let g = Math.max(0, (gR - ARRIVE) / (1 - ARRIVE)); // rockets: the ships land first, the city build (and its day) runs on the rest
   const night = colNight = sstep(g, 0.35, 0.95), el = THREE.MathUtils.lerp(0.34, -0.05, sstep(g, 0.05, 1));
   colSky.visible = false; // the atmosphere owner's sky dome (planets.air) replaces this one
   colSun.set(-Math.cos(el), Math.sin(el), -Math.cos(el) * 0.22).normalize();
-  // shadow camera: sit 600 units out along the sun, look at the colony centre; vertical half-extent = projected ground disc + tallest caster (cranes, domes)
-  { const c = sunLight.shadow.camera, V = 390 * Math.max(colSun.y, 0.06) + 80; sunLight.target.position.copy(COLV); sunLight.position.copy(COLV).addScaledVector(colSun, 600);
-    if (c.top !== V) { c.top = V; c.bottom = -V; c.updateProjectionMatrix(); } }
   skyU.sunDir.value.copy(colSun); skyU.night.value = night; lightU.g.value = g; lightU.night.value = night; lightU.t.value = t; winU.night.value = night; HAB.night.value = night;
   scene.fog.color.copy(skyCol.copy(dayH).lerp(duskH, night)); scene.fog.near = 500; scene.fog.far = 4200; // haze out to the delta front ~2 km west
-  sunLight.intensity = THREE.MathUtils.lerp(2.2, 0.1, night); ambient.intensity = THREE.MathUtils.lerp(0.5, 0.1, night); hemi.intensity = THREE.MathUtils.lerp(1.5, 0.12, night);
+  sunI = THREE.MathUtils.lerp(2.2, 0.1, night); ambient.intensity = THREE.MathUtils.lerp(0.5, 0.1, night); hemi.intensity = THREE.MathUtils.lerp(1.5, 0.12, night);
   hemi.color.copy(skyCol); if (planets.air && planets.air.hemi) planets.air.hemi(hemi.color); HAB.tubeMat.emissiveIntensity = night * 0.35;
-  if (rockets) rockets.update(gR, t, night); life.update(g, t, night, gR);
-  cranes.forEach(c => { c.jib.rotation.y = c.ph + g * 46 + t * 0.15; });
-  if (Math.abs(gR - lastG) < 1e-4) return false; lastG = gR;
+  if (rockets) rockets.update(gL, t, night); life.update(g, t, night, gR);
+  for (let i = 0; i < cranes.length; i++) { const c = cranes[i]; c.jib.rotation.y = c.ph + g * 46 + t * 0.15; }
+  const moved = placeLight(); // the shadow light (sun, or the plume during the launch); true when its shadow box moved
+  if (Math.abs(gR - lastG) < 1e-4) return moved; lastG = gR;
   // lists are sorted by bt, so the started instances are a prefix: draw count = how many have begun each stage
-  const nPad = started(habI, g), nFrame = started(habI, g - 0.02), nShell = started(habI, g - 0.07);
-  for (let i = 0; i < nPad; i++) {
-    const l = habI[i];
-    // pad pours, struts rise, panels skin up from the base
-    const k0 = easeOut((g - l.bt) / 0.03), s = easeOut((g - l.bt - 0.02) / 0.06), f = easeOut((g - l.bt - 0.07) / 0.08);
-    q4.setFromAxisAngle(yAx, l.rot);
-    mtx.compose(v3.set(l.x, 0, l.z), q4, s3.set(l.r, k0, l.r)); ringPad.setMatrixAt(i, mtx); skirt.setMatrixAt(i, mtx);
-    if (i < nFrame) { mtx.compose(v3.set(l.x, 0.45, l.z), q4, s3.set(l.r * 1.015, l.r * l.ys * s * 1.015, l.r * 1.015)); frame.setMatrixAt(i, mtx); }
-    if (i < nShell) { mtx.compose(v3.set(l.x, 0.45, l.z), q4, s3.set(l.r, l.r * l.ys * f, l.r)); shell.setMatrixAt(i, mtx); habGlass.setMatrixAt(i, mtx); }
+  for (let k = 0; k < habSets.length; k++) {
+    const S = habSets[k], L = S.list, nPad = started(L, g), nFrame = started(L, g - 0.02), nShell = started(L, g - 0.07);
+    for (let i = 0; i < nPad; i++) {
+      const l = L[i];
+      // pad pours, struts rise, panels skin up from the base
+      const k0 = easeOut((g - l.bt) / 0.03), s = easeOut((g - l.bt - 0.02) / 0.06), f = easeOut((g - l.bt - 0.07) / 0.08);
+      q4.setFromAxisAngle(yAx, l.rot);
+      mtx.compose(v3.set(l.x, 0, l.z), q4, s3.set(l.r, k0, l.r)); S.pad.setMatrixAt(i, mtx);
+      if (i < nFrame) { mtx.compose(v3.set(l.x, 0.45, l.z), q4, s3.set(l.r * 1.015, l.r * l.ys * s * 1.015, l.r * 1.015)); S.frame.setMatrixAt(i, mtx); }
+      if (i < nShell) { mtx.compose(v3.set(l.x, 0.45, l.z), q4, s3.set(l.r, l.r * l.ys * f, l.r)); S.shell.setMatrixAt(i, mtx); S.glass.setMatrixAt(i, mtx); }
+    }
+    S.pad.count = nPad; S.frame.count = nFrame; S.shell.count = S.glass.count = nShell;
+    S.shell.instanceMatrix.needsUpdate = S.glass.instanceMatrix.needsUpdate = S.frame.instanceMatrix.needsUpdate = S.pad.instanceMatrix.needsUpdate = true;
   }
-  ringPad.count = skirt.count = nPad; frame.count = nFrame; shell.count = habGlass.count = nShell;
+  const nSk = started(habI, g);
+  for (let i = 0; i < nSk; i++) { const l = habI[i]; q4.setFromAxisAngle(yAx, l.rot); mtx.compose(v3.set(l.x, 0, l.z), q4, s3.set(l.r, easeOut((g - l.bt) / 0.03), l.r)); skirt.setMatrixAt(i, mtx); }
+  skirt.count = nSk;
   const nShed = started(fabI, g - 0.04);
   for (let i = 0; i < nShed; i++) { const l = fabI[i], f = easeOut((g - l.bt - 0.04) / 0.07); q4.setFromAxisAngle(yAx, -l.rot); mtx.compose(v3.set(l.x, 0, l.z), q4, s3.set(l.w, l.h * f, l.d)); sheds.setMatrixAt(i, mtx); }
   sheds.count = nShed;
-  shell.instanceMatrix.needsUpdate = habGlass.instanceMatrix.needsUpdate = frame.instanceMatrix.needsUpdate = ringPad.instanceMatrix.needsUpdate = skirt.instanceMatrix.needsUpdate = sheds.instanceMatrix.needsUpdate = true;
+  skirt.instanceMatrix.needsUpdate = sheds.instanceMatrix.needsUpdate = true;
   const nPanel = started(panels, g);
   for (let i = 0; i < nPanel; i++) { const p = panels[i], k = easeOut((g - p.bt) / 0.04); mtx.compose(v3.set(p.x, 0, p.z), qPanel, s3.set(1, k, 1)); panel.setMatrixAt(i, mtx); }
   panel.count = nPanel; panel.instanceMatrix.needsUpdate = true;

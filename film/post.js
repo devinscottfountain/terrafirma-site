@@ -490,7 +490,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     snapExposure() { tonePass.snap = true; },     // jump exposure to target next frame (no adaptation)
     getExposure,
     // cine only (D6.1): live lens knobs, look tunables, quality ladder 0..3 (see createCine)
-    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, grade: C ? C.grade : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (...a) => C.scrim(...a) : () => {},
+    cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, grade: C ? C.grade : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (cx, cy, rx, ry, k) => C.scrim(cx, cy, rx, ry, k) : () => {}, edge: C ? (k, col, h, glow) => C.edge(k, col, h, glow) : () => {},
     setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
     gpuTimes: C ? () => C.gpuTimes() : () => null
   };
@@ -545,7 +545,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   const draw = (m, target) => { fsq.material = m; renderer.setRenderTarget(target); fsq.render(renderer); };
 
   // live knobs (per frame, from main.js) and look tunables
-  const fx = { flash: 0, heat: 0, heatAt: null, dirt: 0, streak: 1, bloom: 0 };
+  const fx = { flash: 0, heat: 0, heatAt: null, dirt: 0, streak: 1, streakAdd: 0, bloom: 0 }; // streakAdd: streak gain on top of look.streak (the launch core)
   const look = {
     bloom: 0.5,        // x bloom.strength (main.js writes 0.6 .. 0.9)
     threshold: 1.0, knee: 0.6,   // bloom soft knee on scene-linear HDR (pre exposure)
@@ -676,9 +676,10 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   // ---------------------------------------------------------------- lens: heat shimmer, FXAA, vignette, grain, dither
   const lensU = { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 }, grain: { value: look.grain }, vig: { value: look.vignette },
     heat: { value: 0 }, heatAt: { value: new THREE.Vector2(0.5, 0.5) }, heatLocal: { value: 0 }, fxaa: { value: 0 },
-    scrim: { value: new THREE.Vector4(0.5, 0.5, 1, 1) }, scrimK: { value: 0 } }; // soft burn behind on-screen copy: centre uv (y up), radii uv, depth
+    scrim: { value: new THREE.Vector4(0.5, 0.5, 1, 1) }, scrimK: { value: 0 }, // soft burn behind on-screen copy: centre uv (y up), radii uv, depth
+    edgeC: { value: new THREE.Vector3() }, edgeK: { value: 0 }, edgeH: { value: 0.3 }, edgeG: { value: 0 } }; // lower edge fade into the next section
   const mLens = mat(`
-    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform vec4 scrim; uniform float time, grain, vig, heat, heatLocal, fxaa, scrimK; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform vec4 scrim; uniform vec3 edgeC; uniform float time, grain, vig, heat, heatLocal, fxaa, scrimK, edgeK, edgeH, edgeG; varying vec2 vUv;
     ${CINE_GLSL}
     float vh(vec2 p){ return cH12(p*1.17+.31); }
     float vn(vec2 x){ vec2 i=floor(x),f=fract(x); f=f*f*(3.-2.*f); return mix(mix(vh(i),vh(i+vec2(1,0)),f.x),mix(vh(i+vec2(0,1)),vh(i+vec2(1,1)),f.x),f.y); }
@@ -706,7 +707,11 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       vec2 c=vUv-.5; float r2=dot(c,c);
       col*=mix(1.,smoothstep(.75,.12,r2*1.6),vig);
       if(scrimK>0.){ vec2 q=(vUv-scrim.xy)/scrim.zw; col*=1.-scrimK*exp(-dot(q,q)); } // a printer's burn under the copy, never a box
-      gl_FragColor=vec4(clamp(cineGrain(col,gl_FragCoord.xy,time,grain),0.,1.),1.); }`, lensU);
+      float ey=vUv.y/edgeH;
+      col+=edgeG*vec3(1.,.6,.32)*exp(-(ey-.8)*(ey-.8)*2.5);                   // warm haze rising off the bottom of the frame, just above the fade
+      col=clamp(cineGrain(col,gl_FragCoord.xy,time,grain),0.,1.);
+      if(edgeK>0.){ float m=1.-smoothstep(0.,1.,ey); col=mix(col,edgeC,edgeK*m*m*(3.-2.*m)); } // after the grain: the last rows are the next section's colour exactly
+      gl_FragColor=vec4(col,1.); }`, lensU);
 
   // ---------------------------------------------------------------- sizing + quality
   let w = 1, h = 1, bw = 1, bh = 1;
@@ -781,7 +786,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       mBlur.uniforms.tSrc.value = i ? rtL[i - 1].texture : rtPre.texture; mBlur.uniforms.uDir.value.set(1 / tw, 0); draw(mBlur, rtT[i]);
       mBlur.uniforms.tSrc.value = rtT[i].texture; mBlur.uniforms.uDir.value.set(0, 1 / th); draw(mBlur, rtL[i]);
     }
-    const sOn = q.streak && (force || (fx.streak > 0 && look.streak > 0));
+    const sg = look.streak + fx.streakAdd, sOn = q.streak && (force || (fx.streak > 0 && sg > 0));
     if (sOn) {
       mSDown.uniforms.tSrc.value = rtPre.texture; mSDown.uniforms.uThr.value = Math.max(0, look.streakThr - look.threshold); draw(mSDown, rtS[1]);
       const tx = 1 / rtS[0].width; mSBlur.uniforms.uTx.value = tx;
@@ -794,7 +799,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     // tone (exposure state is updated inside tonePass)
     e = tBeg('tone');
     const bl = bloom.strength;
-    toneU.uBloom.value = look.bloom * bl * (1 + fx.bloom); toneU.uStreak.value = sOn ? look.streak * fx.streak : 0;
+    toneU.uBloom.value = look.bloom * bl * (1 + fx.bloom); toneU.uStreak.value = sOn ? sg * fx.streak : 0;
     toneU.uFlash.value = force ? 0.5 : Math.min(1, Math.max(0, fx.flash)); toneU.uDirt.value = force ? 1 : Math.max(0, fx.dirt);
     const G = grade, gOn = G.expK !== 1 || G.wr !== 1 || G.wg !== 1 || G.wb !== 1 || G.contrast !== 1 || G.saturation !== 1 || G.lift !== 0 || G.gamma !== 1 || G.gain !== 1;
     toneU.uDial.value = gOn ? 1 : 0;
@@ -820,6 +825,8 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     profile(on = true) { profiling = !!on && !!tq; return profiling; },
     // scrim(cx, cy, rx, ry, k): darken a soft ellipse (uv, y up) by up to k behind copy that sits over a busy frame; k 0 = off
     scrim(cx, cy, rx, ry, k) { lensU.scrim.value.set(cx, cy, Math.max(1e-3, rx), Math.max(1e-3, ry)); lensU.scrimK.value = Math.max(0, k); },
+    // edge(k, [r, g, b], h, glow): fade the lower h of the frame (uv) into a display colour by k (the CTA hand-off), warm haze above it
+    edge(k, c, hh, glow) { lensU.edgeK.value = Math.max(0, Math.min(1, k)); lensU.edgeC.value.set(c[0], c[1], c[2]); lensU.edgeH.value = Math.max(0.05, hh); lensU.edgeG.value = Math.max(0, glow); },
     // one call per frame from main.js sets every lens knob from the story clocks (curves live here, with the look):
     // entry e 0..1 (p .40-.60, swap at e .30), gR = rockets' colony clock (ignite .80, liftoff .83), plume = [u, v] screen uv of
     // the engines (y up) or null. Anything not passed counts as outside its window.
@@ -832,7 +839,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       // launch: heat haze over the engines, a short flare at liftoff, dirt lit by the plume, streaks a touch hotter
       const L = gR >= 0.78 ? ss(0.79, 0.83, gR) : 0, lFlash = gR >= 0.78 ? 0.25 * g(gR, 0.835, 0.012) : 0;
       fx.heat = Math.max(eHeat, plume ? 0.55 * L : 0); fx.heatAt = eHeat >= 0.55 * L || !plume ? null : [plume[0], plume[1]];
-      fx.flash = Math.max(eFlash, lFlash); fx.dirt = Math.max(eDirt, 0.45 * L); fx.bloom = Math.max(eBloom, 0.25 * L); fx.streak = 1 + 0.3 * L;
+      fx.flash = Math.max(eFlash, lFlash); fx.dirt = Math.max(eDirt, 0.45 * L); fx.bloom = Math.max(eBloom, 0.25 * L); fx.streak = 1 + 0.3 * L; fx.streakAdd = 0.3 * L; // only the engine core is over the streak threshold
     },
     gpuTimes() { profiling = !!tq; const o = {}; let s = 0; for (const k in times) { o[k] = +times[k].toFixed(3); s += times[k]; } o.total = +s.toFixed(3); o.supported = !!tq; return o; }
   };

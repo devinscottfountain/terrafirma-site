@@ -189,9 +189,12 @@ void main(){
   vec2 uv = dirToUv(p);
   // derivatives from the smooth uv of the mesh (the atan seam would blow up dFdx of uv)
   vec2 gx = dFdx(vUv), gy = dFdy(vUv); gx.x = clamp(gx.x, -.004, .004); gy.x = clamp(gy.x, -.004, .004);
+  // the mesh's uv derivatives miss the foreshortening of the true sphere: toward the limb a pixel spans far more map, so widen
+  // the footprint by 1/cos (a mip bias at grazing angles). Without it the albedo and bump alias into sparkle on the edge.
+  float slant = 1. - max(dot(p, -rd), 0.), fsh = mix(1., 1. / max(1. - slant, 0.06), 0.85);
+  gx *= fsh; gy *= fsh;
   vec3 alb = textureGrad(tMap, uv, gx, gy).rgb;
   vec3 blur = textureGrad(tMap, uv, gx * 6., gy * 6.).rgb;
-  float slant = 1. - max(dot(p, -rd), 0.);
   alb = max(alb + (alb - blur) * 0.55 * (1. - smoothstep(0.5, 0.85, slant)), 0.); // local contrast: crater rims, chasma walls, dune fields (eased off toward the foreshortened limb)
   vec2 fwu = max(abs(gx), abs(gy));
   vec2 st = clamp(fwu * 1.2, vec2(1. / 4096., 1. / 2048.), vec2(0.004));
@@ -221,11 +224,11 @@ void main(){
   col += vec3(0.95, 0.45, 0.22) * 0.016 * exp(-((mu - 0.01) / 0.07) * ((mu - 0.01) / 0.07));         // thin warm twilight band on the terminator
   col += A * vec3(0.5, 0.3, 0.25) * 0.004 * (1. - smoothstep(-0.2, 0.05, mu));       // whisper of night so the dark side still has shape
   // limb haze: optical depth of a thin dust layer grows as 1/cos toward the edge; brighter on the lit side, a faint blue forward lobe
-  float hz = clamp(pow(slant, 5.) * 0.45 + pow(slant, 16.) * 0.5, 0., 0.7);
+  float hz = clamp(pow(slant, 6.) * 0.3 + pow(slant, 18.) * 0.35, 0., 0.5);
   float lit = smoothstep(-0.06, 0.45, mu);
-  vec3 haze = vec3(1.0, 0.70, 0.46) * 0.55 * uSunI * sunCol * lit;  // pale butterscotch dust, lit by the same sun
+  vec3 haze = vec3(1.0, 0.62, 0.38) * 0.5 * uSunI * sunCol * lit;   // butterscotch dust, lit by the same sun (warm, not cream)
   col = mix(col, haze, hz * smoothstep(-0.1, 0.2, mu));
-  col += vec3(1.0, 0.80, 0.56) * pow(slant, 10.) * smoothstep(0.1, 0.7, mu) * 0.6 * uSunI;   // bright lit limb
+  col += vec3(1.0, 0.66, 0.4) * pow(slant, 14.) * smoothstep(0.1, 0.7, mu) * 0.32 * uSunI;   // lit limb: a thin warm line that the halo rim continues
   float dome = smoothstep(0.9, 0.97, vnoise(p * 380.)) * smoothstep(0.62, 0.72, fbm3(p * 4.) * 1.35);
   col += vec3(1., 0.68, 0.3) * dome * (1. - smoothstep(-0.12, 0.05, mu)) * 2.4 * uDomes;
   gl_FragColor = vec4(col * cov, cov);                       // premultiplied: the AA'd limb blends over the stars

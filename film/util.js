@@ -63,3 +63,13 @@ export function plin(keys) {
     const [x0, y0] = keys[i], [x1, y1] = keys[i + 1]; return y0 + (y1 - y0) * (x - x0) / (x1 - x0 || 1);
   };
 }
+
+// shadow box of a directional light centred on `center` along `dir` (unit, toward the light), its centre snapped to whole shadow
+// texels in light space, so the shadow grid never slides under still geometry (the Austin lot and the colony). xb, yb: scratch Vector3
+export function snapShadow(light, center, dir, dist, xb, yb) {
+  const c = light.shadow.camera, ms = light.shadow.mapSize, tx = (c.right - c.left) / ms.x, ty = (c.top - c.bottom) / ms.y;
+  xb.set(0, 1, 0).cross(dir).normalize(); yb.copy(dir).cross(xb);   // the shadow camera's own x/y (Matrix4.lookAt, up +y)
+  const cx = center.dot(xb), cy = center.dot(yb);
+  light.target.position.copy(center).addScaledVector(xb, Math.round(cx / tx) * tx - cx).addScaledVector(yb, Math.round(cy / ty) * ty - cy);
+  light.position.copy(light.target.position).addScaledVector(dir, dist);
+}

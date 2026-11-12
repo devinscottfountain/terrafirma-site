@@ -228,54 +228,73 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
   const HG = geodesic(4);
   const SH_R = 0.995, PANEL_INSET = 0.9, FRAME_R = 0.985; // main.js overscales the frame by 1.015 -> struts land on R~1.0
   const panelSel = c => [1 - c.y, Math.min(1, Math.abs(c.y - 0.36) * 2.6), rng()];
+  // panels shade with the sphere's own (radial) normal, so a dome reads round instead of faceted; the glass keeps a hint of panel
+  // misalignment (each panel catches a slightly different patch of sky). Two LODs: far = one flat panel per face; near = each panel
+  // split in four with its mid-edges pushed out to the sphere (a pillowed cushion), so silhouettes stay round up close.
   const shellB = builder({ sel: 3, bary: 3, kind: 1 }), glassB = builder({ sel: 3, bary: 3, kind: 1 });
+  const shellBH = builder({ sel: 3, bary: 3, kind: 1 }), glassBH = builder({ sel: 3, bary: 3, kind: 1 });
+  const radial = p => p.clone().normalize(), tilt = (n, t) => n.clone().addScaledVector(t, 1).normalize();
+  const MIDB = [[0.5, 0.5, 0], [0, 0.5, 0.5], [0.5, 0, 0.5]];
   HG.faces.forEach(f => {
     const pts = f.v.map(p => f.c.clone().lerp(p, PANEL_INSET).multiplyScalar(SH_R)), sel = panelSel(f.c);
-    const fnrm = new V3().subVectors(pts[1], pts[0]).cross(new V3().subVectors(pts[2], pts[0])).normalize();
-    shellB.tri(pts[0], pts[1], pts[2], { sel, bary: BARY, kind: 0 }, f.c);
-    const gn = jitterN(fnrm, 0.07); // slight panel misalignment -> each facet catches a different patch of sky
-    glassB.tri(pts[0], pts[1], pts[2], { sel, bary: BARY, kind: 0 }, f.c, [gn, gn, gn]);
+    const jt = jitterN(f.c.clone().normalize(), 0.03).sub(f.c.clone().normalize()); // this panel's small tilt, shared by both LODs
+    shellB.tri(pts[0], pts[1], pts[2], { sel, bary: BARY, kind: 0 }, f.c, pts.map(radial));
+    glassB.tri(pts[0], pts[1], pts[2], { sel, bary: BARY, kind: 0 }, f.c, pts.map(p => tilt(radial(p), jt)));
+    // near LOD: corners + mid-edges (pushed out to the shell radius, the cushion), 4 triangles, barycentrics of the whole panel
+    const m = [[0, 1], [1, 2], [0, 2]].map(([a, b]) => pts[a].clone().add(pts[b]).normalize().multiplyScalar(SH_R * 0.997));
+    const sub = [[pts[0], m[0], m[2], [BARY[0], MIDB[0], MIDB[2]]], [m[0], pts[1], m[1], [MIDB[0], BARY[1], MIDB[1]]], [m[2], m[1], pts[2], [MIDB[2], MIDB[1], BARY[2]]], [m[0], m[1], m[2], [MIDB[0], MIDB[1], MIDB[2]]]];
+    for (const [a, b, c, bc] of sub) {
+      shellBH.tri(a, b, c, { sel, bary: bc, kind: 0 }, f.c, [a, b, c].map(radial));
+      glassBH.tri(a, b, c, { sel, bary: bc, kind: 0 }, f.c, [a, b, c].map(p => tilt(radial(p), jt)));
+    }
   });
   // airlock vestibule on +x (kept on ~58% of habs): rounded-top tunnel, end cap, hatch door, lit porthole
-  {
+  for (const SB of [shellBH, shellB]) {
     const prof = [[0.2, 0]]; for (let i = 0; i <= 6; i++) { const a = i / 6 * Math.PI; prof.push([0.2 * Math.cos(a), 0.2 + 0.2 * Math.sin(a)]); } prof.push([-0.2, 0]);
     const x0 = 0.7, x1 = 1.2, P = (x, [z, y]) => new V3(x, y, z);
     for (let i = 0; i < prof.length - 1; i++) {
       const m = [(prof[i][0] + prof[i + 1][0]) / 2, (prof[i][1] + prof[i + 1][1]) / 2 - 0.15];
-      shellB.quad(P(x0, prof[i]), P(x1, prof[i]), P(x1, prof[i + 1]), P(x0, prof[i + 1]), { kind: 1, bary: [0.3, 0.3, 0.3] }, new V3(0, m[1], m[0]));
+      SB.quad(P(x0, prof[i]), P(x1, prof[i]), P(x1, prof[i + 1]), P(x0, prof[i + 1]), { kind: 1, bary: [0.3, 0.3, 0.3] }, new V3(0, m[1], m[0]));
     }
     const cc = new V3(x1, 0.17, 0);
-    for (let i = 0; i < prof.length; i++) shellB.tri(cc, P(x1, prof[i]), P(x1, prof[(i + 1) % prof.length]), { kind: 1, bary: [0.3, 0.3, 0.3] }, new V3(1, 0, 0));
-    shellB.quad(new V3(x1 + 0.006, 0.02, 0.11), new V3(x1 + 0.006, 0.02, -0.11), new V3(x1 + 0.006, 0.31, -0.11), new V3(x1 + 0.006, 0.31, 0.11), { kind: 2, bary: [0.3, 0.3, 0.3] }, new V3(1, 0, 0));
-    shellB.quad(new V3(x1 + 0.01, 0.2, 0.05), new V3(x1 + 0.01, 0.2, -0.05), new V3(x1 + 0.01, 0.27, -0.05), new V3(x1 + 0.01, 0.27, 0.05), { kind: 3, bary: [0.3, 0.3, 0.3] }, new V3(1, 0, 0));
+    for (let i = 0; i < prof.length; i++) SB.tri(cc, P(x1, prof[i]), P(x1, prof[(i + 1) % prof.length]), { kind: 1, bary: [0.3, 0.3, 0.3] }, new V3(1, 0, 0));
+    SB.quad(new V3(x1 + 0.006, 0.02, 0.11), new V3(x1 + 0.006, 0.02, -0.11), new V3(x1 + 0.006, 0.31, -0.11), new V3(x1 + 0.006, 0.31, 0.11), { kind: 2, bary: [0.3, 0.3, 0.3] }, new V3(1, 0, 0));
+    SB.quad(new V3(x1 + 0.01, 0.2, 0.05), new V3(x1 + 0.01, 0.2, -0.05), new V3(x1 + 0.01, 0.27, -0.05), new V3(x1 + 0.01, 0.27, 0.05), { kind: 3, bary: [0.3, 0.3, 0.3] }, new V3(1, 0, 0));
     // side porthole on the tunnel
-    shellB.quad(new V3(0.98, 0.18, 0.203), new V3(1.06, 0.18, 0.203), new V3(1.06, 0.26, 0.203), new V3(0.98, 0.26, 0.203), { kind: 3, bary: [0.3, 0.3, 0.3] }, new V3(0, 0, 1));
+    SB.quad(new V3(0.98, 0.18, 0.203), new V3(1.06, 0.18, 0.203), new V3(1.06, 0.26, 0.203), new V3(0.98, 0.26, 0.203), { kind: 3, bary: [0.3, 0.3, 0.3] }, new V3(0, 0, 1));
   }
-  const habShellGeo = shellB.build(), habGlassGeo = glassB.build();
+  const habShellGeo = shellB.build(), habGlassGeo = glassB.build(), habShellGeoHi = shellBH.build(), habGlassGeoHi = glassBH.build();
 
   // frame: struts on every edge, hubs on every node, crown hatch, antenna mast + dish, door lamp
-  const fB = builder({ kind: 1 }), low = frameDetail === 'low';
+  const fB = builder({ kind: 1 }), fBF = builder({ kind: 1 }), low = frameDetail === 'low';
   HG.edges.forEach(([a, b]) => strut(fB, HG.verts[a], HG.verts[b], FRAME_R, 0.017, 0.019, 0.014, { kind: 0 }, low));
   HG.verts.forEach(v => hub(fB, v, FRAME_R, 0.03, 0.03, { kind: 1 }, low ? 3 : 4));
-  {
-    const g = new THREE.CylinderGeometry(0.075, 0.085, 0.05, 8, 1, false); g.translate(0, FRAME_R + 0.02, 0); fB.geo(g, { kind: 4 }, n => n.y < -0.5, true); g.dispose();
+  for (const FB of [fBF, fB]) {
+    const g = new THREE.CylinderGeometry(0.075, 0.085, 0.05, 8, 1, false); g.translate(0, FRAME_R + 0.02, 0); FB.geo(g, { kind: 4 }, n => n.y < -0.5, true); g.dispose();
     // antenna: mast + dish + beacon, off-crown
     const ax = 0.3, ay = Math.sqrt(1 - ax * ax) * FRAME_R;
-    fB.box(ax, ay + 0.17, 0.05, 0.016, 0.36, 0.016, { kind: 2 });
+    FB.box(ax, ay + 0.17, 0.05, 0.016, 0.36, 0.016, { kind: 2 });
     const dish = new THREE.ConeGeometry(0.09, 0.04, 9, 1, true); dish.rotateX(Math.PI); dish.rotateZ(-0.9); dish.translate(ax + 0.03, ay + 0.3, 0.05);
-    fB.geo(dish, { kind: 2 }, null, true); dish.dispose();
-    fB.box(ax, ay + 0.36, 0.05, 0.03, 0.03, 0.03, { kind: 3 });
-    fB.box(1.2 / 1.015 + 0.012, 0.345 / 1.015, 0, 0.03, 0.025, 0.06, { kind: 5 }); // lamp above the airlock door (vestibule only)
+    FB.geo(dish, { kind: 2 }, null, true); dish.dispose();
+    FB.box(ax, ay + 0.36, 0.05, 0.03, 0.03, 0.03, { kind: 3 });
+    FB.box(1.2 / 1.015 + 0.012, 0.345 / 1.015, 0, 0.03, 0.025, 0.06, { kind: 5 }); // lamp above the airlock door (vestibule only)
   }
-  const habFrameGeo = fB.build();
+  const habFrameGeo = fB.build(), habFrameGeoFar = fBF.build(); // far: crown hatch, antenna, dish, beacon and lamp only
 
-  const habShellMat = patch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.08, envMap, envMapIntensity: 0.45 }), 'shell', sh => {
+  // far LOD (no strut geometry): the struts are painted on the panels along their edges (barycentric distance), with coverage
+  // averaged once a strut is under a pixel, so far domes keep their lattice without sparkle
+  const RIB = `#ifdef HAB_FAR
+      { float re = min(min(vBary.x, vBary.y), vBary.z), fw = max(fwidth(re), 1e-4), w0 = 0.046;
+        float rib = mix(1. - smoothstep(w0 - .5 * fw, w0 + .5 * fw, re), min(1., 5.4 * w0), smoothstep(.6 * w0, 2.5 * w0, fw));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.55, .5, .44), rib * .85); habRib = rib; }
+      #endif`;
+  const mkShellMat = far => patch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.08, envMap, envMapIntensity: 0.45 }), far ? 'shell-far' : 'shell', sh => {
     sh.vertexShader = `attribute vec3 sel; attribute vec3 bary; attribute float kind; varying vec3 vSel; varying vec3 vBary; varying float vKind; varying float vIh; varying float vY; varying float vFrac;\n` + HASH +
       sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
       float ih = habInstHash(), frac; vec3 hw; habType(ih, frac, hw);
       transformed *= kind < 0.5 ? step(frac, dot(hw, sel)) : habHasVest(ih);
       vSel = sel; vBary = bary; vKind = kind; vIh = ih; vY = position.y; vFrac = frac;`);
-    sh.fragmentShader = `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vKind; varying float vIh; varying float vY; varying float vFrac;\n` + LITF + sh.fragmentShader
+    sh.fragmentShader = (far ? '#define HAB_FAR\n' : '') + `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vKind; varying float vIh; varying float vY; varying float vFrac; float habRib = 0.;\n` + LITF + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
       float pr = fract(vSel.z * 17.3 + vIh * 5.1), edge = min(min(vBary.x, vBary.y), vBary.z), seam = smoothstep(0.012, 0.075, edge);
       float solar = vKind < 0.5 ? step(0.9, vSel.z) * step(vFrac, 0.3) * step(0.22, vY) * step(vY, 0.86) : 0.;
@@ -289,7 +308,10 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       } else if (vKind < 1.5) { diffuseColor.rgb *= 0.97; }
       else if (vKind < 2.5) { diffuseColor.rgb *= vec3(0.36, 0.34, 0.33); }
       else { diffuseColor.rgb = vec3(0.03, 0.035, 0.04); }
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.93, 0.66, 0.48), (1. - smoothstep(0.0, 0.32, vY)) * 0.55 * (1. - solar)); // regolith dust creeping up from the base`)
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.93, 0.66, 0.48), (1. - smoothstep(0.0, 0.32, vY)) * 0.55 * (1. - solar)); // regolith dust creeping up from the base
+      if (vKind < 0.5) {
+      ${RIB}
+      }`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
       roughnessFactor = mix(roughnessFactor + 0.1 * (pr - 0.5), 0.22, max(solar, win));`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
@@ -298,17 +320,20 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       totalEmissiveRadiance += vec3(1., 0.62, 0.3) * win * (0.15 + 2.6 * ${CINE ? 'habLit(vIh, 0.)' : 'night'});`)
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
+  const habShellMat = mkShellMat(false), habShellMatFar = mkShellMat(true);
 
-  const habGlassMat = patch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.05, metalness: 0.92, envMap, envMapIntensity: 1.5 }), 'glass', sh => {
+  const mkGlassMat = far => patch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.05, metalness: 0.92, envMap, envMapIntensity: 1.5 }), far ? 'glass-far' : 'glass', sh => {
     sh.vertexShader = `attribute vec3 sel; attribute vec3 bary; attribute float kind; varying vec3 vSel; varying vec3 vBary; varying float vIh; varying float vY;\n` + HASH +
       sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
       float ih = habInstHash(), frac; vec3 hw; habType(ih, frac, hw);
       transformed *= 1. - step(frac, dot(hw, sel));
       vSel = sel; vBary = bary; vIh = ih; vY = position.y;`);
-    sh.fragmentShader = `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vIh; varying float vY;\n` + LITF + sh.fragmentShader
+    sh.fragmentShader = (far ? '#define HAB_FAR\n' : '') + `uniform float night; varying vec3 vSel; varying vec3 vBary; varying float vIh; varying float vY; float habRib = 0.;\n` + LITF + sh.fragmentShader
       .replace('#include <color_fragment>', `#include <color_fragment>
       float pr = fract(vSel.z * 23.7 + vIh * 3.3), edge = min(min(vBary.x, vBary.y), vBary.z), mull = 1. - smoothstep(0.03, 0.07, edge);
-      diffuseColor.rgb = mix(mix(vec3(0.30, 0.34, 0.39), vec3(0.42, 0.33, 0.24), step(0.62, pr)), vec3(0.2, 0.19, 0.18), mull);`)
+      diffuseColor.rgb = mix(mix(vec3(0.30, 0.34, 0.39), vec3(0.42, 0.33, 0.24), step(0.62, pr)), vec3(0.2, 0.19, 0.18), mull);
+      ${RIB}
+      mull = max(mull, habRib);`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
       roughnessFactor = mix(roughnessFactor + 0.05 * pr, 0.55, mull);
       roughnessFactor = max(roughnessFactor, 0.05 + 0.25 * smoothstep(40., 300., length(vViewPosition))); // distance floor: far facets stop sparkling`)
@@ -319,6 +344,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       totalEmissiveRadiance += vec3(1., 0.56, 0.24) * ${CINE ? 'habLit(vIh, floor(pr * 4.) * 0.17)' : 'night'} * on * lit * (1. - mull) * (0.7 + 0.9 * (1. - vY)) * 1.7;`)
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
+  const habGlassMat = mkGlassMat(false), habGlassMatFar = mkGlassMat(true);
   habGlassMat.userData.night = night;
 
   const habFrameMat = patch(new THREE.MeshStandardMaterial({ color: 0xc2b9ad, roughness: 0.38, metalness: 0.55, envMap, envMapIntensity: 0.7 }), 'frame', sh => {
@@ -350,9 +376,9 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
   const habFrameDepthMat = depthMat('frame', 'attribute float kind;\n', 'float ih0 = habInstHash(); transformed *= kind > 1.5 && kind < 3.5 ? habHasAnt(ih0) : (kind > 4.5 ? habHasVest(ih0) : 1.);');
 
   // ============================== ring pad: sintered pad, curb, lumpy regolith berm, bollard lamps ==============================
-  const ringPadGeo = (() => {
+  const ringPad = S => {
     const prof = [[0, 0.5, 0], [0.9, 0.5, 0], [1.0, 0.5, 1], [1.035, 0.47, 1], [1.08, 0.42, 2], [1.16, 0.29, 2], [1.24, 0.13, 2], [1.31, 0.03, 2], [1.37, 0, 3]];
-    const S = 30, pos = [], col = [], idx = [], h = (i, j, k) => { const s = Math.sin(i * 12.9898 + j * 78.233 + k * 37.719) * 43758.5453; return s - Math.floor(s); };
+    const pos = [], col = [], idx = [], h = (i, j, k) => { const s = Math.sin(i * 12.9898 + j * 78.233 + k * 37.719) * 43758.5453; return s - Math.floor(s); };
     for (let j = 0; j < prof.length; j++) for (let i = 0; i <= S; i++) {
       const ii = i % S, a = ii / S * Math.PI * 2, [r0, y0, t] = prof[j], lump = t === 2 ? (h(ii, j, 1) - 0.5) + 0.6 * (Math.sin(a * 3 + 1.3) * 0.5) : 0;
       const r = r0 + lump * 0.05, y = Math.max(0, y0 + (t === 2 ? (h(ii, j, 2) - 0.5) * 0.07 + lump * 0.03 : 0));
@@ -373,7 +399,8 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
     g.dispose(); ng.dispose();
     for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + 0.26; B.box(Math.cos(a) * 1.0, 0.565, Math.sin(a) * 1.0, 0.03, 0.13, 0.03, { color: [0.25, 0.24, 0.23], kind: 1 }); }
     return B.build();
-  })();
+  };
+  const ringPadGeo = ringPad(30), ringPadGeoFar = ringPad(14); // far LOD: the berm's lumps are under a pixel there
   const ringPadMat = patch(new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.95, metalness: 0 }), 'pad', sh => {
     sh.vertexShader = `attribute float kind; varying float vKind; varying float vPY;\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
       vKind = kind; vPY = position.y;`);
@@ -506,7 +533,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
   const bigLatticeGeo = (() => { const B = builder({ kind: 1 }); DG.edges.forEach(([a, b]) => strut(B, DG.verts[a], DG.verts[b], 1.0, 0.0042, 0.006, 0.005, { kind: 0 })); DG.verts.forEach(v => hub(B, v, 1.0, 0.009, 0.008, { kind: 1 }, 5)); return B.build(); })();
   const bigGlassGeo = (() => {
     const B = builder({ bary: 3 });
-    DG.faces.forEach(f => { const pts = f.v.map(p => f.c.clone().lerp(p, 0.97).multiplyScalar(0.994)); const fn = new V3().subVectors(pts[1], pts[0]).cross(new V3().subVectors(pts[2], pts[0])).normalize(), gn = jitterN(fn, 0.05); B.tri(pts[0], pts[1], pts[2], { bary: BARY }, f.c, [gn, gn, gn]); });
+    DG.faces.forEach(f => { const pts = f.v.map(p => f.c.clone().lerp(p, 0.97).multiplyScalar(0.994)); const cn = f.c.clone().normalize(), jt = jitterN(cn, 0.02).sub(cn); B.tri(pts[0], pts[1], pts[2], { bary: BARY }, f.c, pts.map(p => p.clone().normalize().add(jt).normalize())); }); // radial normals: round, not faceted
     return B.build();
   })();
   const bigGlowGeo = new THREE.SphereGeometry(0.975, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2);
@@ -618,7 +645,7 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
       .replace('#include <lights_fragment_maps>', ENV_NIGHT);
   });
 
-  [habShellGeo, habGlassGeo, habFrameGeo, ringPadGeo, skirtGeo, shedGeo, tubeGeo, ribGeo, bigLatticeGeo, bigGlassGeo, bigInteriorGeo, bigBaseGeo].forEach(g => g.computeBoundingSphere());
+  [habShellGeo, habGlassGeo, habShellGeoHi, habGlassGeoHi, habFrameGeo, habFrameGeoFar, ringPadGeo, ringPadGeoFar, skirtGeo, shedGeo, tubeGeo, ribGeo, bigLatticeGeo, bigGlassGeo, bigInteriorGeo, bigBaseGeo].forEach(g => g.computeBoundingSphere());
   Object.assign(tris, {
     habShell: triCount(habShellGeo), habGlass: triCount(habGlassGeo), habFrame: triCount(habFrameGeo), ringPad: triCount(ringPadGeo), skirt: triCount(skirtGeo),
     shed: triCount(shedGeo), tube: triCount(tubeGeo), rib: triCount(ribGeo),
@@ -629,10 +656,10 @@ export function createHabitatAssets({ THREE, renderer, envMap = null, frameDetai
 
   return {
     night, tris, setEnv,
-    habShellGeo, habShellMat, habShellDepthMat,
-    habGlassGeo, habGlassMat,
-    habFrameGeo, habFrameMat, habFrameDepthMat,
-    ringPadGeo, ringPadMat, skirtGeo, skirtMat,
+    habShellGeo, habShellMat, habShellDepthMat, habShellGeoHi, habShellMatFar,
+    habGlassGeo, habGlassMat, habGlassGeoHi, habGlassMatFar,
+    habFrameGeo, habFrameMat, habFrameDepthMat, habFrameGeoFar,
+    ringPadGeo, ringPadGeoFar, ringPadMat, skirtGeo, skirtMat,
     bigDome,
     shedGeo, shedMat, shedDepthMat,
     tubeGeo, tubeMat, ribGeo, ribMat,

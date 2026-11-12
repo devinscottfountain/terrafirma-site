@@ -299,6 +299,11 @@ vec3 jezLit(vec3 P, float fw, vec3 S, float amb){
   float self = smoothstep(-0.02, 0.06, dot(n, S) - 0.0);
   return alb * (NL * self * sunCol(S.y) * 2.0 + vec3(.95, .6, .36) * 0.25 * amb * (0.6 + 0.4 * n.y));
 }
+// one haze for the colony's terrain mesh and the dome's floor beyond it: the scene's linear fog (capped at HCAP) or the aerial haze,
+// whichever is more, at the same slant distance, so the haze never thins outward across the mesh edge (that read as a bright seam)
+const float HCAP = 0.62;
+float jezHaze(float d, float h0, float fn, float ff){ return max(min(clamp((d - fn) / max(ff - fn, 1.), 0., 1.), HCAP), 1. - aerial(h0, 0., d).x); }
+vec3 jezHazeCol(vec3 rd, vec3 S, float k){ return marsSky(normalize(vec3(rd.x, 0.02, rd.z)), S, k); }
 // aerial haze over a ground colour seen from ro along rd: the haze takes the horizon colour in that direction
 vec3 jezAir(vec3 gc, vec3 ro, vec3 rd, float hgt, float dist, vec3 S, float k){
   vec2 ae = aerial(ro.y, hgt, dist);
@@ -306,7 +311,7 @@ vec3 jezAir(vec3 gc, vec3 ro, vec3 rd, float hgt, float dist, vec3 S, float k){
 }`;
 
 const DOME_FRAG = /* glsl */ `
-uniform vec3 uSun, uOrigin; uniform float uK, uNight, uT, uAmb;
+uniform vec3 uSun, uOrigin; uniform float uK, uNight, uT, uAmb, uFogN, uFogF;
 varying vec3 vW;
 ${JEZ_GROUND_GLSL}
 void main(){
@@ -349,7 +354,7 @@ void main(){
     gc = jezLit(P, max(length(fwidth(P.xz)), 1.), S, uAmb);
     hit = 1.;
   }
-  if (hit > 0.5) col = jezAir(gc, ro, rd, hgt, dist, S, uK);
+  if (hit > 0.5) col = hgt > 0. ? jezAir(gc, ro, rd, hgt, dist, S, uK) : mix(gc, jezHazeCol(rd, S, uK), jezHaze(dist, ro.y, uFogN, uFogF)); // floor: the terrain mesh's haze
   gl_FragColor = vec4(col, 1.);
 }`;
 
@@ -395,7 +400,7 @@ void main(){
 // origin: the colony origin in world space (main.js COL). See d61/CINEMA-NOTES.md for the handshake.
 export function createMarsAir({ THREE, origin = new THREE.Vector3(0, -6000, 0) } = {}) {
   const sm = THREE.MathUtils.smoothstep, cl = v => Math.min(1, Math.max(0, v));
-  const domeU = { uSun: { value: new THREE.Vector3(-0.9, 0.33, -0.2).normalize() }, uOrigin: { value: origin.clone() }, uK: { value: 1 }, uNight: { value: 0 }, uT: { value: 0 }, uAmb: { value: 1 } };
+  const domeU = { uSun: { value: new THREE.Vector3(-0.9, 0.33, -0.2).normalize() }, uOrigin: { value: origin.clone() }, uK: { value: 1 }, uNight: { value: 0 }, uT: { value: 0 }, uAmb: { value: 1 }, uFogN: { value: 500 }, uFogF: { value: 4200 } };
   const dome = new THREE.Mesh(new THREE.SphereGeometry(6000, 64, 32), new THREE.ShaderMaterial({
     vertexShader: DOME_VERT, fragmentShader: DOME_FRAG, uniforms: domeU, side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false }));
   dome.frustumCulled = false; dome.renderOrder = -20; dome.visible = false; dome.name = 'mars-air-dome';
@@ -452,6 +457,7 @@ export function createMarsAir({ THREE, origin = new THREE.Vector3(0, -6000, 0) }
       const a = Math.max(0, alt);
       const clear = sm(e, 0.45, 1);                                       // haze by altitude, settling to the colony's own values
       fog.near = 500 + a * 1.5 * (1 - clear * 0.5); fog.far = Math.max(4200, (4200 + a * 6) * (0.55 + 0.45 * clear));
+      domeU.uFogN.value = fog.near; domeU.uFogF.value = fog.far; // the floor beyond the terrain mesh hazes like the mesh (jezHaze)
     }
   }
   const roots = () => [veil, dome];

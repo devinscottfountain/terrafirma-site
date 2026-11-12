@@ -2,6 +2,33 @@
 // forward + aft flaps in a slightly darker steel (M.flap, falls back to M.stainless), aerocovers, short legs, engine skirt, nose beacon. Real scale (50 m).
 import { TS, height, cylUV, boxUV, extrude } from './foot-model-kit.js';
 
+// Starship stainless: one definition for the footer and the film. Metal everywhere; the side that mirrors the dark sky behind the
+// camera gets the soft dome fill a real hull picks up (cool grey, brighter toward the top) and a warm grazing rim from the glow.
+// STEEL: the textured footer params. STEEL_FLAT: the same look with no maps (albedo and roughness are the footer maps' means),
+// for the film, where the ships are 300 m and more away and the brushed detail is under a pixel.
+export const STEEL = {
+  stainless: { color: 0xc8cbcf, roughness: 0.3, metalness: 1, envMapIntensity: 1.4 },
+  flap: { color: 0x9a9da2, roughness: 0.36, metalness: 1, envMapIntensity: 1.2 },
+};
+export const STEEL_FLAT = {
+  stainless: { color: 0xc4c3be, roughness: 0.29, metalness: 1, envMapIntensity: 1.4 },
+  flap: { color: 0x9a9da2, roughness: 0.315, metalness: 1, envMapIntensity: 1.2 },
+};
+export const steelUniforms = THREE => ({ uFill: { value: new THREE.Color(0.055, 0.05, 0.05) }, uRim: { value: new THREE.Color(0.5, 0.26, 0.11) } });
+// patch a MeshStandardMaterial into the steel shader; more(sh) runs after (e.g. the film's band clip), key names the variant
+export function steelShader(m, U, more = null, key = 'd61-steel') {
+  m.onBeforeCompile = sh => {
+    Object.assign(sh.uniforms, U);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uFill; uniform vec3 uRim;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          { vec3 wn = inverseTransformDirection(normal, viewMatrix); float g = 1.0 - abs(dot(normal, normalize(vViewPosition)));
+            totalEmissiveRadiance += diffuseColor.rgb * (uFill * (0.7 + 0.5 * clamp(wn.y, 0.0, 1.0)) + uRim * pow(g, 4.0)); }`);
+    if (more) more(sh);
+  };
+  m.customProgramCacheKey = () => key;
+  return m;
+}
+
 const R = 4.5;
 // lathe profile (radius, y) from the aft skirt to the nose tip; y measured from the bottom of the tank skirt
 const PROF = [[3.7, 0], [4.5, 0.7], [4.5, 33], [4.44, 35.5], [4.25, 38.5], [3.9, 41.5], [3.35, 44.3], [2.6, 46.6], [1.75, 48.4], [0.9, 49.6], [0.25, 50.25], [0, 50.4]];

@@ -7,6 +7,7 @@
 
 import { createMachines } from './machines.js';
 import { sunAt } from './austin.js';
+import { snapShadow } from './util.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
 // the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
 export const SITE_ROT = 17 * Math.PI / 180;
@@ -429,13 +430,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   let crewT = -1, crewG = -1;
   // shadow box anchored on the lot, its centre snapped to whole shadow texels in light space (a grid that never slides under the lot)
   const xb = new THREE.Vector3(), yb = new THREE.Vector3(), Y1 = new THREE.Vector3(0, 1, 0);
-  function placeSun(dir) {
-    const c = sunLight.shadow.camera, ms = sunLight.shadow.mapSize, tx = (c.right - c.left) / ms.x, ty = (c.top - c.bottom) / ms.y;
-    xb.crossVectors(Y1, dir).normalize(); yb.crossVectors(dir, xb);   // the shadow camera's own x/y (Matrix4.lookAt, up +y)
-    const cx = ORIGIN.dot(xb), cy = ORIGIN.dot(yb);
-    sunLight.target.position.copy(ORIGIN).addScaledVector(xb, Math.round(cx / tx) * tx - cx).addScaledVector(yb, Math.round(cy / ty) * ty - cy);
-    sunLight.position.copy(sunLight.target.position).addScaledVector(dir, 400);
-  }
+  const placeSun = dir => snapShadow(sunLight, ORIGIN, dir, 400, xb, yb); // util.js, shared with the colony
 
   function update({ g, t, hour }) {
     for (const k in fadeAt) { const v = Math.min(1, (performance.now() - fadeAt[k]) / FADE_MS); U[k].value = v * v * (3 - 2 * v); if (v >= 1) delete fadeAt[k]; }

@@ -19,10 +19,14 @@ import { createFlight, CA, E0, E1 } from './flight.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 import LOOK from './look.json.js';
+import { createGovernor } from './perf.js';
 
 // CA = 0.46 the entry swap (everything past it is the Jezero timelapse), E0..E1 = 0.40..0.60 the atmospheric entry window (flight.js)
 const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40], HOLD_CREEP = 0.3; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean; held disc growth per unit S
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
+// past the end the launch keeps going on real time while the CTA rises over the canvas: the launch clock runs on at OVER_RATE (g/s,
+// eased in and out), up to OVER_MAX, and rewinds just as smoothly when the page scrolls back into the track
+const OVER_RATE = 0.03, OVER_MAX = 0.4, OVER_TAU = 0.6;
 const SOL_S0 = -0.02;                // film clock where the SOL readout starts to fade in (its count starts there too)
 // per beat look offsets blend on S: Austin -> space over the first beat of space, space -> Mars orbit as the disc grows, Mars orbit -> colony across the swap flash (CA)
 const BEAT_X = [[-1, -0.9], [-0.3, -0.1], [0.43, 0.49]];
@@ -47,17 +51,31 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // the look: grade, lens and per beat offsets (look.json.js). One live object; the ?grade panel writes the same one
   const tune = JSON.parse(JSON.stringify(LOOK));
   let freeze = false; // dial: hold the film clock (machines, crew, strobes, grain); scroll still drives the film
+  const launchExp = () => { const r = mode === 'colony' && colonyW.api && colonyW.api.rockets; return r ? r.launch.exp : 0; };
+  const cranesUp = () => { const c = colonyW.api.cranes; for (let i = 0; i < c.length; i++) if (c[i].g.visible) return true; return false; };
   function applyTune() {
     const G = tune.grade, L = tune.lens, B = tune.beats, X = BEAT_X, look = post.look, gr = post.grade;
     if (look) { look.bloom = L.bloomStrength; look.threshold = L.bloomThreshold; look.vignette = L.vignette; look.grain = L.grain; }
     if (!gr) return;
     const a = sstep(S, X[0][0], X[0][1]), b = sstep(S, X[1][0], X[1][1]), c = sstep(S, X[2][0], X[2][1]);
     const w = G.warmth + beatVal(B, 'warmth', a, b, c), t = G.tint;
-    gr.expK = 2 ** (G.exposure + beatVal(B, 'exposure', a, b, c));
+    gr.expK = 2 ** (G.exposure + beatVal(B, 'exposure', a, b, c) - 0.55 * launchExp()); // the plume pulls the exposure down, it recovers as the ship climbs
     if (w === 0 && t === 0) gr.wr = gr.wg = gr.wb = 1;
     else { const r = 2 ** (0.25 * w), g = 2 ** (-0.2 * t), bl = 2 ** (-0.25 * w), n = 1 / (0.2126 * r + 0.7152 * g + 0.0722 * bl); gr.wr = r * n; gr.wg = g * n; gr.wb = bl * n; } // warm/cool on red-blue, tint on green-magenta, luminance kept
     gr.contrast = G.contrast; gr.saturation = G.saturation; gr.lift = G.lift; gr.gamma = G.gamma; gr.gain = G.gain;
   }
+  // adaptive quality (perf.js): pixel ratio, post level, trails, shadow size and refresh, launch particles. Applied by uniforms and
+  // target sizes only; it holds still through the planet-to-colony flash (E0 .. 0.52) unless frames collapse
+  let trailsOK = true, partKeep = 1;
+  const gov = createGovernor({ high: HIGH, hold: () => S > E0 && S < 0.52, apply: q => {
+    const pr = Math.min(devicePixelRatio || 1, HIGH ? 1.5 : 1, q.pr);
+    if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
+    post.setQuality(HIGH ? q.post : Math.min(q.post, 1));
+    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep;
+    const sh = sunLight.shadow, sx = HIGH ? q.shadow : Math.min(q.shadow, 2048);
+    if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
+    const r = colonyW.api && colonyW.api.rockets; if (r && r.setKeep) r.setKeep(partKeep);
+  } });
   // UnrealBloom's blurs use sigma = kernel radius, so a lone bright pixel blooms into a soft square. A proper Gaussian keeps the glow round.
   (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 
@@ -75,7 +93,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
 
   // ---------- Jezero Base (built lazily, in idle time once Mars is on approach) ----------
   const colonyW = createColony({ THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files: files.jezero, HIGH,
-    lateRockets: r => inWorld('colony', () => compileIn(r.group)) });
+    lateRockets: r => inWorld('colony', () => compileIn(r.group)),
+    lodPath: () => { const o = []; for (let i = 0; i <= 48; i++) { const v = new THREE.Vector3(); cPosC.getPoint(cPosU(0.6 + (P_END - 0.6) * i / 48), v); o.push(v.sub(COLV)); } return o; } }); // dome LOD (colony.js)
   const colonyGroup = colonyW.group;
   const COLV = new THREE.Vector3(COL.x, COL.y, COL.z);
 
@@ -116,33 +135,42 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     [0.72, cAt(500, 32, 190), [15, 34, -135], 40],
     [0.80, cAt(420, 24, 130), [10, 38, -130], 40],
     [0.88, cAt(350, 15, 80), [-5, 44, -125], 42],     // the stacked ship on the pad, parked ships beside it
-    [1.0, cAt(330, 12, 50), [-10, 48, -120], 48],
-    [1.12, cAt(340, 11, 40), [-14, 50, -118], 52]
+    [1.0, cAt(450, 13, 85), [-15, 52, -118], 45],     // lift-off: a slow pull back and up so the climb and the city share the frame
+    [1.12, cAt(600, 14, 115), [-20, 60, -115], 50]    // the last frame: the ship high on its column, the city below
   ].map(([p, a, b, f]) => ({ p, pos: new THREE.Vector3(...a).add(COLV), look: new THREE.Vector3(...b).add(COLV), fov: f }));
   const cPosC = new THREE.CatmullRomCurve3(CSH.map(k => k.pos), false, 'centripetal'), cLookC = new THREE.CatmullRomCurve3(CSH.map(k => k.look), false, 'centripetal');
   // position and aim each run on their own arc-length clock (like spaceCam): same keys at the same S, no speed step at any key
-  const CP = CSH.map(k => k.p), cPosU = arcClock(cPosC, CP), cLookU = arcClock(cLookC, CP), cFov = pchip(CP, CSH.map(k => k.fov));
-  // scroll -> the colony's build clock gR (rockets.js table: land 0-0.064, ARRIVE 0.1, ignite 0.8, liftoff 0.83, 1.0 ~1.2 km up)
+  // the end keys ease to a stop (zero speed, zero lens change) where the track ends, so nothing steps when the clock stops there
+  const CP = CSH.map(k => k.p), cPosU = arcClock(cPosC, CP, undefined, 0), cLookU = arcClock(cLookC, CP, undefined, 0), cFov = pchip(CP, CSH.map(k => k.fov), undefined, 0);
+  // scroll -> the colony's build clock gR (rockets.js table: land 0-0.064, ARRIVE 0.1, ignite 0.8, liftoff 0.83, 1.0 ~230 m up)
   const gOf = (() => { const f = pchip([0.49, 0.62, 0.88, 0.9, 1.12], [0, 0.1, 0.8, 0.83, 1]); return p => (p <= 0.49 ? 0 : p >= 1.12 ? 1 : clamp01(f(p))); })();
-  const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3(), camUpY = new THREE.Vector3(0, 1, 0);
-  // the ship's mid-body (world) at build clock g: rockets.launch.pos when rockets.js gives it, else its published climb over the pad
+  const LIFT_G = 0.83, rockW = new THREE.Vector3(), rockL = new THREE.Vector3(), padW = new THREE.Vector3(ROCK_SITES.build[0], 0, ROCK_SITES.build[1]).add(COLV), padD = new THREE.Vector3();
+  // the ship's mid-body (world) at launch clock g: rockets.launch.pos when rockets.js gives it, else its published climb over the pad
   function shipAt(g, out) {
     const r = colonyW.api && colonyW.api.rockets, L = r && r.launch;
     if (L && L.pos) return out.copy(L.pos);
-    const k = Math.max(0, g - LIFT_G), y = 42000 * k * k, d = 0.00025 * y * y; return out.set(ROCK_SITES.build[0] - 0.952 * d, 26 + y, ROCK_SITES.build[1] - 0.305 * d).add(COLV);
+    const k = Math.max(0, g - LIFT_G), y = 4800 * k * k * (1 + 4 * k), d = 0.00025 * y * y; return out.set(ROCK_SITES.build[0] - 0.952 * d, 26 + y, ROCK_SITES.build[1] - 0.305 * d).add(COLV);
   }
-  function colCam(p, outPos, outLook) {
+  const elev = v => Math.asin(THREE.MathUtils.clamp(v.y / Math.max(1e-6, v.length()), -1, 1)), angD = a => Math.atan2(Math.sin(a), Math.cos(a));
+  // q: the path clock (held at P_END past the track), gL: the launch clock (runs on past it)
+  function colCam(p, outPos, outLook, gL) {
     const q = Math.min(Math.max(p, CA), P_END);
     cPosC.getPoint(cPosU(q), outPos); cLookC.getPoint(cLookU(q), outLook);
-    // launch: from liftoff the aim leaves the pivot for the climbing ship, a beat behind it
-    const g = gOf(q), k = sstep(g, LIFT_G + 0.004, LIFT_G + 0.05);
-    if (k > 0) { shipAt(g, rockL); rockW.copy(rockL).sub(outLook); outLook.addScaledVector(rockW, k * 0.85); } // never quite on it: the column trails into frame from below
-    // at the end the aim tips down under the ship, so it climbs into the top third above it
-    const dn = 0.26 * sstep(q, 0.97, 1.1);
-    if (dn > 0) { rockW.copy(outLook).sub(outPos); rockL.crossVectors(rockW, camUpY).normalize(); outLook.copy(outPos).add(rockW.applyAxisAngle(rockL, -dn)); }
     // portrait: open the lens so the ships, the pad and the hub still share the width
-    const f = cFov(q); if (cam.aspect >= 1) return f;
-    return 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(f / 2)) * Math.min(2.2, 1.12 / cam.aspect)));
+    let f = cFov(q); if (cam.aspect < 1) f = 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(f / 2)) * Math.min(2.2, 1.12 / cam.aspect)));
+    // launch: from lift-off the aim tilts up after the ship, a beat behind it, but only as far as keeps the pad in frame: the ship
+    // climbs into the top third with its column under it and the city along the bottom. Past that the ship leaves the top.
+    const k = sstep(gL, LIFT_G + 0.002, LIFT_G + 0.045);
+    if (k > 0) {
+      const hv = THREE.MathUtils.degToRad(f / 2), d0 = rockW.copy(outLook).sub(outPos), dist = d0.length();
+      shipAt(gL, rockL).sub(outPos);
+      const e0 = elev(d0), es = elev(rockL), ep = elev(padD.copy(padW).sub(outPos));
+      const hold = 0.3 + 1.1 * sstep(over, 0, OVER_MAX * 0.6); // past the track the pad may sink into the CTA as the aim follows the ship up
+      const pitch = lerp(e0, Math.min(Math.max(e0, es - 0.5 * hv), ep + hold * hv), k);
+      const a0 = Math.atan2(d0.x, d0.z), yaw = a0 + angD(Math.atan2(rockL.x, rockL.z) - a0) * 0.55 * k;
+      outLook.set(Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw)).multiplyScalar(dist).add(outPos);
+    }
+    return f;
   }
 
   // ---------- Mars look: a key light fixed in camera space (front, left, a little high), so whatever the path does the disc reads full and lit ----------
@@ -153,9 +181,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     fragmentShader: `uniform float uR, uI; uniform vec2 uL2; varying vec2 vQ;
     void main(){ float q = length(vQ), d = max(q / uR - 1., 0.); vec2 dir = vQ / max(q, 1e-4);
       float side = smoothstep(-0.6, 1., dot(dir, uL2));
-      float g = exp(-d * 14.) * 0.55 + exp(-d * 4.) * 0.16 + exp(-d * 1.6) * 0.04;
+      // a thin dusty atmosphere hugging the limb (Mars' dust haze tops out ~1% of its radius up), much stronger on the lit side:
+      // a narrow warm rim, not a soft disc. The inner term sits over the geometric edge so the limb never reads as a cut-out
+      float g = exp(-d * 120.) * 0.75 + exp(-d * 34.) * 0.16 + exp(-d * 9.) * 0.012;
       float edge = 1. - smoothstep(11., 15., max(abs(vQ.x), abs(vQ.y))); // fade before the plane's edge: its square never shows on black
-      gl_FragColor = vec4(vec3(1.0, 0.52, 0.24) * g * mix(0.1, 1., side) * uI * edge, 0.); }`,
+      gl_FragColor = vec4(vec3(1.0, 0.56, 0.28) * g * side * side * uI * edge, 0.); }`,
     transparent: true, depthWrite: false, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor
   }));
   { const u = planets.marsAtmo.material.uniforms; u.uBetaR.value.multiplyScalar(0.25); u.uSunCol.value.set(1, 0.86, 0.66); u.uK.value = 15; } // dust only, warm: no blue haze over the far side
@@ -231,7 +261,16 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     for (let i = aK.length - 2; i >= 0; i--) if (aK[i] >= aK[i + 1] - 1) aK[i] = aK[i + 1] - Math.max(1, 0.25 * vh);
     austin.layout({ yA: aK[0], yT: aK[1], yX: aK[2], yE: aK[3], S: LAY.S });
     aircraft.layout(camAtDist, W / H);
-    measureTitle(); measureBeat();
+    measureTitle(); measureBeat(); measureEdge();
+  }
+  // the section after the film: its background colour (computed style, display sRGB) is what the canvas's lower edge fades into
+  function measureEdge() {
+    let el = section.nextElementSibling;
+    while (el && (el.offsetHeight === 0 || getComputedStyle(el).display === 'none')) el = el.nextElementSibling;
+    const rgba = n => { const m = n && getComputedStyle(n).backgroundColor.match(/[\d.]+/g); return m && (m.length < 4 || +m[3] > 0.5) ? m : null; };
+    let c = null; for (let n = el, i = 0; n && !c && i < 3; n = n.firstElementChild, i++) c = rgba(n); // a transparent wrapper: try its first child
+    for (let n = section.parentElement; n && !c; n = n.parentElement) c = rgba(n);                     // then whatever it sits on
+    c = c || [0, 0, 0]; edge.el = el; edge.col[0] = c[0] / 255; edge.col[1] = c[1] / 255; edge.col[2] = c[2] / 255;
   }
   // title: the two [data-split] words flank the planet. Row layout: the planet fills the gap between them. Column layout (narrow):
   // the words are pushed apart vertically (transform on the spans) until the disc fits between them.
@@ -270,6 +309,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   let ys = 0, ysV = 0, S = -1, s = 0, mode = 'site', lastMode = '', visible = false, snapNext = true, running = false, ext = false, raf = 0, lastT = 0;
   let tEl = 0; // film clock (s): advanced by step(dt) whoever drives it, so grain, shimmer, drift and blinkers run under gsap.ticker too
   let siteInfo = null, siteDist = 0, shadowFrame = 0, forceShadow = true, booted = false, dead = false;
+  let over = 0, overV = 0, gS = 0, gL = 0; // launch overrun past the track end (g), its rate; the scroll and launch colony clocks
+  let shadowEvery = 1;                        // colony shadow refresh while something casting moves: every Nth frame (governor)
+  const edge = { k: 0, col: [0, 0, 0], el: null }; // CTA hand-off: how far the next section has risen, its background (display rgb 0..1)
+  const shakeV = new THREE.Vector3(), shakeR = new THREE.Vector3(), shakeU = new THREE.Vector3();
   const mouse = { x: 0, y: 0 }, ms = { x: 0, y: 0 };
   const onMove = e => { mouse.x = e.clientX / innerWidth - 0.5; mouse.y = e.clientY / innerHeight - 0.5; };
   addEventListener('mousemove', onMove, { passive: true });
@@ -324,7 +367,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // lens grade from the story clocks, then the rockets' own suggestions on top while the colony is up
   const plumeUV = [0, 0], lensArg = { entry: -1, gR: -1, plume: null };
   function lensCine(inCol) {
-    const r = inCol && colonyW.api && colonyW.api.rockets, L = r && r.launch, gR = inCol ? gOf(S) : -1;
+    const r = inCol && colonyW.api && colonyW.api.rockets, L = r && r.launch, gR = inCol ? gL : -1;
     lensArg.entry = S > E0 && S < E1 ? (S - E0) / (E1 - E0) : -1; lensArg.gR = gR; lensArg.plume = null;
     if (L && L.base && gR >= 0.78) { tmp3.copy(L.base).project(cam); if (tmp3.z < 1) { plumeUV[0] = tmp3.x * 0.5 + 0.5; plumeUV[1] = tmp3.y * 0.5 + 0.5; lensArg.plume = plumeUV; } }
     post.lensFrame(lensArg);
@@ -367,6 +410,13 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     if (s < 1) S = -1;
     const introOn = s < 1, lam = AC.lam;
     mode = introOn ? AC.world : (S >= CA ? 'colony' : 'space');
+    // the launch clock: scroll until the track ends, then real time while the CTA rises over the canvas (never mid-track: the
+    // overrun only counts once the scroll clock is in its last stretch, so scrolling back up rewinds it with the scroll)
+    { const atEnd = ys >= LAY.yEnd - 2, tgt = atEnd ? OVER_RATE : over > 0 ? -2.5 * OVER_RATE : 0;
+      overV += (tgt - overV) * (1 - Math.exp(-dt / OVER_TAU)); over = Math.min(OVER_MAX, Math.max(0, over + overV * dt)); if (over <= 0 && overV < 0) overV = 0;
+      gS = gOf(S); gL = gS + over * sstep(gS, 0.95, 1); }
+    // the next section rising over the canvas: 0 until the last 0.3 viewport of the track, 1 by the time its top edge shows
+    edge.k = sstep(ys - LAY.yEnd, -0.3 * LAY.vh, 0);
     // lazy world loads: Moon as the pull begins. Mars maps, Jezero maps and the colony build start at boot idle (bootIdle);
     // these calls are only fallbacks (all idempotent), and ensure() only does work if the idle build has not finished by the swap
     if (s > 0.6) planets.loadDeferred('moon');
@@ -388,13 +438,23 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       site.follow(tmp, dist); scene.fog.near = 1e8; scene.fog.far = 1e9;
       hemi.intensity *= 1 - sstep(lam, Math.log(3e3), Math.log(60e3)); // moonlight on the photos dies away so the ground meets the black night side of the globe
       // long-exposure trails only after dark (work lights, street traffic); by day the machines read clean
-      const nt = siteInfo.night; post.trails.enabled = HIGH && nt > 0.02; post.trails.amount = 0.65 * nt;
+      const nt = siteInfo.night; post.trails.enabled = HIGH && trailsOK && nt > 0.02; post.trails.amount = 0.65 * nt;
     } else if (mode === 'globe') {
       // straight up off Austin, swinging round onto the Earth frame (C0) with spaceCam's speed (austin.js)
       pos.copy(AC.pos); look.copy(AC.look); fov = AC.fov; focus = AC.dist * U_PER_M;
       setClip(Math.min(0.1, Math.max(0.0005, focus * 0.04)), 9000);
     } else if (inCol) {
-      fov = colCam(S, pos, look); pos.x += ms.x * 8 * live; pos.y -= ms.y * 5 * live; focus = pos.distanceTo(look);
+      fov = colCam(S, pos, look, gL); pos.x += ms.x * 8 * live; pos.y -= ms.y * 5 * live; focus = pos.distanceTo(look);
+      // launch: focus rides the ship once it climbs (the aim point is in empty sky), and the camera takes the ignition: a shake that
+      // decays as the ship climbs away (two octaves on the film clock, scaled by distance so it reads the same at any lens)
+      const L = colonyW.api && colonyW.api.rockets && colonyW.api.rockets.launch;
+      if (L && L.burn > 0.004) {
+        focus = lerp(focus, pos.distanceTo(L.pos), sstep(gL, LIFT_G, LIFT_G + 0.03));
+        const A = L.shake * pos.distanceTo(look) * 0.0022;
+        if (A > 1e-4) { shakeV.copy(look).sub(pos).normalize(); shakeR.crossVectors(shakeV, camUp).normalize(); shakeU.crossVectors(shakeR, shakeV);
+          const a = Math.sin(t * 31) * 0.6 + Math.sin(t * 57 + 1.7) * 0.4, b = Math.sin(t * 37 + 0.6) * 0.6 + Math.sin(t * 71 + 2.9) * 0.4;
+          look.addScaledVector(shakeR, a * A).addScaledVector(shakeU, b * A); }
+      }
       // near plane rides the camera height: at 0.1 the depth buffer had ~10 cm steps at 400 m, so hab floors, gardens and pads z-fought
       setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
     } else {
@@ -427,14 +487,15 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     }
     if (mode === 'space') { const near = S > -0.12; for (const m of earthSide) m.visible = !near; } // Earth is behind us once Mars is ahead
     const sunDir = inCol ? colonyW.sun : toSun;
-    const built = inCol && colonyW.api.build(gOf(S), t);
+    const built = inCol && colonyW.api.build(gS, t, gL);
+    if (inCol) { const r = colonyW.api.rockets; if (r && r.setKeep && r.keep !== partKeep) { r.keep = partKeep; r.setKeep(partKeep); } } // late rockets take the governor's particle share
     if (mode !== 'site' && mode !== 'globe') entryFrame(inCol, t, dt);
     if (!inCol && !inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
     // shadow policy (autoUpdate is off). Site: machines move every frame, so redraw while the sun is up and the lot is close enough.
     // Colony: the build state and sun only change with g; between changes only the crane jibs move, so every 3rd frame is enough.
     shadowFrame++;
     if (inSite) { if (forceShadow || (sunLight.intensity > 0.01 && (siteDist < 2500 || shadowFrame % 10 === 0))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
-    else if (inCol) { if (forceShadow || built || (shadowFrame % 3 === 0 && colonyW.api.cranes.some(c => c.g.visible))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
+    else if (inCol) { if (forceShadow || built || (shadowFrame % shadowEvery === 0 && cranesUp())) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
     else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
     // operator layer: only a faint handheld drift
     const dist = pos.distanceTo(look);
@@ -467,7 +528,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     // units: the skim's horizon is ~5 out and stays deep, so Earth never reads as a miniature), onto the colony's
     // lens by the swap. All ramps (in S and focus distance), so nothing steps. kA = aperture x focus (the blur depth scale).
     { const near = 1 - sstep(focus, 2, 4), w = introOn ? 0 : sstep(S, -1, -0.92), wc = inCol ? 1 : sstep(S, E0, CA);
-      const kA = lerp(lerp(0.0004, 0.003 + 0.017 * near, w), 0.006, wc), mb = lerp(lerp(0.0008, 0.0018 + 0.0032 * near, w), 0.0042, wc);
+      const deep = inCol ? sstep(gL, LIFT_G - 0.01, LIFT_G + 0.03) : 0; // the launch is shot deep: the ship and the city both read
+      const kA = lerp(lerp(0.0004, 0.003 + 0.017 * near, w), lerp(0.006, 0.0022, deep), wc), mb = lerp(lerp(0.0008, 0.0018 + 0.0032 * near, w), lerp(0.0042, 0.0024, deep), wc);
       postArg.dt = dt; postArg.t = t; postArg.focus = focus; postArg.aperture = kA / focus; postArg.maxblur = HIGH ? mb : 0; postArg.ca = 0.012; dofK.k = kA; dofK.mb = mb; }
     lensCine(inCol);
     // the Austin H2 sits over the lot: a soft burn behind it while it is on screen (read from its box, nothing added to the DOM)
@@ -476,6 +538,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       post.scrim(((r.left + r.right) / 2 - mr.left) / W, 1 - ((r.top + r.bottom) / 2 - mr.top) / H, 0.66 * r.width / W + 0.05, 0.8 * r.height / H + 0.07, on ? 0.45 * (1 - AC.upk) : 0);
     } else post.scrim(0.5, 0.5, 1, 1, 0);
     applyTune();
+    post.edge(edge.k, edge.col, Math.max(0.3, 160 / H), inCol ? 0.3 * edge.k * sstep(gL, LIFT_G, LIFT_G + 0.05) : 0); // the CTA rises out of the launch glow
     post.update(postArg);
     solFrame();
     post.render();
@@ -562,6 +625,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     W = Math.max(1, host.clientWidth); H = Math.max(1, host.clientHeight);
     renderer.setSize(W, H, false); post.setSize(W, H); cam.aspect = W / H; cam.updateProjectionMatrix();
     LAY = null; if (framed) { framed = false; cam.clearViewOffset(); }
+    gov.reset();
   }
   ro = new ResizeObserver(() => { resize(); }); ro.observe(host); ro.observe(section);
   document.fonts?.ready.then(() => { LAY = null; });
@@ -570,11 +634,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   function step(dt) {
     if (!running || !booted || dead) return;
     dt = Math.max(0, dt || 0); if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
+    gov.frame(dt * 1000);
     frame(Math.min(0.05, dt));
   }
   const loop = now => { raf = requestAnimationFrame(loop); const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
   const api = {
-    ready: readyP, canvas, renderer, post, scene, cam, aircraft, flight,
+    ready: readyP, canvas, renderer, post, scene, cam, aircraft, flight, perf: gov,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the film runs its own rAF loop
     start(external = false) { if (running) return; running = true; ext = external; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
@@ -587,7 +652,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     setClock(v) { tEl = v; }, // QA: set the film clock (grain, machines, strobes) for repeatable frames
     yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
     get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh },
-      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
+      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
       site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);

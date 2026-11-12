@@ -96,6 +96,11 @@ const ss = (x, a, b) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
 const LN = Math.log;
 export function exposureAt(sinE, lam) {
   const sun = 1 + 0.3 * (1 - ss(sinE, 0.02, 0.45));                                     // 1.3 at the horizon and after dark, 1 by mid morning
-  const city = 1 - 0.78 * ss(lam, LN(2e3), LN(4e4));                                    // a whole lit city in frame: stop down
-  return 1.05 * sun * city + (EARTH_EXP - 1.05 * sun * city) * ss(lam, LN(2e6), LN(9e6)); // and ease onto the orbit value as the limb comes in
+  const lit = ss(-sinE, -0.02, 0.12);                                                  // the city lights come up with the dusk (site.js uNight)
+  const city = 1 - 0.78 * ss(lam, LN(2e3), LN(4e4)) * lit;                              // a whole lit city in frame: stop down, only as far as it is lit
+  // the gap between the sun leaving the lot (site.js: sun light fades over sinE 0.1 -> -0.02) and the lights coming up: the frame
+  // loses ~2.3x of its light there, so open up by as much, peaking where it is darkest (measured, 1440x900: luma flat through it)
+  const gap = 1 + 0.66 * Math.exp(-(((sinE - 0.0115) / (sinE > 0.0115 ? 0.016 : 0.0135)) ** 2)); // the tone curve's toe answers ~exposure^1.8 here
+  const e = 1.05 * sun * city * gap;
+  return e + (EARTH_EXP - e) * ss(lam, LN(2e6), LN(9e6));                               // and ease onto the orbit value as the limb comes in
 }

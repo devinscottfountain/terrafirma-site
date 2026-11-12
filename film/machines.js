@@ -935,7 +935,7 @@ export function createColonyLife({ THREE, colony, layout: L, envMap = null, high
   const LANE = 1.7;
   function update(g, t, night, gR = g) {
     U.uT.value = t; U.uG.value = g; U.uNight.value = night; U.uDay.value = 1 - night;
-    const T = t + g * 120, Tf = t + gR * 60; // timelapse clocks: scroll speeds the traffic up, walkers a little
+    const T = t, Tf = t; // traffic and walkers move on the real-time clock only (scroll sets the build, never their speed: no strobing while scrolling)
     let li = 0; const L4 = (x, y, z, r, gg, b, s) => { lP[li * 3] = x; lP[li * 3 + 1] = y; lP[li * 3 + 2] = z; lC[li * 4] = r; lC[li * 4 + 1] = gg; lC[li * 4 + 2] = b; lC[li * 4 + 3] = s; li++; };
     rovers.forEach((v, i) => {
       const live = v.ship ? sst(arrive + 0.004 + v.k * 0.01, arrive + 0.02 + v.k * 0.01, gR) : v.r === padRun ? sst(PAD_ON, PAD_ON + 0.02, gR) * (1 - sst(PAD_OFF - 0.02, PAD_OFF, gR)) : sst(v.bt, v.bt + 0.02, g);
