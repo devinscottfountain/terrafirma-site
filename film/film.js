@@ -210,13 +210,17 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const Yt = (k, dv = 0) => sc[k].tc - vh / 2 + dv * vh, Ys = (k, a) => sc[k].top + a * sc[k].h - vh / 2;
     const yEnd = Math.max(1, sr.height - vh);
     // the film clock S: -1 at the Earth frame, 0 with the title centred, 0.26 SpaceX centred, P_END at the end of the track
+    // the pass (0.7 vh), the cruise and the arrival (0.5 vh) share the scroll from the copy centred to the title centred. Under IREF
+    // viewports (a short title scene) they scale down, the arrival least (it carries the title framing); at the recommended heights
+    // nothing moves. flight.js then plays the same move in S faster, not a different one.
+    const IREF = 1.9, Iv = (Yt('title', 0) - Yt('earth', 0)) / vh, cK = Math.min(1, Iv / IREF), cA = cK ** 0.6, cP = Math.min(1, (Iv - 0.5 * cA) / (IREF - 0.5));
     const keys = [
-      [Yt('earth', -0.6), -1.0], [Yt('earth', 0), -0.9], [Yt('earth', 0.7), -0.64], [Yt('title', -0.5), -0.15], [Yt('title', 0), 0.0], [Yt('reind', 0), 0.26],
+      [Yt('earth', -0.6), -1.0], [Yt('earth', 0), -0.9], [Yt('earth', 0.7 * cP), -0.64], [Yt('title', -0.5 * cA), -0.15], [Yt('title', 0), 0.0], [Yt('reind', 0), 0.26],
       [Ys('colony', 0), 0.62], [Ys('colony', 1), 0.9], [yEnd, P_END]
     ];
     for (let i = 1; i < keys.length; i++) if (keys[i][0] <= keys[i - 1][0] + 1) keys[i][0] = keys[i - 1][0] + 1; // always increasing, whatever the heights
     LAY = { vh, yEnd, S: pmap(keys), sc }; // monotone C1 through the keys: text-anchored beats land exactly, no speed step at any key
-    flight.layout({ S: LAY.S, yE: keys[0][0], y1: yEnd }); // the space camera's speed curve is authored in px: place it on this layout
+    flight.layout({ S: LAY.S, yE: keys[0][0], y1: yEnd, vh }); // the space camera's speed curve is authored in px: place it on this layout
     // the Austin leg: from the scene's first frame on screen (its top at the viewport bottom) to the Earth frame (S = -1),
     // anchored on the H2 (centred, then near the top edge). Kept in order whatever the heights.
     const aK = [sc.austin.top - vh, Yt('austin', 0), Yt('austin', 0.5), keys[0][0]];
@@ -294,8 +298,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const creep = 1 + HOLD_CREEP * S; // the held disc keeps growing slowly (exact title size at S = 0): a steady creep in, never frozen
     if (k1 > 0) { const tb = rectOf(tG.h2), mr = rectOf(host); rT = lerp(rT, tG.r * creep, k1); tx = lerp(tx, tb.left - mr.left + tG.x, k1); ty = lerp(ty, H / 2, k1); }
     if (k2 > 0) { rT = lerp(rT, bT.r * creep, k2); tx = lerp(tx, bT.x, k2); ty = lerp(ty, bT.y, k2); }
-    const rNat = Math.tan(Math.asin(6.05 / d)) / th * H / 2;
-    if (Math.abs(rT - rNat) > 0.01) {
+    { // always rescale (f is 1 where the natural size already matches): a size threshold here made a one-px jump in the hold
       const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
       pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
     }

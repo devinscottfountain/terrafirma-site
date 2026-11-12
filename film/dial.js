@@ -6,7 +6,8 @@
 //   film     the createFilm api (tune, look, state, yOfClock, freeze)
 //   section  the film track (scrub target)
 //   prefer   'lil' to skip DialKit
-// State persists in sessionStorage (KEY). Escape hides and shows the panel. Copy JSON: clipboard + console, paste into look.json.js.
+// State persists in sessionStorage (KEY), stamped with a hash of look.json.js: a state saved against other defaults is dropped, so new
+// defaults always show. Escape hides and shows the panel. Copy JSON: clipboard + console, paste into look.json.js.
 
 const DK_VER = '2.2.0', LIL_VER = '0.21.0';
 const DK = `https://cdn.jsdelivr.net/npm/dialkit@${DK_VER}/dist/vanilla/`;
@@ -36,8 +37,12 @@ function assignLook(dst, src) {
 }
 const lookOf = t => ({ grade: { ...t.grade }, lens: { ...t.lens }, beats: Object.fromEntries(BEATS.map(b => [b, { ...t.beats[b] }])) });
 
-function load() { try { const s = sessionStorage.getItem(KEY); return s ? JSON.parse(s) : null; } catch (_) { return null; } }
-function save(film) { try { sessionStorage.setItem(KEY, JSON.stringify({ ...lookOf(film.tune), freeze: film.freeze })); } catch (_) { /* private mode, quota: the panel still works */ } }
+// FNV-1a of the defaults: the saved state only counts while look.json.js is the one it was tuned from
+const sigOf = look => { const t = JSON.stringify(lookOf(look)); let h = 0x811c9dc5; for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 0x01000193); return (h >>> 0).toString(36); };
+function load(base) {
+  try { const s = sessionStorage.getItem(KEY), v = s ? JSON.parse(s) : null; if (v && v.base === base) return v; if (v) forget(); return null; } catch (_) { return null; }
+}
+function save(film) { try { sessionStorage.setItem(KEY, JSON.stringify({ base: sigOf(film.look), ...lookOf(film.tune), freeze: film.freeze })); } catch (_) { /* private mode, quota: the panel still works */ } }
 function forget() { try { sessionStorage.removeItem(KEY); } catch (_) { /* ignore */ } }
 
 function css(href) {
@@ -58,7 +63,7 @@ async function copyText(text) {
 
 export async function mountDial({ film, section, prefer = '' }) {
   const tune = film.tune, LOOK = film.look;
-  const saved = load();
+  const saved = load(sigOf(LOOK));
   assignLook(tune, saved);
   if (saved && typeof saved.freeze === 'boolean') film.freeze = saved.freeze;
 

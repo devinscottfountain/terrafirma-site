@@ -279,9 +279,9 @@ float jezH(vec2 p, float fw, out vec3 alb){
 }`;
 
 const DOME_VERT = /* glsl */ `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
-const DOME_FRAG = /* glsl */ `
-uniform vec3 uSun, uOrigin; uniform float uK, uNight, uT, uAmb;
-varying vec3 vW;
+// the far ground (Jezero from altitude) as one function: the dome draws it, and the colony terrain fades into exactly this before its
+// own square edge (colony.js), so the 9 km mesh never shows a seam
+export const JEZ_GROUND_GLSL = /* glsl */ `
 ${AIR_NOISE}
 ${MARS_SKY_GLSL}
 ${JEZERO_GLSL}
@@ -290,6 +290,25 @@ vec3 sunCol(float se){ float am = 1. / (max(se, 0.) + 0.06); return exp(-vec3(0.
 // aerial perspective: dust scale height ~11 km, ~30 km visibility on the floor
 vec2 aerial(float h0, float h1, float dist){ float H = 11000., b = 1. / 26000.; float a = exp(-max(h0, 0.) / H), c = exp(-max(h1, 0.) / H);
   float od = abs(h1 - h0) > 1. ? b * H * abs(a - c) * dist / abs(h1 - h0) : b * a * dist; return vec2(exp(-od), od); }
+// lit procedural ground at P (colony coords, height 0), fw = its pixel footprint (fwidth, taken by the caller in uniform flow)
+vec3 jezLit(vec3 P, float fw, vec3 S, float amb){
+  vec3 alb; float e = max(fw * 0.7, 25.);
+  vec3 ax; float hx = jezH(P.xz + vec2(e, 0.), fw, ax), hz = jezH(P.xz + vec2(0., e), fw, ax), h0 = jezH(P.xz, fw, alb);
+  vec3 n = normalize(vec3(-(hx - h0) / e, 1., -(hz - h0) / e));
+  float NL = max(dot(n, S), 0.);
+  float self = smoothstep(-0.02, 0.06, dot(n, S) - 0.0);
+  return alb * (NL * self * sunCol(S.y) * 2.0 + vec3(.95, .6, .36) * 0.25 * amb * (0.6 + 0.4 * n.y));
+}
+// aerial haze over a ground colour seen from ro along rd: the haze takes the horizon colour in that direction
+vec3 jezAir(vec3 gc, vec3 ro, vec3 rd, float hgt, float dist, vec3 S, float k){
+  vec2 ae = aerial(ro.y, hgt, dist);
+  return gc * ae.x + marsSky(normalize(vec3(rd.x, 0.02, rd.z)), S, k) * (1. - ae.x);
+}`;
+
+const DOME_FRAG = /* glsl */ `
+uniform vec3 uSun, uOrigin; uniform float uK, uNight, uT, uAmb;
+varying vec3 vW;
+${JEZ_GROUND_GLSL}
 void main(){
   vec3 ro = cameraPosition - uOrigin, rd = normalize(vW - cameraPosition), S = normalize(uSun);
   vec3 sky = marsSky(rd, S, uK);
@@ -327,20 +346,10 @@ void main(){
   }
   if (hit < 0.5 && tg > 0.) {
     vec3 P = ro + rd * tg; dist = tg; hgt = 0.;
-    float fw = max(length(fwidth(P.xz)), 1.);
-    vec3 alb; float e = max(fw * 0.7, 25.);
-    vec3 ax; float hx = jezH(P.xz + vec2(e, 0.), fw, ax), hz = jezH(P.xz + vec2(0., e), fw, ax), h0 = jezH(P.xz, fw, alb);
-    vec3 n = normalize(vec3(-(hx - h0) / e, 1., -(hz - h0) / e));
-    float NL = max(dot(n, S), 0.);
-    float self = smoothstep(-0.02, 0.06, dot(n, S) - 0.0);
-    gc = alb * (NL * self * sunCol(S.y) * 2.0 + vec3(.95, .6, .36) * 0.25 * uAmb * (0.6 + 0.4 * n.y));
+    gc = jezLit(P, max(length(fwidth(P.xz)), 1.), S, uAmb);
     hit = 1.;
   }
-  if (hit > 0.5) {
-    vec2 ae = aerial(ro.y, hgt, dist);
-    vec3 hz = marsSky(normalize(vec3(rd.x, 0.02, rd.z)), S, uK);    // the haze takes the horizon colour in that direction
-    col = gc * ae.x + hz * (1. - ae.x);
-  }
+  if (hit > 0.5) col = jezAir(gc, ro, rd, hgt, dist, S, uK);
   gl_FragColor = vec4(col, 1.);
 }`;
 

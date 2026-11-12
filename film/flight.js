@@ -4,8 +4,9 @@
 //
 // createFlight({ THREE }) -> { toSun, EARTH, MARS, C0, L0, P1, H2, EN1, ENP, LCA, PN, QN, CA, E0, E1, MOON_R, layout(L),
 //                              spaceCam(S, pos, look, up), moonAt(S, out), marsFar(S), marsQ(t, q), drift(S, pos, v) }
-//   layout({ S, yE, y1 })   S = scroll -> film clock map, yE its S = -1 px, y1 any px past CA. Places the speed curve (authored in
-//                           units per px) on this layout, so every layout hands off and lands at the same px speeds. Call it first.
+//   layout({ S, yE, y1, vh }) S = scroll -> film clock map, yE its S = -1 px, y1 any px past CA, vh the viewport height. Places the
+//                           speed curve (authored in units per px on the recommended heights) on this layout: the hand-off keeps its
+//                           px speed, the other anchors scale with how fast S runs per px here, so the move keeps its shape. Call it first.
 //   spaceCam(S, pos, look, up) fills position, look point and up vector (up optional, always world up), returns the fov (deg)
 //   moonAt(S, out)          Moon centre, a pure function of S
 //   marsFar(S)              apparent distance factor for Mars (>= 1): far off it renders further down its own sight line, so it
@@ -17,18 +18,17 @@
 // The move lives in two vertical planes: the Earth pass in PN's plane (through Earth's centre and the copy frame), the title, the
 // SpaceX hold and the entry in QN's plane (through Mars's centre and the title frame). Inside a vertical plane with world up the
 // camera only pitches: no yaw, no roll. The cruise between them swings from one plane to the other, far from both planets.
-import { herm, smoother, clamp01 } from './util.js';
+import { herm, smoother, clamp01, pmap } from './util.js';
 
 export const CA = 0.46, E0 = 0.40, E1 = 0.60;
 
 export function createFlight({ THREE }) {
   const v3 = (x, y, z) => new THREE.Vector3(x, y, z), DEG = Math.PI / 180, Y = v3(0, 1, 0);
   // ---------- tuning ----------
-  const RMIN = 11.25, PSI2 = -52, R2 = 17.5, PSI3 = -22, R3 = 11.8, PSIX = 18, RX = 11.45; // the pass, polar in its plane (air shell top 11)
+  const RMIN = 11.25, PSI2 = -52, R2 = 17.5, PSI3 = -22, R3 = 11.8, PSIX = 18, RX = 11.65; // the pass, polar in its plane (air shell top 11)
   const SC = -0.7, VC = 0.018, FOVC = 54;                // closest approach: clock, speed (units/px), lens
-  const HK = 1.3, DIPC = Math.acos(10 / RMIN); // the aim follows half the change of the horizon's dip, so the last of the descent never whips it
-  const EPS = 12, SA1 = -0.745, SM0 = -0.725, SM1 = -0.66, SL1 = -0.45;  // look: deg above the horizon ahead, horizon by SA1, onto Mars over SM0..SM1
-  const SF0 = -0.8, SF1 = -0.16;                                     // Mars far factor starts easing while it is still hidden (so the lens opening never shrinks it)
+  const SA1 = -0.745, SM0 = -0.725, SM1 = -0.66, SL1 = -0.45;  // focus: onto the horizon by SA1, onto Mars over SM0..SL1. Aim: on Mars by SM1
+  const SF0 = -0.9, SF1 = -0.16;                                    // Mars far factor starts easing while it is still hidden (so the lens opening never shrinks it)
   const EPITCH = 25, EALT = 0.65;                         // entry: deg under the local horizontal at the swap, radius 6 + EALT
   const MTILT = -35 * DEG, MSPIN = 0.19, TSPIN = 0.002; // Mars mesh tilt (about the title sight line), spin (rad, rad/s)
   const MOONA = v3(-0.6543, 0.2642, -0.7086), MOONB = v3(0.5744, -0.4358, -0.6929), MOONW = 2;
@@ -46,9 +46,10 @@ export function createFlight({ THREE }) {
   const polar = (psi, r) => v3().addScaledVector(pe, r * Math.sin(psi * DEG)).addScaledVector(pu, r * Math.cos(psi * DEG)); // psi deg from the top (pu) toward pe; P1 sits at -90
   const dirP = (a, o = v3()) => o.set(0, 0, 0).addScaledVector(pe, Math.cos(a * DEG)).addScaledVector(pu, Math.sin(a * DEG)); // in the plane, a deg above pe
   const angP = d => Math.atan2(d.dot(pu), d.dot(pe)) / DEG;                                                   // inverse of dirP
-  // Mars: far ahead in the pass plane, AM deg under pe. From the copy frame it hides behind Earth; it rises over the horizon ahead
-  // as the camera comes over the top. The title and SpaceX frames are the same offsets from it as before.
-  const AM = -18, DM = 480, MARS = dirP(AM).multiplyScalar(DM), M = (x, y, z) => v3(x, y, z).add(MARS);
+  // Mars: far ahead in the pass plane, AM deg above pe. From the copy frame it hides behind Earth, near its centre; it rises over the
+  // horizon ahead as the camera comes over the top. Above pe so the aim only ever tilts up from the copy frame to Mars (it was 18 deg
+  // under, which made the pass pan down before the skim). The title and SpaceX frames are the same offsets from it as before.
+  const AM = 4, DM = 480, MARS = dirP(AM).multiplyScalar(DM), M = (x, y, z) => v3(x, y, z).add(MARS);
   // the Mars plane: vertical, through Mars's centre and the title frame. Title, hold and entry all sit in it, so from S 0 to CA
   // the camera pitches only (zero roll) and screen up stays world up.
   const TOFF = v3(70, 20, 100), qh = v3(TOFF.x, 0, TOFF.z).normalize(), QN = TOFF.clone().cross(Y).normalize();
@@ -123,14 +124,28 @@ export function createFlight({ THREE }) {
   // Per leg the speed is the cubic through the two anchors plus a smooth bump (30 x^2 (1 - x)^2) sized so the leg covers exactly
   // its path length: speed and acceleration are set at every anchor, nothing steps anywhere. Integrated in closed form.
   const CLK = [[-1.00, 0, V0PX, -3e-5], [-0.90, 1, 0.0022, 0], [SC, 5, VC, 0], [0.00, 9, 0.075, -4e-5], [0.16, 10, 0.012, -1e-5], [0.34, 11, 0.006, 0], [E0, 12, 0.11, -1e-4], [CA, 13, 0.04, -1e-4]];
-  const NC = CLK.length, cy = new Float64Array(NC), cA = new Float64Array(NC);
+  // The speeds are authored on the recommended scene heights (README). On other heights each anchor's speed and acceleration are scaled
+  // by how much faster S runs there per px (REF: that layout's S keys in viewports), so the move keeps its shape in S: a shorter scene
+  // plays the same move faster, never a different one. The hand-off anchor keeps its px speed (Austin lands on it).
+  const REF = [[2.181, -1], [2.781, -0.9], [3.481, -0.64], [4.25, -0.15], [4.75, 0], [8.5, 0.26], [10.5, 0.62], [13.5, 0.9], [15, 1.12]];
+  const refS = pmap(REF), NC = CLK.length, cy = new Float64Array(NC), cA = new Float64Array(NC), cV = new Float64Array(NC), cG = new Float64Array(NC);
   let Sy = null, yLo = 0, yHi = 1;
   const yOf = s => { let lo = yLo, hi = yHi; for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (Sy(m) < s) lo = m; else hi = m; } return (lo + hi) / 2; };
-  function layout({ S, yE, y1 }) {
+  const dS = (f, y, h) => (f(y + h) - f(y - h)) / (2 * h);
+  function layout({ S, yE, y1, vh = 900 }) {
     Sy = S; yLo = yE; yHi = y1;
-    for (let i = 0; i < NC; i++) cy[i] = CLK[i][0] <= -1 ? yE : yOf(CLK[i][0]);
+    let lo = REF[0][0], hi = REF[REF.length - 1][0];
+    for (let i = 0; i < NC; i++) {
+      const s = CLK[i][0]; cy[i] = s <= -1 ? yE : yOf(s);
+      let r = 1;
+      if (s > -1) { // px per unit S here over px per unit S on the reference layout (at this vh)
+        let a = lo, b = hi; for (let k = 0; k < 50; k++) { const m = (a + b) / 2; if (refS(m) < s) a = m; else b = m; }
+        r = dS(S, cy[i], 0.5) * vh / Math.max(1e-9, dS(refS, (a + b) / 2, 1e-4));
+      }
+      cV[i] = CLK[i][2] * r; cG[i] = CLK[i][3] * r * r;
+    }
     for (let i = 0; i < NC - 1; i++) { // bump amplitude: what the cubic alone leaves of the leg's length
-      const D = cy[i + 1] - cy[i], va = CLK[i][2], vb = CLK[i + 1][2], sa = CLK[i][3] * D, sb = CLK[i + 1][3] * D;
+      const D = cy[i + 1] - cy[i], va = cV[i], vb = cV[i + 1], sa = cG[i] * D, sb = cG[i + 1] * D;
       cA[i] = (keyArc[CLK[i + 1][1]] - keyArc[CLK[i][1]]) / D - ((va + vb) / 2 + (sa - sb) / 12);
     }
   }
@@ -138,7 +153,7 @@ export function createFlight({ THREE }) {
     if (y <= cy[0]) return 0; if (y >= cy[NC - 1]) return keyArc[CLK[NC - 1][1]];
     let i = 0; while (y > cy[i + 1]) i++;
     const D = cy[i + 1] - cy[i], x = (y - cy[i]) / D, x2 = x * x, x3 = x2 * x, x4 = x3 * x;
-    const va = CLK[i][2], vb = CLK[i + 1][2], sa = CLK[i][3] * D, sb = CLK[i + 1][3] * D;
+    const va = cV[i], vb = cV[i + 1], sa = cG[i] * D, sb = cG[i + 1] * D;
     const I = va * (x - x3 + x4 / 2) + sa * (x2 / 2 - 2 * x3 / 3 + x4 / 4) + vb * (x3 - x4 / 2) + sb * (x4 / 4 - x3 / 3) + cA[i] * x3 * (10 - 15 * x + 6 * x2);
     return keyArc[CLK[i][1]] + D * I;
   }
@@ -146,9 +161,10 @@ export function createFlight({ THREE }) {
   // ---------- aim ----------
   // hand-off leg (S -1 to -0.9): look point L0 -> Earth's centre, flat at both ends (unchanged).
   const lk = [0, 1, 2].map(c => herm([-1, -0.9], [L0.getComponent(c), EARTH.getComponent(c)], [0, 0]));
-  // the pass: an angle in the pass plane (pitch only). Earth's centre -> EPS deg above the horizon ahead (Earth fills the bottom of
-  // the frame and rolls under) -> Mars once it has risen. Look distance follows the subject, so focus lands on the horizon.
-  const wA = S => smoother(clamp01((S + 0.9) / (SA1 + 0.9))), wM = S => smoother(clamp01((S - SM0) / (SM1 - SM0))), wL = S => smoother(clamp01((S - SM0) / (SL1 - SM0)));
+  // the pass: an angle in the pass plane (pitch only). Earth's centre on the copy frame -> Mars by SM1, tilting up only: the angle is
+  // w(S) x (Mars's angle), w eased from 0 to 1, so it never dips. Earth slides down and out of the bottom as the camera pushes in and over.
+  // Look distance (the focus) goes from Earth's centre to the horizon, then to Mars.
+  const wA = S => smoother(clamp01((S + 0.9) / (SA1 + 0.9))), wU = S => smoother(clamp01((S + 0.9) / (SM1 + 0.9))), wL = S => smoother(clamp01((S - SM0) / (SL1 - SM0)));
   const LB0 = 0.34, LB1 = E0 - 0.005; // aim slides from the planet's centre onto the entry line as the hold lets go
   // ---------- lens ----------
   const fovP = herm([-1, -0.9, SC, -0.5, -0.25, 0, 0.16, 0.34, E0, CA], [38, 48, FOVC, 38, 31, 30, 30, 32, 42, 52], [0, 0, null, null, null, null, null, null, null, null]);
@@ -179,14 +195,10 @@ export function createFlight({ THREE }) {
     if (S <= -0.9) look.set(lk[0](S), lk[1](S), lk[2](S));
     else if (S >= SL1) look.copy(MARS);
     else { // pitch in the pass plane, then straight at Mars
-      const a = wA(S), m = wM(S), r = pos.length(), d0 = Math.log(r + (Math.sqrt(Math.max(0, r * r - 100)) - r) * a), l = wL(S);
+      const a = wA(S), r = pos.length(), d0 = Math.log(r + (Math.sqrt(Math.max(0, r * r - 100)) - r) * a), l = wL(S);
       const ld = Math.exp(d0 + (Math.log(MARS.distanceTo(pos)) - d0) * l); // look distance (the focus): in log, a slow pull from the horizon to Mars
       if (S >= SM1) look.copy(MARS).sub(pos).normalize().multiplyScalar(ld).add(pos);
-      else {
-        const psi = Math.atan2(pos.dot(pe), pos.dot(pu)) / DEG;
-        const hor = -psi - (HK * Math.acos(Math.min(1, 10 / r)) + (1 - HK) * DIPC) / DEG + EPS, phE = angP(td.copy(pos).negate()), phM = angP(td.copy(MARS).sub(pos));
-        look.copy(pos).add(dirP((phE + (hor - phE) * a) * (1 - m) + phM * m, td).multiplyScalar(ld));
-      }
+      else look.copy(pos).add(dirP(wU(S) * angP(td.copy(MARS).sub(pos)), td).multiplyScalar(ld)); // 0 (pe, Earth's centre on the copy frame) up to Mars
     }
     const w = smoother(clamp01((S - LB0) / (LB1 - LB0)));
     if (w > 0) look.lerp(tl.copy(pos).addScaledVector(LCA, 40), w);   // exactly along the line from E0 on, so the descent never turns

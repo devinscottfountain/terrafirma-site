@@ -5,6 +5,7 @@
 import { createMarsEnv, createHabitatAssets, colonyLayout } from './habitat.js';
 import { createColonyLife } from './machines.js';
 import { easeOut, sstep } from './util.js';
+import { JEZ_GROUND_GLSL } from './sky.js';
 
 export const COL = { x: 0, y: -6000, z: 0 };   // far below the solar system, inside its own sky dome
 export const ARRIVE = 0.1, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
@@ -34,6 +35,8 @@ let rockMod = null; const rockP = Promise.all([import('./rockets.js'), import('.
   .then(([r, s, k]) => (rockMod = { createRockets: r.createRockets, foot: { buildStarships: s.buildStarships, mergeAll: k.mergeAll } })).catch(e => console.warn('film rockets:', e));
 // Jezero maps: fetched at boot idle (loadMaps), uploaded on arrival, then each switch fades in over MAP_FADE ms instead of popping
 const terrU = { tDtm: { value: null }, tHi: { value: null }, tCtx: { value: null }, uOn: { value: new THREE.Vector3(0, 0, 0) }, uHB0: { value: 0 }, tMars: planets.mars.material.uniforms.tMap };
+// the sky dome's own uniforms (sun, air amount, ambient, origin): the terrain's far band shades with them (see JF below)
+const air = (planets.air && planets.air.uniforms.dome) || { uSun: { value: new THREE.Vector3(0, 1, 0) }, uK: { value: 1 }, uAmb: { value: 1 }, uOrigin: { value: COLV.clone() } };
 const mapAt = [0, 0, 0], MAP_FADE = 500; // performance.now() each map arrived (dtm, hi bump, ctx bump), 0 until then
 { const px = (r, g, b) => { const d = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); d.needsUpdate = true; return d; };
   terrU.tDtm.value = px(128, 0, 0); terrU.tHi.value = px(128, 128, 128); terrU.tCtx.value = px(128, 128, 128); }
@@ -85,8 +88,12 @@ float terrH(vec2 p){
   float b=hB(p), a=hA(p), wa=1.-smoothstep(560.,780.,max(abs(p.x),abs(p.y)));
   float h=mix(b,a,wa)-uHB0;
   float d=length(p);
-  return uOn.x*h*smoothstep(330.,620.,d);           // the city's graded pad eases back into the real ground
+  return uOn.x*h*smoothstep(330.,620.,d)            // the city's graded pad eases back into the real ground
+    *(1.-smoothstep(JF0,JF1,d));                      // and the far band flattens onto the sky dome's ground (no step at the mesh edge)
 }`;
+// the far band: from JF0 to JF1 metres out the terrain's height fades to 0 and its colour to the sky dome's own ground (sky.js
+// jezLit + jezAir, same uniforms), so the 9 km square mesh meets the dome with no seam: before this its edge showed as a box
+const JF = 'const float JF0=3300., JF1=4400.;\n';
 {
   // the grid is written straight into typed arrays in XZ (same vertex order and winding as PlaneGeometry + rotateX(-PI/2)).
   // Position only: the shader rebuilds the normal from the DTM (beginnormal_vertex is replaced) and the material samples no uv.
@@ -102,14 +109,15 @@ float terrH(vec2 p){
   mat.customProgramCacheKey = () => 'jezeroTerrain';
   mat.onBeforeCompile = sh => {
     Object.assign(sh.uniforms, terrU);
-    sh.vertexShader = TERR_GL + '\nvarying vec3 vTP; varying vec3 vTN;\n' + sh.vertexShader
+    Object.assign(sh.uniforms, { uJSun: air.uSun, uJK: air.uK, uJAmb: air.uAmb, uJOrigin: air.uOrigin });
+    sh.vertexShader = JF + TERR_GL + '\nvarying vec3 vTP; varying vec3 vTN;\n' + sh.vertexShader
       .replace('#include <beginnormal_vertex>', `vec3 objectNormal; { vec2 p=position.xz; float e=8.;
           objectNormal=normalize(vec3(-(terrH(p+vec2(e,0.))-terrH(p-vec2(e,0.)))/(2.*e),1.,-(terrH(p+vec2(0.,e))-terrH(p-vec2(0.,e)))/(2.*e))); vTN=objectNormal; }
         #ifdef USE_TANGENT
           vec3 objectTangent = vec3( tangent.xyz );
         #endif`)
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.y+=terrH(position.xz); vTP=transformed;');
-    sh.fragmentShader = TERR_GL + '\nvarying vec3 vTP; varying vec3 vTN;\n' + NOISE + `
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.y+=terrH(position.xz)-dot(position.xz,position.xz)/(2.*3389500.); vTP=transformed;'); // curvature: the dome ground is the planet sphere
+    sh.fragmentShader = JF + TERR_GL + '\nvarying vec3 vTP; varying vec3 vTN;\nuniform vec3 uJSun, uJOrigin; uniform float uJK, uJAmb;\n' + NOISE + JEZ_GROUND_GLSL + `
       // greyscale orbital images -> height for shading only
       float bumpL(vec2 p){ float a=uOn.y*(1.-smoothstep(640.,790.,max(abs(p.x),abs(p.y)))), b=uOn.z*(1.-smoothstep(5000.,5900.,max(abs(p.x),abs(p.y))));
         float hb=texture2D(tCtx,vec2(p.x/12000.+.5,.5-p.y/12000.)).r, ha=texture2D(tHi,vec2(p.x/1600.+.5,.5-p.y/1600.)).r;
@@ -132,6 +140,10 @@ float terrH(vec2 p){
           tA=c*.85; tR=mix(.9,1.,n3);
           diffuseColor.rgb=tA; }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor=tR;')
+      .replace('#include <dithering_fragment>', `#include <dithering_fragment>
+        { float fwJ=max(length(fwidth(vTP.xz)),1.), wJ=smoothstep(JF0,JF1,length(vTP.xz));   // fwidth in uniform flow
+          if(wJ>0.){ vec3 ro=cameraPosition-uJOrigin, dv=vTP-ro, sJ=normalize(uJSun); float dJ=length(dv);
+            gl_FragColor.rgb=mix(gl_FragColor.rgb,jezAir(jezLit(vec3(vTP.x,0.,vTP.z),fwJ,sJ,uJAmb),ro,dv/dJ,0.,dJ,sJ,uJK),wJ); } }`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
         { vec2 p=vTP.xz; float w=max(length(fwidth(p)),1e-3), e=max(.3,w*.7);
           float gx=(bumpL(p+vec2(e,0.))-bumpL(p-vec2(e,0.)))/(2.*e), gz=(bumpL(p+vec2(0.,e))-bumpL(p-vec2(0.,e)))/(2.*e);
