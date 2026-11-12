@@ -17,12 +17,13 @@ import { createAustinCam, sunAt, exposureAt } from './austin.js';
 import { createAircraft } from './aircraft.js';
 import { createFlight, CA, E0, E1 } from './flight.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
-import { clamp01, sstep, pchip, pmap, arcClock, lerp } from './util.js';
+import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 import LOOK from './look.json.js';
 
 // CA = 0.46 the entry swap (everything past it is the Jezero timelapse), E0..E1 = 0.40..0.60 the atmospheric entry window (flight.js)
 const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40], HOLD_CREEP = 0.3; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean; held disc growth per unit S
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
+const SOL_S0 = -0.02;                // film clock where the SOL readout starts to fade in (its count starts there too)
 // per beat look offsets blend on S: Austin -> space over the first beat of space, space -> Mars orbit as the disc grows, Mars orbit -> colony across the swap flash (CA)
 const BEAT_X = [[-1, -0.9], [-0.3, -0.1], [0.43, 0.49]];
 const beatVal = (B, k, a, b, c) => lerp(lerp(lerp(B.austin[k], B.space[k], a), B.marsOrbit[k], b), B.colony[k], c);
@@ -211,15 +212,18 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const yEnd = Math.max(1, sr.height - vh);
     // the film clock S: -1 at the Earth frame, 0 with the title centred, 0.26 SpaceX centred, P_END at the end of the track
     // the pass (0.7 vh), the cruise and the arrival (0.5 vh) share the scroll from the copy centred to the title centred. Under IREF
-    // viewports (a short title scene) they scale down, the arrival least (it carries the title framing); at the recommended heights
-    // nothing moves. flight.js then plays the same move in S faster, not a different one.
-    const IREF = 1.9, Iv = (Yt('title', 0) - Yt('earth', 0)) / vh, cK = Math.min(1, Iv / IREF), cA = cK ** 0.6, cP = Math.min(1, (Iv - 0.5 * cA) / (IREF - 0.5));
+    // viewports (a short title scene) they scale down: the pass least (it leaves the near still copy frame, so squeezing it steps the
+    // speed), then the arrival (it carries the title framing), the cruise most (fast and far out, it takes it smoothly). At the
+    // recommended heights nothing moves. flight.js then plays the same move in S faster, not a different one.
+    const IREF = 1.9, Iv = (Yt('title', 0) - Yt('earth', 0)) / vh, cK = Math.min(1, Iv / IREF), cA = cK ** 0.6;
+    const cP = Math.max(0, Math.min(Math.sqrt(cK), (Iv - 0.5 * cA - 0.15 * cK) / 0.7)); // the cruise always keeps 0.15 of the room
     const keys = [
       [Yt('earth', -0.6), -1.0], [Yt('earth', 0), -0.9], [Yt('earth', 0.7 * cP), -0.64], [Yt('title', -0.5 * cA), -0.15], [Yt('title', 0), 0.0], [Yt('reind', 0), 0.26],
       [Ys('colony', 0), 0.62], [Ys('colony', 1), 0.9], [yEnd, P_END]
     ];
     for (let i = 1; i < keys.length; i++) if (keys[i][0] <= keys[i - 1][0] + 1) keys[i][0] = keys[i - 1][0] + 1; // always increasing, whatever the heights
     LAY = { vh, yEnd, S: pmap(keys), sc }; // monotone C1 through the keys: text-anchored beats land exactly, no speed step at any key
+    { let lo = keys[0][0], hi = yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < SOL_S0) lo = m; else hi = m; } LAY.ySol = (lo + hi) / 2; } // SOL starts where it fades in
     flight.layout({ S: LAY.S, yE: keys[0][0], y1: yEnd, vh }); // the space camera's speed curve is authored in px: place it on this layout
     // the Austin leg: from the scene's first frame on screen (its top at the viewport bottom) to the Earth frame (S = -1),
     // anchored on the H2 (centred, then near the top edge). Kept in order whatever the heights.
@@ -256,7 +260,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     for (const r of rg.getClientRects()) if (r.width > 1) right = Math.max(right, r.right);
     const mr = rectOf(host), free = W - (right - mr.left), r0 = Math.min(0.21 * H, 0.4 * W);
     if (W >= 768 && free > 2.2 * r0) { const r = Math.min(r0, (free / 2 - 24) / 1.08); bT = { x: (right - mr.left) + free / 2, y: H / 2, r }; }
-    else bT = { x: W / 2, y: 0.3 * H, r: Math.min(r0, 0.16 * H) };
+    else { // narrow: above the copy as it sits centred at S 0.26 (1.19 = halo 1.08 x the hold's creep), 4% clear of the top edge
+      const ph = rectOf(p).height, span = H / 2 - ph / 2 - 24 - 0.04 * H, r = Math.max(0.05 * H, Math.min(r0, 0.16 * H, span / 2.38));
+      bT = { x: W / 2, y: Math.min(0.3 * H, H / 2 - ph / 2 - 24 - 1.19 * r), r };
+    }
   }
 
   // ---------- state, per frame ----------
@@ -284,9 +291,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // planet framing: while the title is up Mars sits in the gap between its words; on the SpaceX hold it sits beside the copy.
   // Size = moving the camera along its line to Mars (same lens, look and phase); position = a view offset on the projection.
   let framed = false;
+  // quintic ramps (zero speed and acceleration at both ends): on a short title to SpaceX scroll a smoothstep start stepped the camera speed
+  const q5 = (x, a, b) => smoother(clamp01((x - a) / (b - a)));
   function frameMars(inSpace) {
-    const k1 = inSpace && tG ? sstep(S, -0.15, -0.02) * (1 - sstep(S, 0.04, 0.12)) : 0;
-    const k2 = inSpace && bT ? sstep(S, B2[0], B2[1]) * (1 - sstep(S, B2[2], B2[3])) : 0;
+    const k1 = inSpace && tG ? q5(S, -0.15, -0.02) * (1 - q5(S, 0.04, 0.12)) : 0;
+    const k2 = inSpace && bT ? q5(S, B2[0], B2[1]) * (1 - q5(S, B2[2], B2[3])) : 0;
     const clear = () => { if (framed) { framed = false; cam.clearViewOffset(); } };
     if (k1 <= 0 && k2 <= 0) return clear();
     const th = Math.tan(cam.fov * Math.PI / 360);
@@ -323,13 +332,17 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     if (fx && P) { if (fx.flash > P.flash) P.flash = fx.flash; if (fx.heat > P.heat) P.heat = fx.heat; if (fx.bloom > P.bloom) P.bloom = fx.bloom; }
   }
 
-  // ---------- SOL readout: ticks 0001 -> 0206 over the colony run, out through the atmospheric entry ----------
+  // ---------- SOL readout: data-sol-from -> data-sol-to (1 -> 206), linear in scroll from its fade in to the last px of the track ----------
+  // out through the atmospheric entry; past the end it fades as the track scrolls away. The page script draws the bar from the number.
   let solTxt = '', solOp = '';
+  const solFrom = sol && sol.root ? +sol.root.dataset.solFrom || 1 : 1, solTo = sol && sol.root ? +sol.root.dataset.solTo || 206 : 206;
   function solFrame() {
     if (!sol || !sol.root) return;
-    const entry = sstep(S, 0.40, 0.43) * (1 - sstep(S, 0.57, 0.61)), op = sstep(S, -0.02, 0.06) * (1 - entry);
+    const entry = sstep(S, 0.40, 0.43) * (1 - sstep(S, 0.57, 0.61)), past = sstep(ys, LAY.yEnd, LAY.yEnd + 0.25 * LAY.vh);
+    const op = sstep(S, SOL_S0, 0.06) * (1 - entry) * (1 - past);
     const o = op.toFixed(3); if (o !== solOp) { solOp = o; sol.root.style.opacity = o; sol.root.style.visibility = op > 0.005 ? '' : 'hidden'; }
-    const v = String(1 + Math.round(205 * clamp01(S / 0.985))).padStart(4, '0');
+    const k = clamp01((ys - LAY.ySol) / Math.max(1, LAY.yEnd - 1 - LAY.ySol)); // scroll, not S (S runs at a different rate in every beat); the end within 1 px (scroll px are whole, the track end is not)
+    const v = String(solFrom + Math.floor((solTo - solFrom) * k + 1e-6)).padStart(4, '0'); // floor: the last value only on the last px
     if (v !== solTxt && sol.value) { solTxt = v; sol.value.textContent = v; }
   }
 
