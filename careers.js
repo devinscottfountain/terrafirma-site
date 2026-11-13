@@ -15,6 +15,8 @@
 //   img[data-mission-billboard]  the static 2D rocket on the arc: fallback for the 3D ship, fades out with the posters
 // Posters fade out once the first real frame is drawn. Switches: ?mission=0 keeps the posters.
 
+import * as stage from './stage.js';
+
 const BASE = new URL('./footer/', import.meta.url).href;   // footer modules and textures, pinned with this file's SHA
 const FADE_MS = 600;
 const qs = new URLSearchParams(location.search);
@@ -49,6 +51,13 @@ function pickQuality() {
   return coarse || weak || saveData ? 'low' : 'high';
 }
 
+// homepage: the film's canvas sits right above the footer and shares the GPU through the hand-off (stage.js). There the footer
+// renders at a lighter pixel ratio while both are on screen, takes turns with the film, and melts its top into the seam colour.
+// Pages with the footer only (Careers, legal) never set any of it.
+const FILM_PAGE = !!document.querySelector('section[data-three="film"]');
+const OVERLAP_PR = 1.25;
+const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
 if (!bail) {
   let footer = null, booted = false, dead = false, ready = false, visible = false;
   let cur = 0, target = 0, lastTick = 0, firstSnap = true, docTop = 0, docH = 0;
@@ -78,9 +87,24 @@ if (!bail) {
 
   // ---------------------------------------------------------------- tick (gsap.ticker when present, else rAF)
   let raf = 0, gsapTick = null;
+  // how much of the viewport the footer covers, and how much the seam shows (full while a fair share of the film is still above)
+  function coverage() {
+    const vh = innerHeight || 1;
+    let top, h;
+    if (window.lenis) { top = docTop - scrollY(); h = docH; } else { const r = root.getBoundingClientRect(); top = r.top; h = r.height; }
+    return Math.max(0, Math.min(vh, top + h) - Math.max(0, top)) / vh;
+  }
+  const seamK = () => sstep(0, 0.15, stage.vis('film'));
+  function overlapState() {
+    if (!FILM_PAGE || !footer) return;
+    stage.report('foot', visible ? coverage() : 0);
+    footer.setSeam(seamK());
+    footer.capPixelRatio(stage.vis('film') > 0 ? OVERLAP_PR : null);   // lifted once the film is gone (applied on a quiet frame)
+  }
   function tick() {
     if (!footer || !ready || !visible) return;
     const now = performance.now(), dt = lastTick ? Math.min(0.1, (now - lastTick) / 1000) : 1 / 60; lastTick = now;
+    overlapState();
     target = targetProgress();
     if (firstSnap) { cur = target; firstSnap = false; }   // arriving by anchor jump: no long sunrise from 0
     else cur += (target - cur) * (1 - Math.exp(-dt * 8));   // frame-rate independent lerp
@@ -99,7 +123,8 @@ if (!bail) {
   // render only while the footer is on screen
   function sync() {
     if (!footer || !ready) return;
-    if (visible) { footer.start(); startTick(); } else { footer.stop(); stopTick(); }
+    if (visible) { overlapState(); footer.start(); startTick(); }
+    else { footer.stop(); stopTick(); if (FILM_PAGE) stage.report('foot', 0); }
   }
 
   // ---------------------------------------------------------------- failure: dispose, keep the poster
@@ -108,6 +133,7 @@ if (!bail) {
     dead = true; ready = false;
     console.warn('TerraFirma footer: falling back to the poster.', err);
     stopTick();
+    if (FILM_PAGE) { stage.report('foot', 0); stage.seam(null); }
     for (const fn of cleanups.splice(0)) { try { fn(); } catch (_) { /* best effort */ } }
     try { footer?.dispose(); } catch (_) { /* best effort */ }
     footer = null; window.TFFooter = undefined;
@@ -121,7 +147,8 @@ if (!bail) {
     try {
       const [THREE, mod] = await Promise.all([import('three'), import('./footer/footer3d.js')]);
       if (dead) return;
-      footer = mod.createFooter({ THREE, host: mount, quality, base: BASE });   // adds its own absolute-fill canvas to the mount
+      footer = mod.createFooter({ THREE, host: mount, quality, base: BASE,   // adds its own absolute-fill canvas to the mount
+        ...(FILM_PAGE ? { gate: () => stage.turn('foot'), prCap: OVERLAP_PR } : {}) });   // homepage: warmed at the overlap ratio
       window.TFFooter = { footer, quality };   // QA only
       const cv = footer.renderer.domElement;
       Object.assign(cv.style, { opacity: '0', transition: `opacity ${FADE_MS}ms ease`, zIndex: '1', pointerEvents: 'none' });   // above the poster, never blocks clicks
@@ -146,6 +173,8 @@ if (!bail) {
       if (!(await footer.ready)) { if (!dead) fail(new Error('footer disposed before ready')); return; }
       if (dead) return;
       ready = true;
+      // homepage: the film fades its lower edge into this, the footer's sky just above the horizon, weighted like the footer's own top
+      if (FILM_PAGE) stage.seam(() => { const k = footer && !dead ? seamK() : 0; return k > 0 ? footer.seamColor().map(v => v * k) : null; });
       logoRect();
       tick();   // seed the first progress value (no-op until visible)
       sync();

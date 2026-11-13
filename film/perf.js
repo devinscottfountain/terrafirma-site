@@ -5,8 +5,9 @@
 // Nothing here ever compiles a shader: every post level, the trails and both shadow sizes run on programs warmed at boot
 // (post.warm), and the rest are uniforms, render target sizes or the film's own refresh policy.
 //
-// createGovernor({ high, apply, hold }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
+// createGovernor({ high, apply, hold, holdUp }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
 //   apply(q, level): push a ladder entry into the film (film.js). hold(): true while stepping must wait (the planet-to-colony flash)
+//   holdUp(): true while stepping up must wait (the footer canvas shares the GPU: frames alternate, so the film's intervals are not its own)
 //   Switches: ?perf=off (fixed at the top), ?perf=0..5 pins a level, ?perf=log logs every change.
 export const LADDER = [
   { pr: 0.75, post: 0, trails: false, shadow: 1024, every: 3, keep: 0.4 },
@@ -20,7 +21,7 @@ const TOP = LADDER.length - 1;
 const MISS = 20, HITCH = 250;          // ms: over MISS missed 60 fps; over HITCH it is a one-off (compile, GC, tab switch), not throughput
 const WIN = 40, COOL = 1500, UP_HOLD = 4000, PROBATION = 15000, CEIL_LIFE = 60000, ARRIVE = 600, EMERG = 33;
 
-export function createGovernor({ high = true, apply, hold = () => false } = {}) {
+export function createGovernor({ high = true, apply, hold = () => false, holdUp = () => false } = {}) {
   const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
   const P = qs.get('perf'), LOG = P === 'log', OFF = P === 'off', PIN = /^[0-5]$/.test(P || '') ? +P : null;
   const cap = high ? TOP : 2;          // low tier: never above pixel ratio 1 / SMAA (film.js keeps its post at FXAA there)
@@ -54,7 +55,7 @@ export function createGovernor({ high = true, apply, hold = () => false } = {}) 
     if (clock < cool || hold()) return;
     if (p90 > MISS || misses > WIN * 0.12) { set(level - 1, 'p90 ' + p90.toFixed(1) + ' misses ' + misses); return; }
     // headroom: clean, vsync-locked frames for UP_HOLD -> try one level up (probation catches a level that cannot hold)
-    if (level < ceil && misses === 0 && p90 < 17.6) { if (!upT) upT = clock; else if (clock - upT > UP_HOLD) set(level + 1, 'headroom p90 ' + p90.toFixed(1)); }
+    if (level < ceil && misses === 0 && p90 < 17.6 && !holdUp()) { if (!upT) upT = clock; else if (clock - upT > UP_HOLD) set(level + 1, 'headroom p90 ' + p90.toFixed(1)); }
     else upT = 0;
   }
   return {

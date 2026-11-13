@@ -26,12 +26,14 @@ function noise1(seed) { // smooth 1D value noise, -1..1
   return t => { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return h(i) * (1 - u) + h(i + 1) * u; };
 }
 
-export function createFooter({ THREE, host, quality = 'high', base, canvas: cvIn } = {}) {
+// gate: optional () => bool, asked once per animation frame; false skips that frame (stage.js: another canvas draws it)
+// prCap: optional pixel ratio cap from the start (the homepage, where the film shares the GPU); capPixelRatio() moves it later
+export function createFooter({ THREE, host, quality = 'high', base, canvas: cvIn, gate = null, prCap = null } = {}) {
   const canvas = cvIn || document.createElement('canvas');
   if (!cvIn) { canvas.className = 'd61-footer-canvas'; Object.assign(canvas.style, { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'block' }); host.appendChild(canvas); }
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
   try {
-    return build({ THREE, host, quality, base, canvas, cvIn, renderer });
+    return build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap });
   } catch (e) {
     try { renderer.dispose(); renderer.forceContextLoss?.(); } catch (_) { /* gone */ }
     if (!cvIn) canvas.remove();
@@ -39,7 +41,7 @@ export function createFooter({ THREE, host, quality = 'high', base, canvas: cvIn
   }
 }
 
-function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
+function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap }) {
   const HIGH = quality !== 'low';
   const DEBUG = typeof location !== 'undefined' && /[?&]debug(=|&|$)/.test(location.search);
   const V3 = THREE.Vector3;
@@ -47,7 +49,10 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   renderer.debug.checkShaderErrors = DEBUG;
   const DPR = Math.min(typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1, 2);
   const prMax = Math.min(DPR, HIGH ? 1.5 : 1.25);
-  let pr = prMax, prWant = pr;
+  // pixel ratio: the adaptive / governor value (prGov) under an optional cap (prCap, the homepage overlap), never above prMax
+  let prGov = prMax, prLim = prCap > 0 ? prCap : Infinity;
+  const prWant = () => Math.max(0.5, Math.min(prMax, prGov, prLim));
+  let pr = prWant();
   renderer.setPixelRatio(pr);
   renderer.toneMapping = THREE.NoToneMapping;        // tone mapping lives in the final pass
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -144,7 +149,8 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
   const finU = {
     tSrc: { value: rtA.texture }, tB0: { value: rtL[0].texture }, tB1: { value: rtL[1].texture }, tB2: { value: rtL[2].texture }, tB3: { value: rtL[3].texture }, tB4: { value: rtL[LV - 1].texture },
     uBw: { value: new THREE.Vector4(0.46, 0.3, 0.15, 0.06) }, uBw4: { value: 0.03 }, uBloom: { value: 0.5 }, uExp: { value: 1 }, uGrain: { value: HIGH ? 0.04 : 0.03 }, uTime: { value: 0 },
-    uVig: { value: 0.75 }, uLow: { value: 0.82 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() }
+    uVig: { value: 0.75 }, uLow: { value: 0.82 }, uTop: { value: 0.1 }, uLogo: { value: new THREE.Vector4() }, uHalo: { value: 0 }, uHaloC: { value: new THREE.Color(0.06, 0.022, 0.009) }, uRes: { value: new THREE.Vector2() },
+    uSeam: { value: 0 }, uSeamC: { value: new V3() }, uSeamH: { value: HORIZON }
   };
   const finMat = fsMat(FINAL_FRAG, finU, LV > 4 ? { B5: '' } : {});
   function pass(mat, target) { fs.material = mat; renderer.setRenderTarget(target); renderer.render(fsScene, fsCam); }
@@ -189,6 +195,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     // pitch down so the horizon (elevation 0) lands this far from the top
     lens.pitch = Math.atan((1 - 2 * (port ? PORTRAIT.horizon : HORIZON)) * Math.tan(lens.vfov * Math.PI / 360));
     finU.uTop.value = port ? 0.06 : 0.14;
+    finU.uSeamH.value = port ? PORTRAIT.horizon : HORIZON;   // the seam haze thins out just as the horizon glow takes over
     cam.fov = lens.vfov; cam.aspect = a; cam.updateProjectionMatrix();
     setLogoU();
   }
@@ -235,6 +242,36 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     finU.uHalo.value = (0.25 + 0.75 * e) * (1 + 1.5 * (breath - 1));   // breathes with the glow
   }
 
+  // seam colour: the footer's sky just above the horizon (1.7 deg up, across the frame's width), exposed, toned and encoded like the
+  // final pass (grade and grain left out). A warm dusk brown that brightens with the sunrise. CPU copy of skyRad (foot-glsl.js).
+  const seamC = [0, 0, 0], sd = new V3();
+  const ACI = [0.59719, 0.076, 0.0284, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777], ACO = [1.60475, -0.10208, -0.00327, -0.53108, 1.10813, -0.07276, -0.07367, -0.00605, 1.07602];
+  const m3 = (M, r, g, b, o) => { o[0] = M[0] * r + M[3] * g + M[6] * b; o[1] = M[1] * r + M[4] * g + M[7] * b; o[2] = M[2] * r + M[5] * g + M[8] * b; return o; };
+  const rrt = v => (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.432951) + 0.238081);
+  const oetf = x => (x = Math.max(0, Math.min(1, x)), x <= 0.0031308 ? x * 12.92 : 1.055 * x ** (1 / 2.4) - 0.055);
+  const sm = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+  function skyJS(d, o) {
+    const g = skyU.uGlow.value, lift = skyU.uLift.value, hc = Math.max(d.y, 0);
+    const dl = Math.hypot(d.x, d.z) || 1, sl = Math.hypot(sun.x, sun.z) || 1;
+    const az = Math.acos(Math.max(-1, Math.min(1, (d.x * sun.x + d.z * sun.z) / (dl * sl)))), cg = d.dot(sun);
+    const m = Math.sqrt(sm(hc / 0.55)), sw = 0.19 + 0.07 * lift, Hh = 0.015 + 0.01 * lift;
+    const band = Math.exp(-az * az / (sw * sw)) * Math.exp(-hc / Hh), aur = Math.exp(-az * az / (0.008 + 0.01 * lift)) * Math.exp(-hc / (Hh * 0.6));
+    const fwd = (1 - 0.7225) / (12.566 * Math.max(1 + 0.7225 - 1.7 * cg, 1e-4) ** 1.5) * Math.exp(-hc / (Hh * 1.4)), sk = Math.exp(-hc / 0.03);
+    o[0] += 0.0085 + (0.0011 - 0.0085) * m + g * (band * 0.32 + aur * 1.35 + fwd * 0.3 + 0.012 * sk);
+    o[1] += 0.0046 + (0.001 - 0.0046) * m + g * (0.22 * band * 0.32 + 0.37 * aur * 1.35 + 0.5 * fwd * 0.3 + 0.004 * sk);
+    o[2] += 0.003 + (0.0016 - 0.003) * m + g * (0.05 * band * 0.32 + 0.1 * aur * 1.35 + 0.24 * fwd * 0.3 + 0.0015 * sk);
+  }
+  const acc = [0, 0, 0], tA = [0, 0, 0], tB = [0, 0, 0];
+  function seamColor() {
+    acc[0] = acc[1] = acc[2] = 0;
+    const N = 9, el = 0.03, half = Math.atan(Math.tan(cam.fov * Math.PI / 360) * cam.aspect);
+    for (let i = 0; i < N; i++) { const a = -half + 2 * half * i / (N - 1); sd.set(Math.sin(a) * Math.cos(el), Math.sin(el), -Math.cos(a) * Math.cos(el)); skyJS(sd, acc); }
+    const k = finU.uExp.value / N;
+    m3(ACI, acc[0] * k * 1.025, acc[1] * k, acc[2] * k * 0.96, tA); tA[0] = rrt(tA[0]); tA[1] = rrt(tA[1]); tA[2] = rrt(tA[2]); m3(ACO, tA[0], tA[1], tA[2], tB);
+    seamC[0] = oetf(tB[0]); seamC[1] = oetf(tB[1]); seamC[2] = oetf(tB[2]);
+    return seamC;
+  }
+
   function bakeEnv(force) {
     const now = performance.now();
     if (!force && (Math.abs(prog - envP) < ENV_STEP || now - envT < ENV_MS)) return;
@@ -262,10 +299,12 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     pass(preMat, rtPre);
     for (let i = 0; i < bloomLv; i++) { pass(blurMats[i * 2], rtT[i]); pass(blurMats[i * 2 + 1], rtL[i]); }
     finU.uTime.value = clock;
+    if (finU.uSeam.value > 0) { const c = seamColor(); finU.uSeamC.value.set(c[0], c[1], c[2]); }
     pass(finMat, null);
     // adaptive ratio (high): sustained slow frames drop the ratio a notch, applied while the scroll is idle
-    if (HIGH && running) { ftAcc += dt; ftN++; if (ftN >= 90) { const avg = ftAcc / ftN; ftAcc = ftN = 0; if (avg > 1 / 45 && prWant > 1) prWant = Math.max(1, prWant - 0.25); } }
-    if (prWant !== pr && now - moveT > 400) { pr = prWant; renderer.setPixelRatio(pr); renderer.setSize(W, H, false); sizeTargets(); }
+    // (under a gate the interval spans the frames another canvas drew: judged on this canvas's own share)
+    if (HIGH && running) { ftAcc += dt / turnK; ftN++; if (ftN >= 90) { const avg = ftAcc / ftN; ftAcc = ftN = 0; if (avg > 1 / 45 && prGov > 1) prGov = Math.max(1, prGov - 0.25); } }
+    if (prWant() !== pr && now - moveT > 400) applyPr();
     frames++;
   }
 
@@ -296,10 +335,18 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     }).catch(() => { /* textures are optional */ });
   }
 
+  // new pixel ratio: canvas and targets resized together (no recompile: same programs, new texture sizes)
+  function applyPr() { pr = prWant(); renderer.setPixelRatio(pr); renderer.setSize(W, H, false); sizeTargets(); }
+
   // ---------------------------------------------------------------- loop + api
-  let running = false, raf = 0, dead = false, visHidden = false;
+  let running = false, raf = 0, dead = false, visHidden = false, turnK = 1, gated = false;
   // nothing draws before ready: an early start() would compile every program synchronously on the main thread
-  const loop = now => { if (!running) return; raf = requestAnimationFrame(loop); if (stage) frame(now); };
+  // gate: another canvas may own this animation frame (stage.js); frame() then covers both frames' time on the next one
+  const loop = now => {
+    if (!running) return; raf = requestAnimationFrame(loop); if (!stage) return;
+    if (gate && !gate()) { gated = true; return; }
+    turnK = gated ? 2 : 1; gated = false; frame(now);
+  };
   const onVis = () => { visHidden = document.hidden; if (visHidden) cancelAnimationFrame(raf); else if (running) { lastT = 0; raf = requestAnimationFrame(loop); } };
   document.addEventListener('visibilitychange', onVis);
   function resize() {
@@ -345,9 +392,18 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer }) {
     stop() { running = false; cancelAnimationFrame(raf); },
     renderOnce(t) { if (dead || !stage) return; if (t != null) { clock = +t; lastT = 0; } frame(performance.now()); },   // t: scene clock in s (QA stills)
     setPostQuality, getPostQuality: () => postQ,
-    setPixelRatio(v) { prWant = Math.max(0.5, Math.min(prMax, +v || prMax)); },   // perf governor cap; the loop applies it on a quiet frame
+    setPixelRatio(v) { prGov = Math.max(0.5, Math.min(prMax, +v || prMax)); },   // perf governor cap; the loop applies it on a quiet frame
+    // overlap cap (homepage): null lifts it. While running the loop applies it on a quiet frame; while stopped (off screen) it is
+    // applied now and one frame is drawn, so the targets are allocated before the footer is seen
+    capPixelRatio(v) {
+      prLim = v > 0 ? v : Infinity;
+      if (!running && stage && !dead && prWant() !== pr) { applyPr(); frame(performance.now()); }
+    },
+    // seam (homepage): k 0..1, how much the top melts into the seam colour instead of black (0: as everywhere else)
+    setSeam(k) { finU.uSeam.value = Math.max(0, Math.min(1, +k || 0)); },
+    seamColor: () => seamColor().slice(),
     resize,
-    stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, dpr: DPR, frames, programs: i.programs?.length, stage, timing, placeholder: !!content?.placeholder }; },
+    stats() { const i = renderer.info; return { calls: i.render.calls, triangles: i.render.triangles, pixelRatio: pr, prCap: prLim === Infinity ? null : prLim, seam: finU.uSeam.value, dpr: DPR, frames, programs: i.programs?.length, stage, timing, placeholder: !!content?.placeholder }; },
     dispose() {
       if (dead) return;
       running = false; dead = true; cancelAnimationFrame(raf);

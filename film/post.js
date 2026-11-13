@@ -742,7 +742,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   const tBeg = name => { if (!profiling || !tq) return null; const q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, q); return [name, q]; };
   const tEnd = e => { if (!e) return; gl.endQuery(tq.TIME_ELAPSED_EXT); pend.push(e); };
   function poll() {
-    if (!tq) return;
+    if (!tq || !pend.length) return; // getParameter is a sync round trip to the GPU process: only while queries are pending (profiling)
     const dis = gl.getParameter(tq.GPU_DISJOINT_EXT);
     for (let i = pend.length - 1; i >= 0; i--) {
       const [n, q] = pend[i]; if (!gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) continue;

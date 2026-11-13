@@ -67,7 +67,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // adaptive quality (perf.js): pixel ratio, post level, trails, shadow size and refresh, launch particles. Applied by uniforms and
   // target sizes only; it holds still through the planet-to-colony flash (E0 .. 0.52) unless frames collapse
   let trailsOK = true, partKeep = 1;
-  const gov = createGovernor({ high: HIGH, hold: () => S > E0 && S < 0.52, apply: q => {
+  const gov = createGovernor({ high: HIGH, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, apply: q => {
     const pr = Math.min(devicePixelRatio || 1, HIGH ? 1.5 : 1, q.pr);
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
     post.setQuality(HIGH ? q.post : Math.min(q.post, 1));
@@ -311,6 +311,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   let siteInfo = null, siteDist = 0, shadowFrame = 0, forceShadow = true, booted = false, dead = false;
   let over = 0, overV = 0, gS = 0, gL = 0; // launch overrun past the track end (g), its rate; the scroll and launch colony clocks
   let shadowEvery = 1;                        // colony shadow refresh while something casting moves: every Nth frame (governor)
+  let overlap = false, seamCol = null;        // the footer canvas is on screen too (stage.js); its seam colour for the lower edge
+  const OVERLAP_SHADOW = 3;                   // while overlapping: the launch light's shadow redraws at most every 3rd film frame
   const edge = { k: 0, col: [0, 0, 0], el: null }; // CTA hand-off: how far the next section has risen, its background (display rgb 0..1)
   const shakeV = new THREE.Vector3(), shakeR = new THREE.Vector3(), shakeU = new THREE.Vector3();
   const mouse = { x: 0, y: 0 }, ms = { x: 0, y: 0 };
@@ -495,7 +497,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     // Colony: the build state and sun only change with g; between changes only the crane jibs move, so every 3rd frame is enough.
     shadowFrame++;
     if (inSite) { if (forceShadow || (sunLight.intensity > 0.01 && (siteDist < 2500 || shadowFrame % 10 === 0))) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
-    else if (inCol) { if (forceShadow || built || (shadowFrame % shadowEvery === 0 && cranesUp())) { renderer.shadowMap.needsUpdate = true; forceShadow = false; } }
+    else if (inCol) {
+      // overlapping the footer (the launch past the track end, mostly under the fade): the plume light moves every frame, so its
+      // shadow would redraw every frame. A few frames' lag is invisible there; a forced redraw (new set, new size) still goes now.
+      const every = overlap ? Math.max(shadowEvery, OVERLAP_SHADOW) : shadowEvery;
+      if (forceShadow || ((built || cranesUp()) && shadowFrame % every === 0) || (!overlap && built)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; }
+    }
     else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
     // operator layer: only a faint handheld drift
     const dist = pos.distanceTo(look);
@@ -538,7 +545,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       post.scrim(((r.left + r.right) / 2 - mr.left) / W, 1 - ((r.top + r.bottom) / 2 - mr.top) / H, 0.66 * r.width / W + 0.05, 0.8 * r.height / H + 0.07, on ? 0.45 * (1 - AC.upk) : 0);
     } else post.scrim(0.5, 0.5, 1, 1, 0);
     applyTune();
-    post.edge(edge.k, edge.col, Math.max(0.3, 160 / H), inCol ? 0.3 * edge.k * sstep(gL, LIFT_G, LIFT_G + 0.05) : 0); // the CTA rises out of the launch glow
+    // the CTA rises out of the launch glow: the lower edge fades into the footer scene's seam colour (stage.js) when there is one,
+    // else into the next section's background. The warm haze above the fade carries the smoke across the seam.
+    post.edge(edge.k, seamCol || edge.col, Math.max(0.3, 160 / H), inCol ? (seamCol ? 0.42 : 0.3) * edge.k * sstep(gL, LIFT_G, LIFT_G + 0.05) : 0);
     post.update(postArg);
     solFrame();
     post.render();
@@ -634,16 +643,21 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   function step(dt) {
     if (!running || !booted || dead) return;
     dt = Math.max(0, dt || 0); if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
-    gov.frame(dt * 1000);
+    gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
     frame(Math.min(0.05, dt));
   }
-  const loop = now => { raf = requestAnimationFrame(loop); const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
+  let drive = null; // start(false, fn): the own rAF loop calls fn() (the mount's tick) instead of step(dt)
+  const loop = now => { raf = requestAnimationFrame(loop); if (drive) { drive(); return; } const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
   const api = {
     ready: readyP, canvas, renderer, post, scene, cam, aircraft, flight, perf: gov,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the film runs its own rAF loop
-    start(external = false) { if (running) return; running = true; ext = external; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
+    start(external = false, fn = null) { if (running) return; running = true; ext = external; drive = fn; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
     step, resize, relayout,
+    // overlap: the footer canvas is on screen as well (frames alternate): the governor may not step up, the launch shadow refreshes less
+    setOverlap(on) { overlap = !!on; },
+    // seam: display rgb (0..1) the lower edge fades into, from the footer scene; null falls back to the next section's background
+    setSeam(c) { seamCol = c && c.length >= 3 ? c : null; },
     snap() { snapNext = true; },
     tune, look: LOOK, // the live look object and its shipped defaults (look.json.js)
     get freeze() { return freeze; }, set freeze(v) { freeze = !!v; },
@@ -652,7 +666,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     setClock(v) { tEl = v; }, // QA: set the film clock (grain, machines, strobes) for repeatable frames
     yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
     get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh },
-      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
+      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), overlap, seam: seamCol && seamCol.map(v => +v.toFixed(3)), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
       site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);

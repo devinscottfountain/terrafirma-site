@@ -150,6 +150,7 @@ export const FINAL_FRAG = /* glsl */ `
 ${CINE_GLSL}
 uniform sampler2D tSrc, tB0, tB1, tB2, tB3, tB4; uniform vec4 uBw; uniform float uBw4, uBloom, uExp, uGrain, uTime, uVig, uLow, uTop;
 uniform vec4 uLogo; uniform float uHalo; uniform vec3 uHaloC; uniform vec2 uRes;
+uniform float uSeam, uSeamH; uniform vec3 uSeamC;
 varying vec2 vUv;
 void main(){
   vec3 c=texture2D(tSrc,vUv).rgb;
@@ -169,5 +170,9 @@ void main(){
   v*=smoothstep(0.,uTop,yt);
   c*=v;
   vec3 o=cineGrade(cineOETF(c));
-  gl_FragColor=vec4(clamp(cineGrain(o,gl_FragCoord.xy,uTime,uGrain),0.,1.),1.);
+  o=clamp(cineGrain(o,gl_FragCoord.xy,uTime,uGrain),0.,1.);
+  // seam (homepage only, 0 elsewhere): under the film the top melts into the seam colour instead of black, the same display
+  // colour the film's lower edge fades into, so the launch haze runs on into the dusk with no band between
+  if(uSeam>0.){ float w=1.-smoothstep(0.,uSeamH,yt); o=mix(o,uSeamC,uSeam*w*w*(3.-2.*w)); }
+  gl_FragColor=vec4(o,1.);
 }`;

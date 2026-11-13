@@ -12,6 +12,8 @@
 // If it fails after setting the flag it removes it and fires "tf:film-fail". Switches: ?film=0, ?q=low|high, ?qa (window.TFFilm),
 // ?grade (dev look panel, film/dial.js: only then is it fetched; ?grade=lil forces the lil-gui fallback).
 
+import * as stage from '../stage.js';
+
 const qs = new URLSearchParams(location.search);
 const BASE = new URL('./', import.meta.url).href;       // film/ : modules and assets, pinned with this file's SHA
 const FADE_MS = 700;
@@ -42,23 +44,33 @@ const bail = !root || !mount || missing.length || qs.get('film') === '0' || matc
 
 if (!bail) {
   const html = document.documentElement;
-  let film = null, booted = false, dead = false, ready = false, visible = false, gsapTick = null, lastTick = 0;
+  let film = null, booted = false, dead = false, ready = false, visible = false, gsapTick = null, lastTick = 0, skipped = 0;
   const cleanups = [];
   const quality = pickQuality();
   html.dataset.film3d = 'on';   // as early as possible: the page's 2D script stands down
 
+  // how much of the viewport the sticky canvas covers (the CTA and footer scroll up over it past the track end)
+  function coverage() { const r = mount.getBoundingClientRect(), vh = innerHeight || 1; return Math.max(0, Math.min(vh, r.bottom) - Math.max(0, r.top)) / vh; }
   function tick() {
     const now = performance.now(), dt = lastTick ? (now - lastTick) / 1000 : 1 / 60; lastTick = now;
-    film?.step(dt);
+    if (!film) return;
+    const v = coverage(); stage.report('film', v);
+    if (v <= 0) { skipped += dt; film.setOverlap(false); return; }   // fully covered (the observer still calls a track whose edge only touches the viewport visible)
+    const both = stage.overlap();
+    film.setOverlap(both);
+    film.setSeam(stage.seam());   // the footer's seam colour, null when there is no footer scene (then the section background)
+    if (!stage.turn('film')) { skipped += dt; return; }   // the footer's frame: the film's clock catches up on its next one
+    film.step(dt + skipped); skipped = 0;
   }
   function sync() {
     if (!film || !ready) return;
     if (visible) {
       const ext = !!window.gsap?.ticker;
-      film.start(ext);
-      if (ext && !gsapTick) { lastTick = 0; gsapTick = tick; window.gsap.ticker.add(gsapTick); }
+      if (ext) film.start(true);
+      else film.start(false, tick);   // no gsap: the film's own rAF loop still goes through tick (coverage, turns)
+      if (ext && !gsapTick) { lastTick = 0; skipped = 0; gsapTick = tick; window.gsap.ticker.add(gsapTick); }
     } else {
-      film.stop();
+      film.stop(); stage.report('film', 0); film.setOverlap(false);
       if (gsapTick) { window.gsap.ticker.remove(gsapTick); gsapTick = null; }
     }
   }
@@ -67,6 +79,7 @@ if (!bail) {
     dead = true; ready = false;
     console.warn('TerraFirma film: leaving the 2D scenes.', err);
     if (gsapTick) { window.gsap?.ticker.remove(gsapTick); gsapTick = null; }
+    stage.report('film', 0);
     for (const fn of cleanups.splice(0)) { try { fn(); } catch (_) { /* best effort */ } }
     try { film?.dispose(); } catch (_) { /* best effort */ }
     film = null; if (window.TFFilm) window.TFFilm = undefined;
