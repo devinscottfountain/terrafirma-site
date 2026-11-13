@@ -20,9 +20,14 @@ import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 import LOOK from './look.json.js';
 import { createGovernor } from './perf.js';
+import { footerView } from '../footer/footer3d.js';
+import { toFooter } from '../footer/foot-model-plan.js';
+import { height as footHeight } from '../footer/foot-model-kit.js';
 
 // CA = 0.46 the entry swap (everything past it is the Jezero timelapse), E0..E1 = 0.40..0.60 the atmospheric entry window (flight.js)
-const MM_R = 0.14, B2 = [0.04, 0.12, 0.32, 0.40], HOLD_CREEP = 0.3; // title disc radius / viewport height; the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean; held disc growth per unit S
+// title disc radius / viewport height (phones; MM_R_WIDE from 768 wide, 25% larger); WORD_GAP: the title words' inner edges off the disc, per
+// disc radius (48 px at 1440x900); the SpaceX hold ramps in, holds, ramps out (clock S): out by E0, so the entry line is clean; held disc growth per unit S
+const MM_R = 0.14, MM_R_WIDE = 0.175, WORD_GAP = 48 / 157.5, B2 = [0.04, 0.12, 0.32, 0.40], HOLD_CREEP = 0.3;
 const P_END = 1.12;                  // film clock at the end of the track (the launch has cleared the frame)
 // past the end the launch keeps going on real time while the CTA rises over the canvas: the launch clock runs on at OVER_RATE (g/s,
 // eased in and out), up to OVER_MAX, and rewinds just as smoothly when the page scrolls back into the track
@@ -34,8 +39,13 @@ const beatVal = (B, k, a, b, c) => lerp(lerp(lerp(B.austin[k], B.space[k], a), B
 
 export function createFilm({ THREE, host, section, scenes, sol, quality, files }) {
   const HIGH = quality === 'high';
+  // phones (low tier on a touch screen): pixel ratio up to 2, so a 3x screen is not upscaled from 1x. Same programs and post level as
+  // the rest of the low tier; the governor's levels map to PHONE_PR there and it steps down from 2 when frames run long
+  const tq0 = new URLSearchParams(location.search).get('touch');
+  const PHONE = !HIGH && (tq0 ? tq0 === '1' : matchMedia('(pointer: coarse)').matches);
+  const PHONE_PR = [0.75, 1, 1.25, 1.5, 1.75, 2], PR_MAX = HIGH ? 1.5 : PHONE ? 2 : 1;
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, HIGH ? 1.5 : 1));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, PR_MAX));
   let W = Math.max(1, host.clientWidth), H = Math.max(1, host.clientHeight);
   renderer.setSize(W, H, false);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -67,8 +77,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // adaptive quality (perf.js): pixel ratio, post level, trails, shadow size and refresh, launch particles. Applied by uniforms and
   // target sizes only; it holds still through the planet-to-colony flash (E0 .. 0.52) unless frames collapse
   let trailsOK = true, partKeep = 1;
-  const gov = createGovernor({ high: HIGH, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => TOUCH.on, apply: q => {
-    const pr = Math.min(devicePixelRatio || 1, HIGH ? 1.5 : 1, q.pr);
+  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => TOUCH.on, apply: (q, lv) => {
+    const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr);
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
     post.setQuality(HIGH ? q.post : Math.min(q.post, 1));
     trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep;
@@ -94,7 +104,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // ---------- Jezero Base (built lazily, in idle time once Mars is on approach) ----------
   const colonyW = createColony({ THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files: files.jezero, HIGH,
     lateRockets: r => inWorld('colony', () => compileIn(r.group)),
-    lodPath: () => { const o = []; for (let i = 0; i <= 48; i++) { const v = new THREE.Vector3(); cPosC.getPoint(cPosU(0.6 + (P_END - 0.6) * i / 48), v); o.push(v.sub(COLV)); } return o; } }); // dome LOD (colony.js)
+    lodPath: () => { const o = []; for (let i = 0; i <= 48; i++) { const v = new THREE.Vector3(), q = 0.6 + (P_END - 0.6) * i / 48; cPosC.getPoint(cPosU(q), v); endPos(q, v, true); o.push(v.sub(COLV)); } return o; } }); // dome LOD (colony.js), the hand-off move included
   const colonyGroup = colonyW.group;
   const COLV = new THREE.Vector3(COL.x, COL.y, COL.z);
 
@@ -171,6 +181,70 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       outLook.set(Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw)).multiplyScalar(dist).add(outPos);
     }
     return f;
+  }
+
+  // ---------- the hand-off to the 3D footer: after lift-off the camera comes down and round onto the footer's opening camera ----------
+  // The footer (footer3d.js) shows this colony from the ground: foot-model-plan.js places the same plan there, mirrored and turned. One
+  // turn about the hub (no mirror; the plan's own symmetry keeps the rings, avenues and outer domes in place) maps its hub and build pad
+  // back onto ours, so its eye, aim and lens have a place here. The film ends on that camera, framing the strip of sky right above the
+  // footer's frame: the film section ends where the footer starts, so as the page scrolls on the two canvases join into one picture.
+  // The move runs over END_S (zero speed at both ends, still from the end of the track on); the launch carries on in that frame.
+  const footEl = document.querySelector('[data-foot-canvas]') || document.querySelector('[data-foot]');
+  // move windows (S): the orbit (from just before lift-off), the descent, the aim onto the ship (colony lens kept, so the city stays along
+  // the bottom), then the last tilt and zoom onto the footer's aim and lens as the ship climbs away; the ship's place up the frame while
+  // the aim follows it; the sun's elevation at the end (rad)
+  const END_S = [0.86, P_END], END_Y = [0.98, P_END], END_A = [0.86, 0.95], END_Q = [1.0, P_END], SHIP_Y = 0.5, END_SUN_EL = -0.3;
+  const FOOT = footEl ? (() => {
+    const hub = toFooter(0, 0), pad = toFooter(ROCK_SITES.build[0], ROCK_SITES.build[1]);
+    const th = Math.atan2(pad[1] - hub[1], pad[0] - hub[0]) - Math.atan2(ROCK_SITES.build[1], ROCK_SITES.build[0]), c = Math.cos(th), sn = Math.sin(th);
+    const dy = -footHeight(hub[0], hub[1]); // footer y -> ours: the footer's ground at its hub is our ground (y 0)
+    const toCol = (x, y, z, out) => { const X = x - hub[0], Z = z - hub[1]; return out.set(X * c + Z * sn, y + dy, -X * sn + Z * c).add(COLV); };
+    const v = footerView(16, 9), F = { toCol, eye: toCol(...v.eye, new THREE.Vector3()), look: new THREE.Vector3(), q: new THREE.Quaternion(), c: 0, e: 1, ok: false };
+    const sx = Math.sin(v.sunAz), sz = -Math.cos(v.sunAz); F.sunAz = Math.atan2(-sx * sn + sz * c, sx * c + sz * sn); // the footer's glow, our azimuth
+    F.rE = Math.hypot(F.eye.x - COLV.x, F.eye.z - COLV.z); F.aE = Math.atan2(F.eye.z - COLV.z, F.eye.x - COLV.x);
+    return F;
+  })() : null;
+  const endK = (S, w, any = false) => (FOOT && (any || FOOT.ok) ? q5(S, w[0], w[1]) : 0); // any: the footer's size not known yet (the dome LOD path)
+  // the footer's lens and aim for its current size: the window is the strip above its frame, in tangent units of its camera
+  const mE = new THREE.Matrix4(), Y_UP = new THREE.Vector3(0, 1, 0);
+  function measureFoot() {
+    if (!FOOT) return;
+    const fw = footEl.clientWidth, fh = footEl.clientHeight; FOOT.ok = fw > 0 && fh > 0; if (!FOOT.ok) return;
+    const v = footerView(fw, fh), t = Math.tan(v.vfov * Math.PI / 360);
+    FOOT.toCol(...v.look, FOOT.look); mE.lookAt(FOOT.eye, FOOT.look, Y_UP); FOOT.q.setFromRotationMatrix(mE);
+    FOOT.e = 2 * t * H / fh; FOOT.c = t + FOOT.e / 2; // vertical extent and centre of the strip (its bottom is the footer's top row)
+  }
+  // position: round the hub and down onto the footer's eye (polar, so the arc stays clear of the city), on top of the colony path
+  function endPos(S, out, any = false) {
+    const w = endK(S, END_S, any); if (w <= 0) return out;
+    const dx = out.x - COLV.x, dz = out.z - COLV.z, a0 = Math.atan2(dz, dx), r = lerp(Math.hypot(dx, dz), FOOT.rE, w), a = a0 + angD(FOOT.aE - a0) * w;
+    return out.set(COLV.x + r * Math.cos(a), lerp(out.y, FOOT.eye.y, endK(S, END_Y, any)), COLV.z + r * Math.sin(a));
+  }
+  // the camera through the move: position, aim (slerp onto the footer's) and lens (the colony lens, portrait lift included, onto the strip)
+  const qShip = new THREE.Quaternion(), shipV = new THREE.Vector3();
+  function endCam(S, fov) {
+    const wA = endK(S, END_A), wQ = endK(S, END_Q);
+    endPos(S, pos); cam.position.copy(pos);
+    const e0 = 2 * Math.tan(fov * Math.PI / 360), c = lerp(lerp(-portraitLift(S, cam.aspect) * e0, 0, wA), FOOT.c, wQ), e = e0 ** (1 - wQ) * FOOT.e ** wQ;
+    // follow: level, centred on the ship across, SHIP_Y up the window (whatever the window is doing), so the climb reads through the move
+    shipAt(gL, shipV).sub(pos); const ph = elev(shipV) - Math.atan(c - e / 2 + SHIP_Y * e), ya = Math.atan2(shipV.x, shipV.z);
+    shipV.set(Math.cos(ph) * Math.sin(ya), Math.sin(ph), Math.cos(ph) * Math.cos(ya)).add(pos); mE.lookAt(pos, shipV, Y_UP); qShip.setFromRotationMatrix(mE);
+    cam.quaternion.slerp(qShip, wA).slerp(FOOT.q, wQ);
+    setWindow(c, e);
+    setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
+  }
+  // the sky: the dusk glow comes round behind the footer's (over the orbit), then the sun goes on down through the last tilt, so the
+  // strip of sky the film ends on is the footer's night sky
+  function endSun(S) {
+    const w = endK(S, END_S); if (w <= 0) return;
+    const sv = colonyW.sun, el = lerp(Math.asin(THREE.MathUtils.clamp(sv.y, -1, 1)), END_SUN_EL, endK(S, END_Q)), a0 = Math.atan2(sv.z, sv.x), a = a0 + angD(FOOT.sunAz - a0) * w;
+    sv.set(Math.cos(el) * Math.cos(a), Math.sin(el), Math.cos(el) * Math.sin(a));
+  }
+  // the lens as a window in tangent units (vertical extent e, centre c; square pixels): a view offset on a symmetric frustum
+  function setWindow(c, e) {
+    const T = Math.abs(c) + e / 2, k = 2 * T / e, fw = W * k, fh = H * k;
+    cam.fov = 2 * Math.atan(T) * 180 / Math.PI;
+    cam.setViewOffset(fw, fh, (fw - W) / 2, (T - c - e / 2) * H / e, W, H); framed = true;
   }
 
   // ---------- Mars look: a key light fixed in camera space (front, left, a little high), so whatever the path does the disc reads full and lit ----------
@@ -264,7 +338,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     for (let i = aK.length - 2; i >= 0; i--) if (aK[i] >= aK[i + 1] - 1) aK[i] = aK[i + 1] - Math.max(1, 0.25 * vh);
     austin.layout({ yA: aK[0], yT: aK[1], yX: aK[2], yE: aK[3], S: LAY.S });
     aircraft.layout(camAtDist, W / H);
-    measureTitle(); measureBeat(); measureEdge();
+    measureTitle(); measureBeat(); measureEdge(); measureFoot();
   }
   // the section after the film: its background colour (computed style, display sRGB) is what the canvas's lower edge fades into
   function measureEdge() {
@@ -275,8 +349,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     for (let n = section.parentElement; n && !c; n = n.parentElement) c = rgba(n);                     // then whatever it sits on
     c = c || [0, 0, 0]; edge.el = el; edge.col[0] = c[0] / 255; edge.col[1] = c[1] / 255; edge.col[2] = c[2] / 255;
   }
-  // title: the two [data-split] words flank the planet. Row layout: the planet fills the gap between them. Column layout (narrow):
-  // the words are pushed apart vertically (transform on the spans) until the disc fits between them.
+  // title: the two [data-split] words flank the planet (transform on the spans). Row layout: the planet sits in the gap between them and
+  // the words are pulled in until each inner edge is WORD_GAP disc radii off the disc (never pushed out: a narrow gap takes a smaller
+  // disc). Column layout: the words are moved apart or together vertically to the same gap. Phones keep their own stacked framing.
   let tG = null;
   const AIR = () => (W < 768 ? 24 : 40);
   function measureTitle() {
@@ -284,12 +359,18 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const el = scenes.title, Ls = el && el.querySelector('[data-split="left"]'), Rs = el && el.querySelector('[data-split="right"]'); if (!Ls || !Rs) return;
     const h2 = Ls.parentElement; Ls.style.transform = Rs.style.transform = '';
     const tb = rectOf(h2), a = rectOf(Ls), c = rectOf(Rs), rowMode = Math.abs((a.top + a.bottom) / 2 - (c.top + c.bottom) / 2) < a.height * 0.5;
-    const rMax = MM_R * H;
+    const wide = W >= 768, rMax = (wide ? MM_R_WIDE : MM_R) * H;
     if (rowMode) {
-      const gap = c.left - a.right, r = Math.max(0.05 * H, Math.min(rMax, (gap / 2 - AIR()) / 1.08));
+      const gap = c.left - a.right;
+      let r;
+      if (wide) {
+        r = Math.max(0.05 * H, Math.min(rMax, gap / 2 / (1 + WORD_GAP)));
+        const dx = Math.max(0, gap / 2 - r * (1 + WORD_GAP)); // pull each word in by this much
+        Ls.style.transform = `translate3d(${dx}px,0,0)`; Rs.style.transform = `translate3d(${-dx}px,0,0)`;
+      } else r = Math.max(0.05 * H, Math.min(rMax, (gap / 2 - AIR()) / 1.08));
       tG = { Ls, Rs, h2, x: (a.right + c.left) / 2 - tb.left, y: ((a.top + a.bottom + c.top + c.bottom) / 4) - tb.top, r };
     } else {
-      const r = Math.min(rMax, 0.4 * W), clear = r * 1.08 + AIR(), gap = c.top - a.bottom, dy = Math.max(0, clear - gap / 2);
+      const r = Math.min(rMax, 0.4 * W), clear = wide ? r * (1 + WORD_GAP) : r * 1.08 + AIR(), gap = c.top - a.bottom, dy = wide ? clear - gap / 2 : Math.max(0, clear - gap / 2);
       Ls.style.transform = `translate3d(0,${-dy}px,0)`; Rs.style.transform = `translate3d(0,${dy}px,0)`;
       tG = { Ls, Rs, h2, x: ((a.left + a.right) / 2 + (c.left + c.right) / 2) / 2 - tb.left, y: (a.bottom + c.top) / 2 - tb.top, r };
     }
@@ -306,7 +387,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       // Never under the title disc as it hands over (a shrinking target backs the camera off against its push in: on a short landscape
       // phone the speed went through zero); a short screen takes the room from the gaps (12 px to the copy, the disc kept in frame)
       const ph = rectOf(p).height, air = H < 500 ? 12 : 24, span = H / 2 - ph / 2 - 24 - 0.04 * H, rTi = tG ? tG.r * (1 + HOLD_CREEP * B2[1]) : 0;
-      const r = Math.max(0.05 * H, Math.min(r0, 0.16 * H, span / 2.38), Math.min(rTi, 0.16 * H));
+      const r = Math.max(0.05 * H, Math.min(r0, 0.16 * H, span / 2.38), Math.min(rTi, (W >= 768 ? 0.2 : 0.16) * H)); // tablets: the larger title disc (MM_R_WIDE) still fits
       bT = { x: W / 2, y: Math.max(1.12 * r, Math.min(0.3 * H, H / 2 - ph / 2 - air - 1.19 * r)), r };
     }
   }
@@ -361,9 +442,9 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     let rT = Math.tan(Math.asin(6.05 / d)) / th * H / 2, tx = px, ty = py - lift * H;
     // the planet holds the viewport centre while the title scrolls past it: the words flank it exactly when the title is centred (S = 0)
     const creep = 1 + HOLD_CREEP * S; // the held disc keeps growing slowly (exact title size at S = 0): a steady creep in, never frozen
-    if (W < 992 && k1 > 0 && k2 > 0) {
-      // narrow layouts: the title and SpaceX targets hand over to each other directly. Through the nested blend the natural size leaked
-      // in at up to a quarter weight, and on a tall lens that is far smaller than both targets: the disc dipped and the camera jumped
+    if (k1 > 0 && k2 > 0) {
+      // the title and SpaceX targets hand over to each other directly. Through a nested blend the natural size leaked in at up to a
+      // quarter weight: on a tall lens (narrow) or under the larger title disc (wide) that is smaller than both targets, so the disc dipped
       const kk = Math.min(1, k1 + k2), w2 = k2 / (k1 + k2), tb = rectOf(tG.h2), mr = rectOf(host);
       rT = lerp(rT, lerp(tG.r, bT.r, w2) * creep, kk); tx = lerp(tx, lerp(tb.left - mr.left + tG.x, bT.x, w2), kk); ty = lerp(ty, lerp(H / 2, bT.y, w2), kk);
     } else {
@@ -518,6 +599,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     if (mode === 'space') { const near = S > -0.12; for (const m of earthSide) m.visible = !near; } // Earth is behind us once Mars is ahead
     const sunDir = inCol ? colonyW.sun : toSun;
     const built = inCol && colonyW.api.build(gS, t, gL);
+    if (inCol) endSun(S);
     if (inCol) { const r = colonyW.api.rockets; if (r && r.setKeep && r.keep !== partKeep) { r.keep = partKeep; r.setKeep(partKeep); } } // late rockets take the governor's particle share
     if (mode !== 'site' && mode !== 'globe') entryFrame(inCol, t, dt);
     if (!inCol && !inSite) { scene.fog.near = 1e8; scene.fog.far = 1e9; sunLight.intensity = 2.4; ambient.intensity = 0.35; hemi.intensity = 0; }
@@ -543,7 +625,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     cam.up.copy(camUp);
     if (Math.abs(cam.fov - fov) > 0.0005) { cam.fov = fov; cam.updateProjectionMatrix(); } // fine enough that slow zooms never step
     cam.position.copy(pos); cam.lookAt(look);
-    frameMars(mode === 'space', mode === 'globe' || mode === 'site' ? 0 : portraitLift(S, cam.aspect)); // portrait lens shift (flight.js), Mars framing on top
+    if (inCol && endK(S, END_S) > 0) { endCam(S, fov); focus = lerp(focus, pos.distanceTo(shipAt(gL, tmp2)), endK(S, END_S)); } // the hand-off move onto the footer's camera (owns the lens shift); focus on the ship from there
+    else frameMars(mode === 'space', mode === 'globe' || mode === 'site' ? 0 : portraitLift(S, cam.aspect)); // portrait lens shift (flight.js), Mars framing on top
     if (!inSite && !inCol) placeMars(S, mode === 'space'); // behind Earth through the globe leg anyway: hidden there
     // Earth: parked on Austin through the pull out, then it turns a little as we leave it; the Moon orbits with the scroll (flight.js)
     planetArg.t = t; planetArg.spin = SPIN_LAND - t * EARTH_SPIN + (introOn ? 0 : (S + 1) * 0.5); planets.update(planetArg);
@@ -575,7 +658,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     applyTune();
     // the CTA rises out of the launch glow: the lower edge fades into the footer scene's seam colour (stage.js) when there is one,
     // else into the next section's background. The warm haze above the fade carries the smoke across the seam.
-    post.edge(edge.k, seamCol || edge.col, Math.max(0.3, 160 / H), inCol ? (seamCol ? 0.42 : 0.3) * edge.k * sstep(gL, LIFT_G, LIFT_G + 0.05) : 0);
+    // landing on the footer's camera, the film ends on the sky above the footer's frame: no warm haze there, the two skies meet, and the
+    // fade only has to melt night sky into night sky: a shorter band keeps the ship clear of it on phones
+    const eK = inCol ? endK(S, END_S) : 0;
+    post.edge(edge.k, seamCol || edge.col, lerp(Math.max(0.3, 160 / H), Math.max(0.15, 120 / H), eK), inCol ? (seamCol ? 0.42 : 0.3) * edge.k * sstep(gL, LIFT_G, LIFT_G + 0.05) * (1 - eK) : 0);
     post.update(postArg);
     solFrame();
     post.render();
@@ -664,7 +750,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     LAY = null; if (framed) { framed = false; cam.clearViewOffset(); }
     gov.reset();
   }
-  ro = new ResizeObserver(() => { resize(); }); ro.observe(host); ro.observe(section);
+  ro = new ResizeObserver(() => { resize(); }); ro.observe(host); ro.observe(section); if (footEl) ro.observe(footEl); // the footer's size sets the end lens
   document.fonts?.ready.then(() => { LAY = null; });
   const relayout = () => { LAY = null; };
   addEventListener('load', relayout);
@@ -694,7 +780,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     setClock(v) { tEl = v; }, // QA: set the film clock (grain, machines, strobes) for repeatable frames
     yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
     get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh }, touch: TOUCH.on, yT: LAY ? -rectOf(section).top : 0,
-      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), overlap, seam: seamCol && seamCol.map(v => +v.toFixed(3)), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
+      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), end: +endK(S, END_S).toFixed(4), overlap, seam: seamCol && seamCol.map(v => +v.toFixed(3)), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
       site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); touchMq.removeEventListener?.('change', onTouchMq); removeEventListener('load', relayout);

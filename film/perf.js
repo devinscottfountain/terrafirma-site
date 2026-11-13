@@ -5,7 +5,8 @@
 // Nothing here ever compiles a shader: every post level, the trails and both shadow sizes run on programs warmed at boot
 // (post.warm), and the rest are uniforms, render target sizes or the film's own refresh policy.
 //
-// createGovernor({ high, apply, hold, holdUp, capOK }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
+// createGovernor({ high, top, apply, hold, holdUp, capOK }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
+//   top: the highest level allowed (default: the top on high, 2 on low; phones pass the top, film.js maps the levels to their own pixel ratios)
 //   apply(q, level): push a ladder entry into the film (film.js). hold(): true while stepping must wait (the planet-to-colony flash)
 //   holdUp(): true while stepping up must wait (the footer canvas shares the GPU: frames alternate, so the film's intervals are not its own)
 //   capOK(): true where a steady 30 Hz is likely the browser's cap, not the GPU (touch screens: iOS Low Power Mode and battery savers
@@ -23,10 +24,10 @@ const TOP = LADDER.length - 1;
 const MISS = 20, HITCH = 250;          // ms: over MISS missed 60 fps; over HITCH it is a one-off (compile, GC, tab switch), not throughput
 const WIN = 40, COOL = 1500, UP_HOLD = 4000, PROBATION = 15000, CEIL_LIFE = 60000, ARRIVE = 600, EMERG = 33;
 
-export function createGovernor({ high = true, apply, hold = () => false, holdUp = () => false, capOK = () => false } = {}) {
+export function createGovernor({ high = true, top = null, apply, hold = () => false, holdUp = () => false, capOK = () => false } = {}) {
   const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
   const P = qs.get('perf'), LOG = P === 'log', OFF = P === 'off', PIN = /^[0-5]$/.test(P || '') ? +P : null;
-  const cap = high ? TOP : 2;          // low tier: never above pixel ratio 1 / SMAA (film.js keeps its post at FXAA there)
+  const cap = top != null ? Math.max(0, Math.min(TOP, top)) : high ? TOP : 2; // low tier: never above level 2 (film.js keeps its post at FXAA there); phones go higher on pixel ratio only
   let level = PIN ?? cap, ceil = cap, clock = 0, since = 0, cool = 0, upT = 0, lastUp = -1e9, ceilT = 0, applied = -1;
   const dts = new Float32Array(WIN), srt = new Float32Array(WIN); let n = 0, head = 0, misses = 0, recent = 0, stalls = 0;
   const state = { level, ceil, p90: 0, steps: 0 };

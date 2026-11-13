@@ -6,7 +6,8 @@
 //   [data-three-mount="film"]                          sticky, 100svh, overflow hidden; the canvas is added inside it
 //   [data-sol] [data-sol-value]                        SOL readout (opacity on the root, the number into the value)
 //   [data-scene="austin|earth|mars-title|reindustrialize|colony|launch"]   the text scenes, read for layout only
-//   [data-split="left|right"] inside the mars-title heading: the words the planet sits between (transform only, when narrow)
+//   [data-split="left|right"] inside the mars-title heading: the words the planet sits between (the film sets a transform on them: pulled in
+//                                                             beside the disc side by side, moved apart or together when stacked)
 // Bails (the 2D text scenes stay, no canvas, no flag) on reduced motion, no WebGL2, ?film=0, or any error. While running it sets
 // <html data-film3d="on"> (so the page's 2D script stands down), fires window "tf:film-ready", then "tf:film" { p, beat } as it moves.
 // If it fails after setting the flag it removes it and fires "tf:film-fail". Switches: ?film=0, ?q=low|high, ?qa (window.TFFilm),

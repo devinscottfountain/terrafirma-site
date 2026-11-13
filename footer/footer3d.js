@@ -16,9 +16,22 @@ const SUN_AZ = -0.1;                                 // rad, glow centred just r
 const SUN_EL = [-7.5, -1.6];                         // deg, p 0 -> 1: always below the ridge
 const ENV_STEP = 0.03, ENV_MS = 120;                 // environment rebake: p delta and min interval
 const LOGO = { x: 0.5, y: 0.595, w: 0.85, h: 0.267 }; // logotype box in the host (Figma 22952:8961), fractions, y from top
+const DOLLY = { push: 6, side: 0.8, sideT: [75, 113], breathe: 1.2, breatheT: 53 };   // m, s: near rocks drift ~5 px/s at 1440, the city well under 1
 
 const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const ease = p => p * p * (3 - 2 * p);
+// the lens for a w x h footer canvas: vertical fov (deg), pitch down (rad) that puts the horizon at its fraction from the top
+function lensFor(w, h) {
+  const a = w / h, port = a < 0.85, hf = port ? PORTRAIT.hfov : HFOV_MIN, horizon = port ? PORTRAIT.horizon : HORIZON;
+  const vfov = Math.min(70, Math.max(VFOV, 2 * Math.atan(Math.tan(hf * Math.PI / 360) / a) * 180 / Math.PI));
+  return { vfov, pitch: Math.atan((1 - 2 * horizon) * Math.tan(vfov * Math.PI / 360)), horizon, port };
+}
+// the footer's opening camera (scroll-in p, pointer and drift at rest) for a w x h canvas, footer space: the homepage film lands on it
+// (film.js). eye and look are [x, y, z]; the camera looks down -z from 1.7 m over the rise, up is +y
+export function footerView(w, h, p = 0) {
+  const L = lensFor(w, h), z = EYE[2] + DOLLY.push * (1 - ease(p));
+  return { eye: [EYE[0], EYE[1], z], look: [0, EYE[1] - Math.tan(L.pitch) * 1000, z - 1000], vfov: L.vfov, pitch: L.pitch, aspect: w / h, sunAz: SUN_AZ };
+}
 const yieldTask = () => new Promise(r => setTimeout(r, 0));
 const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 200));
 function noise1(seed) { // smooth 1D value noise, -1..1
@@ -168,7 +181,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
 
   // ---------------------------------------------------------------- layout
   let logo = null;   // DOM rect of the logotype relative to the host (setLogoRect), else the Figma layout
-  const lens = { vfov: VFOV, pitch: 0 };
+  const lens = { vfov: VFOV, pitch: 0, top: 0.2 };
   function setLogoU() {
     const r = logo ? { x: (logo.x + logo.w / 2) / W, y: (logo.y + logo.h / 2) / H, w: logo.w / W, h: logo.h / H } : LOGO;
     finU.uLogo.value.set(r.x, 1 - r.y, r.w / 2, r.h / 2);
@@ -189,11 +202,10 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
     finU.uRes.value.set(w, h);
   }
   function layout() {
-    const a = W / H, port = a < 0.85, hf = port ? PORTRAIT.hfov : HFOV_MIN;
-    const hv = 2 * Math.atan(Math.tan(hf * Math.PI / 360) / a) * 180 / Math.PI;
-    lens.vfov = Math.min(70, Math.max(VFOV, hv));
-    // pitch down so the horizon (elevation 0) lands this far from the top
-    lens.pitch = Math.atan((1 - 2 * (port ? PORTRAIT.horizon : HORIZON)) * Math.tan(lens.vfov * Math.PI / 360));
+    const a = W / H, L = lensFor(W, H), port = L.port;
+    lens.vfov = L.vfov;
+    lens.pitch = L.pitch;   // pitch down so the horizon (elevation 0) lands this far from the top
+    lens.top = lens.vfov * Math.PI / 360 - lens.pitch;   // elevation of the top row (rad, centre column)
     finU.uTop.value = port ? 0.06 : 0.14;
     finU.uSeamH.value = port ? PORTRAIT.horizon : HORIZON;   // the seam haze thins out just as the horizon glow takes over
     cam.fov = lens.vfov; cam.aspect = a; cam.updateProjectionMatrix();
@@ -206,7 +218,6 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
   // horizon holds and only the foreground rocks slide against the city.
   let prog = 0, ptrX = 0, ptrY = 0, sx = 0, sy = 0, clock = 0;
   const nX = noise1(3), nY = noise1(7), nG = noise1(11), nH = noise1(17);
-  const DOLLY = { push: 6, side: 0.8, sideT: [75, 113], breathe: 1.2, breatheT: 53 };   // m, s: near rocks drift ~5 px/s at 1440, the city well under 1
   const look = new V3(), eye = new V3();
   function pose(t) {
     sx += (ptrX - sx) * 0.05; sy += (ptrY - sy) * 0.05;
@@ -242,8 +253,8 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
     finU.uHalo.value = (0.25 + 0.75 * e) * (1 + 1.5 * (breath - 1));   // breathes with the glow
   }
 
-  // seam colour: the footer's sky just above the horizon (1.7 deg up, across the frame's width), exposed, toned and encoded like the
-  // final pass (grade and grain left out). A warm dusk brown that brightens with the sunrise. CPU copy of skyRad (foot-glsl.js).
+  // seam colour: the footer's sky along its top row (the film above lands on this camera, so the two skies meet there), across the
+  // frame's width, exposed, toned and encoded like the final pass (grade and grain left out). CPU copy of skyRad (foot-glsl.js).
   const seamC = [0, 0, 0], sd = new V3();
   const ACI = [0.59719, 0.076, 0.0284, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777], ACO = [1.60475, -0.10208, -0.00327, -0.53108, 1.10813, -0.07276, -0.07367, -0.00605, 1.07602];
   const m3 = (M, r, g, b, o) => { o[0] = M[0] * r + M[3] * g + M[6] * b; o[1] = M[1] * r + M[4] * g + M[7] * b; o[2] = M[2] * r + M[5] * g + M[8] * b; return o; };
@@ -264,7 +275,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
   const acc = [0, 0, 0], tA = [0, 0, 0], tB = [0, 0, 0];
   function seamColor() {
     acc[0] = acc[1] = acc[2] = 0;
-    const N = 9, el = 0.03, half = Math.atan(Math.tan(cam.fov * Math.PI / 360) * cam.aspect);
+    const N = 9, el = 0.9 * lens.top, half = Math.atan(Math.tan(cam.fov * Math.PI / 360) * cam.aspect);
     for (let i = 0; i < N; i++) { const a = -half + 2 * half * i / (N - 1); sd.set(Math.sin(a) * Math.cos(el), Math.sin(el), -Math.cos(a) * Math.cos(el)); skyJS(sd, acc); }
     const k = finU.uExp.value / N;
     m3(ACI, acc[0] * k * 1.025, acc[1] * k, acc[2] * k * 0.96, tA); tA[0] = rrt(tA[0]); tA[1] = rrt(tA[1]); tA[2] = rrt(tA[2]); m3(ACO, tA[0], tA[1], tA[2], tB);
