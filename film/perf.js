@@ -5,9 +5,11 @@
 // Nothing here ever compiles a shader: every post level, the trails and both shadow sizes run on programs warmed at boot
 // (post.warm), and the rest are uniforms, render target sizes or the film's own refresh policy.
 //
-// createGovernor({ high, apply, hold, holdUp }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
+// createGovernor({ high, apply, hold, holdUp, capOK }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
 //   apply(q, level): push a ladder entry into the film (film.js). hold(): true while stepping must wait (the planet-to-colony flash)
 //   holdUp(): true while stepping up must wait (the footer canvas shares the GPU: frames alternate, so the film's intervals are not its own)
+//   capOK(): true where a steady 30 Hz is likely the browser's cap, not the GPU (touch screens: iOS Low Power Mode and battery savers
+//            run rAF at 30). There a tight 30 Hz cadence costs one step at most, instead of sinking to the floor.
 //   Switches: ?perf=off (fixed at the top), ?perf=0..5 pins a level, ?perf=log logs every change.
 export const LADDER = [
   { pr: 0.75, post: 0, trails: false, shadow: 1024, every: 3, keep: 0.4 },
@@ -21,7 +23,7 @@ const TOP = LADDER.length - 1;
 const MISS = 20, HITCH = 250;          // ms: over MISS missed 60 fps; over HITCH it is a one-off (compile, GC, tab switch), not throughput
 const WIN = 40, COOL = 1500, UP_HOLD = 4000, PROBATION = 15000, CEIL_LIFE = 60000, ARRIVE = 600, EMERG = 33;
 
-export function createGovernor({ high = true, apply, hold = () => false, holdUp = () => false } = {}) {
+export function createGovernor({ high = true, apply, hold = () => false, holdUp = () => false, capOK = () => false } = {}) {
   const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
   const P = qs.get('perf'), LOG = P === 'log', OFF = P === 'off', PIN = /^[0-5]$/.test(P || '') ? +P : null;
   const cap = high ? TOP : 2;          // low tier: never above pixel ratio 1 / SMAA (film.js keeps its post at FXAA there)
@@ -48,7 +50,10 @@ export function createGovernor({ high = true, apply, hold = () => false, holdUp 
     if (n === WIN) { const o = dts[head]; if (o > MISS) misses--; if (o > EMERG) recent--; } else n++;
     dts[head] = dtMs; head = (head + 1) % WIN; if (dtMs > MISS) misses++; if (dtMs > EMERG) recent++;
     if (n < WIN) return;
-    srt.set(dts); srt.sort(); const p90 = srt[Math.floor(WIN * 0.9)]; state.p90 = +p90.toFixed(1);
+    srt.set(dts); srt.sort(); const p90 = srt[Math.floor(WIN * 0.9)], p10 = srt[Math.floor(WIN * 0.1)]; state.p90 = +p90.toFixed(1);
+    // capped: every interval within 3 ms of a steady 30 Hz or slower. One step down is allowed (in case it is the GPU), then it holds
+    const capped = capOK() && p10 > 25 && p90 - p10 < 3; state.capped = capped;
+    if (capped && level <= cap - 1) { upT = 0; return; }
     // emergency: most of the window far over budget, even inside the flash
     if (recent > WIN * 0.6 && level > 0) { set(level - 1, 'emergency p90 ' + p90.toFixed(1)); return; }
     if (ceil < cap && clock - ceilT > CEIL_LIFE) { ceil = cap; state.ceil = ceil; log('ceiling lifted'); }

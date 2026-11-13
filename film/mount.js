@@ -33,7 +33,8 @@ function hasWebGL2() {
 function pickQuality() {
   const q = qs.get('q');
   if (q === 'low' || q === 'high') return q;
-  const coarse = matchMedia('(pointer: coarse)').matches && innerWidth < 820;
+  // touch screen whose short side is phone or small tablet sized: the short side, so a phone held sideways (844 x 390) stays low
+  const coarse = matchMedia('(pointer: coarse)').matches && Math.min(innerWidth, innerHeight, screen.width || 1e4, screen.height || 1e4) < 820;
   const weak = navigator.hardwareConcurrency != null && navigator.hardwareConcurrency <= 2;
   const saveData = !!navigator.connection?.saveData;
   return coarse || weak || saveData ? 'low' : 'high';

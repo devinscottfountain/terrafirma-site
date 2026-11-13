@@ -15,7 +15,7 @@ import { createPlanets } from './planets.js';
 import { createSite, AUSTIN, SITE_ROT } from './site.js';
 import { createAustinCam, sunAt, exposureAt } from './austin.js';
 import { createAircraft } from './aircraft.js';
-import { createFlight, CA, E0, E1 } from './flight.js';
+import { createFlight, CA, E0, E1, portraitFov, portraitLift } from './flight.js';
 import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 import LOOK from './look.json.js';
@@ -67,7 +67,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // adaptive quality (perf.js): pixel ratio, post level, trails, shadow size and refresh, launch particles. Applied by uniforms and
   // target sizes only; it holds still through the planet-to-colony flash (E0 .. 0.52) unless frames collapse
   let trailsOK = true, partKeep = 1;
-  const gov = createGovernor({ high: HIGH, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, apply: q => {
+  const gov = createGovernor({ high: HIGH, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => TOUCH.on, apply: q => {
     const pr = Math.min(devicePixelRatio || 1, HIGH ? 1.5 : 1, q.pr);
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
     post.setQuality(HIGH ? q.post : Math.min(q.post, 1));
@@ -156,8 +156,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   function colCam(p, outPos, outLook, gL) {
     const q = Math.min(Math.max(p, CA), P_END);
     cPosC.getPoint(cPosU(q), outPos); cLookC.getPoint(cLookU(q), outLook);
-    // portrait: open the lens so the ships, the pad and the hub still share the width
-    let f = cFov(q); if (cam.aspect < 1) f = 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(f / 2)) * Math.min(2.2, 1.12 / cam.aspect)));
+    // portrait: open the lens part way (flight.portraitFov): the colony and the launch framed taller rather than wider
+    const f = portraitFov(q, cFov(q), cam.aspect);
     // launch: from lift-off the aim tilts up after the ship, a beat behind it, but only as far as keeps the pad in frame: the ship
     // climbs into the top third with its column under it and the city along the bottom. Past that the ship leaves the top.
     const k = sstep(gL, LIFT_G + 0.002, LIFT_G + 0.045);
@@ -245,10 +245,13 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     // viewports (a short title scene) they scale down: the pass least (it leaves the near still copy frame, so squeezing it steps the
     // speed), then the arrival (it carries the title framing), the cruise most (fast and far out, it takes it smoothly). At the
     // recommended heights nothing moves. flight.js then plays the same move in S faster, not a different one.
-    const IREF = 1.9, Iv = (Yt('title', 0) - Yt('earth', 0)) / vh, cK = Math.min(1, Iv / IREF), cA = cK ** 0.6;
+    // portrait phones: the Earth copy runs the full width, so the copy frame lands with it in the lower part (EDV viewports under the
+    // centre) and the whole Earth above it (flight.portraitLift); the Earth beat's anchors move together
+    const EDV = W < 768 && H > W ? -0.12 : 0;
+    const IREF = 1.9, Iv = (Yt('title', 0) - Yt('earth', EDV)) / vh, cK = Math.min(1, Iv / IREF), cA = cK ** 0.6;
     const cP = Math.max(0, Math.min(Math.sqrt(cK), (Iv - 0.5 * cA - 0.15 * cK) / 0.7)); // the cruise always keeps 0.15 of the room
     const keys = [
-      [Yt('earth', -0.6), -1.0], [Yt('earth', 0), -0.9], [Yt('earth', 0.7 * cP), -0.64], [Yt('title', -0.5 * cA), -0.15], [Yt('title', 0), 0.0], [Yt('reind', 0), 0.26],
+      [Yt('earth', EDV - 0.6), -1.0], [Yt('earth', EDV), -0.9], [Yt('earth', EDV + 0.7 * cP), -0.64], [Yt('title', -0.5 * cA), -0.15], [Yt('title', 0), 0.0], [Yt('reind', 0), 0.26],
       [Ys('colony', 0), 0.62], [Ys('colony', 1), 0.9], [yEnd, P_END]
     ];
     for (let i = 1; i < keys.length; i++) if (keys[i][0] <= keys[i - 1][0] + 1) keys[i][0] = keys[i - 1][0] + 1; // always increasing, whatever the heights
@@ -299,9 +302,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     for (const r of rg.getClientRects()) if (r.width > 1) right = Math.max(right, r.right);
     const mr = rectOf(host), free = W - (right - mr.left), r0 = Math.min(0.21 * H, 0.4 * W);
     if (W >= 768 && free > 2.2 * r0) { const r = Math.min(r0, (free / 2 - 24) / 1.08); bT = { x: (right - mr.left) + free / 2, y: H / 2, r }; }
-    else { // narrow: above the copy as it sits centred at S 0.26 (1.19 = halo 1.08 x the hold's creep), 4% clear of the top edge
-      const ph = rectOf(p).height, span = H / 2 - ph / 2 - 24 - 0.04 * H, r = Math.max(0.05 * H, Math.min(r0, 0.16 * H, span / 2.38));
-      bT = { x: W / 2, y: Math.min(0.3 * H, H / 2 - ph / 2 - 24 - 1.19 * r), r };
+    else { // narrow: above the copy as it sits centred at S 0.26 (1.19 = halo 1.08 x the hold's creep), 4% clear of the top edge.
+      // Never under the title disc as it hands over (a shrinking target backs the camera off against its push in: on a short landscape
+      // phone the speed went through zero); a short screen takes the room from the gaps (12 px to the copy, the disc kept in frame)
+      const ph = rectOf(p).height, air = H < 500 ? 12 : 24, span = H / 2 - ph / 2 - 24 - 0.04 * H, rTi = tG ? tG.r * (1 + HOLD_CREEP * B2[1]) : 0;
+      const r = Math.max(0.05 * H, Math.min(r0, 0.16 * H, span / 2.38), Math.min(rTi, 0.16 * H));
+      bT = { x: W / 2, y: Math.max(1.12 * r, Math.min(0.3 * H, H / 2 - ph / 2 - air - 1.19 * r)), r };
     }
   }
 
@@ -316,6 +322,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const edge = { k: 0, col: [0, 0, 0], el: null }; // CTA hand-off: how far the next section has risen, its background (display rgb 0..1)
   const shakeV = new THREE.Vector3(), shakeR = new THREE.Vector3(), shakeU = new THREE.Vector3();
   const mouse = { x: 0, y: 0 }, ms = { x: 0, y: 0 };
+  // touch screens (coarse primary pointer): the film clock follows the scroll through a short spring (frame()). ?touch=0|1 forces it
+  const TOUCH_T = 0.05, tq = new URLSearchParams(location.search).get('touch'), touchMq = matchMedia('(pointer: coarse)');
+  const TOUCH = { on: tq ? tq === '1' : touchMq.matches }; let tV = 0;
+  const onTouchMq = () => { if (!tq) { TOUCH.on = touchMq.matches; tV = 0; } };
+  touchMq.addEventListener?.('change', onTouchMq);
   const onMove = e => { mouse.x = e.clientX / innerWidth - 0.5; mouse.y = e.clientY / innerHeight - 0.5; };
   addEventListener('mousemove', onMove, { passive: true });
   const pos = new THREE.Vector3(), look = new THREE.Vector3(), tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3();
@@ -338,20 +349,30 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   let framed = false;
   // quintic ramps (zero speed and acceleration at both ends): on a short title to SpaceX scroll a smoothstep start stepped the camera speed
   const q5 = (x, a, b) => smoother(clamp01((x - a) / (b - a)));
-  function frameMars(inSpace) {
+  function frameMars(inSpace, lift) {
     const k1 = inSpace && tG ? q5(S, -0.15, -0.02) * (1 - q5(S, 0.04, 0.12)) : 0;
     const k2 = inSpace && bT ? q5(S, B2[0], B2[1]) * (1 - q5(S, B2[2], B2[3])) : 0;
-    const clear = () => { if (framed) { framed = false; cam.clearViewOffset(); } };
+    const clear = () => { if (lift) { cam.setViewOffset(W, H, 0, lift * H, W, H); framed = true; } else if (framed) { framed = false; cam.clearViewOffset(); } };
     if (k1 <= 0 && k2 <= 0) return clear();
     const th = Math.tan(cam.fov * Math.PI / 360);
     cam.updateMatrixWorld(); mcv.copy(MARS).applyMatrix4(cam.matrixWorldInverse); const d = mcv.length();
     if (mcv.z > -6.2 || d < 6.2) return clear();
     const nx = mcv.x / -mcv.z / (th * cam.aspect), ny = mcv.y / -mcv.z / th, px = W / 2 + nx * W / 2, py = H / 2 - ny * H / 2; // natural screen position of the centre
-    let rT = Math.tan(Math.asin(6.05 / d)) / th * H / 2, tx = px, ty = py;
+    let rT = Math.tan(Math.asin(6.05 / d)) / th * H / 2, tx = px, ty = py - lift * H;
     // the planet holds the viewport centre while the title scrolls past it: the words flank it exactly when the title is centred (S = 0)
     const creep = 1 + HOLD_CREEP * S; // the held disc keeps growing slowly (exact title size at S = 0): a steady creep in, never frozen
-    if (k1 > 0) { const tb = rectOf(tG.h2), mr = rectOf(host); rT = lerp(rT, tG.r * creep, k1); tx = lerp(tx, tb.left - mr.left + tG.x, k1); ty = lerp(ty, H / 2, k1); }
-    if (k2 > 0) { rT = lerp(rT, bT.r * creep, k2); tx = lerp(tx, bT.x, k2); ty = lerp(ty, bT.y, k2); }
+    if (W < 992 && k1 > 0 && k2 > 0) {
+      // narrow layouts: the title and SpaceX targets hand over to each other directly. Through the nested blend the natural size leaked
+      // in at up to a quarter weight, and on a tall lens that is far smaller than both targets: the disc dipped and the camera jumped
+      const kk = Math.min(1, k1 + k2), w2 = k2 / (k1 + k2), tb = rectOf(tG.h2), mr = rectOf(host);
+      rT = lerp(rT, lerp(tG.r, bT.r, w2) * creep, kk); tx = lerp(tx, lerp(tb.left - mr.left + tG.x, bT.x, w2), kk); ty = lerp(ty, lerp(H / 2, bT.y, w2), kk);
+    } else {
+      // narrow: as the hold lets go onto the entry, the disc never drops under its held size (the natural size there can be a little
+      // smaller on a tall lens; by the end of the ramp it is far larger, so nothing steps)
+      if (W < 992 && k2 > 0 && S > B2[2]) { const h = bT.r * creep, d = rT - h; rT = 0.5 * (rT + h + Math.sqrt(d * d + 0.01 * h * h * k2)); } // smooth max, sharpening to a plain max as the ramp ends (natural is far larger there)
+      if (k1 > 0) { const tb = rectOf(tG.h2), mr = rectOf(host); rT = lerp(rT, tG.r * creep, k1); tx = lerp(tx, tb.left - mr.left + tG.x, k1); ty = lerp(ty, H / 2, k1); }
+      if (k2 > 0) { rT = lerp(rT, bT.r * creep, k2); tx = lerp(tx, bT.x, k2); ty = lerp(ty, bT.y, k2); }
+    }
     { // always rescale (f is 1 where the natural size already matches): a size threshold here made a one-px jump in the hold
       const f = Math.max(6.6 / d, 6.05 / Math.sin(Math.atan(rT * 2 * th / H)) / d);
       pos.sub(MARS).multiplyScalar(f).add(MARS); cam.position.sub(MARS).multiplyScalar(f).add(MARS); cam.updateMatrixWorld();
@@ -400,10 +421,17 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const t = tEl;
     const yT = -rectOf(section).top;                       // target scroll position in the track
     // a jump of more than 2 viewports (anchor link, scroll rail, resize) is a cut: land on it and drop every velocity history
-    if (snapNext || Math.abs(yT - ys) > 2 * LAY.vh) { ys = yT; ysV = 0; snapNext = false; cut(); }
+    if (snapNext || Math.abs(yT - ys) > 2 * LAY.vh) { ys = yT; ysV = 0; tV = 0; snapNext = false; cut(); }
     else {
       const y0 = ys;
-      if (window.lenis) ys = yT;                           // Lenis already smooths the page: the picture is locked to the copy
+      if (TOUCH.on) {
+        // touch: Lenis leaves touch scrolling native (syncTouch off), and a phone's scroll position reaches the page unevenly (momentum,
+        // a busy main thread). A short critically damped follow (settles in ~0.12 s) evens it out; at rest it lands exactly on the scroll
+        const w = 2 / TOUCH_T, x = w * dt, e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x), c = ys - yT, tv = (tV + w * c) * dt;
+        tV = (tV - w * tv) * e; ys = yT + (c + tv) * e;
+        if (Math.abs(ys - yT) < 0.5 && Math.abs(tV) < 20) { ys = yT; tV = 0; }
+      }
+      else if (window.lenis) ys = yT;                      // Lenis already smooths the page: the picture is locked to the copy
       else ys += (yT - ys) * (1 - Math.exp(-dt / 0.05));    // no Lenis: one light pole (tau 50 ms) takes the edge off wheel notches
       ysV = dt > 0 ? (ys - y0) / dt : 0;                   // film scroll speed, px/s (state.v, for QA)
     }
@@ -461,8 +489,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       setClip(THREE.MathUtils.clamp((pos.y - COL.y) * 0.08, 0.1, 30), 9000);
     } else {
       fov = spaceCam(S, pos, look, camUp); // position, aim, up and lens on the film clock (flight.js)
-      // portrait: open the lens like the colony does, ramped in off the hand-off (Austin lands at 38), so the whole Earth and the crest share the width
-      if (cam.aspect < 1) fov = 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(fov / 2)) * (1 + sstep(S, -1, -0.9) * (Math.min(2.2, 1.12 / cam.aspect) - 1))));
+      // portrait: open the lens, ramped in off the hand-off (Austin lands at 38): the whole Earth on the copy frame, Mars on taller (flight.js)
+      fov = portraitFov(S, fov, cam.aspect);
       focus = lerp(pos.distanceTo(AUS), pos.distanceTo(look), sstep(S, -1, -0.92)); // from the globe leg's focus (the city) onto the aim point
       setClip(0.1, 12000); // far enough for Mars down its sight line (marsFar)
     }
@@ -515,7 +543,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     cam.up.copy(camUp);
     if (Math.abs(cam.fov - fov) > 0.0005) { cam.fov = fov; cam.updateProjectionMatrix(); } // fine enough that slow zooms never step
     cam.position.copy(pos); cam.lookAt(look);
-    frameMars(mode === 'space');
+    frameMars(mode === 'space', mode === 'globe' || mode === 'site' ? 0 : portraitLift(S, cam.aspect)); // portrait lens shift (flight.js), Mars framing on top
     if (!inSite && !inCol) placeMars(S, mode === 'space'); // behind Earth through the globe leg anyway: hidden there
     // Earth: parked on Austin through the pull out, then it turns a little as we leave it; the Moon orbits with the scroll (flight.js)
     planetArg.t = t; planetArg.spin = SPIN_LAND - t * EARTH_SPIN + (introOn ? 0 : (S + 1) * 0.5); planets.update(planetArg);
@@ -665,11 +693,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     yOfClock(v) { if (!LAY) measure(); const k = austin.k; return v <= -1 ? lerp(k.yA, k.yE, clamp01(v + 2)) : this.yOf(Math.min(v, P_END)); },
     setClock(v) { tEl = v; }, // QA: set the film clock (grain, machines, strobes) for repeatable frames
     yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
-    get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh },
+    get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh }, touch: TOUCH.on, yT: LAY ? -rectOf(section).top : 0,
       dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), overlap, seam: seamCol && seamCol.map(v => +v.toFixed(3)), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
       site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
-      dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); removeEventListener('load', relayout);
+      dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); touchMq.removeEventListener?.('change', onTouchMq); removeEventListener('load', relayout);
       for (const k of ['Ls', 'Rs']) if (tG && tG[k]) tG[k].style.transform = '';
       aircraft.dispose();
       scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });

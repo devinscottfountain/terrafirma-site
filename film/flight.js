@@ -208,3 +208,25 @@ export function createFlight({ THREE }) {
 
   return { toSun, EARTH, MARS, C0, L0, P1, H2, EN1, ENP, LCA, PN, QN, CA, E0, E1, MOON_R, layout, spaceCam, moonAt, marsFar, marsQ, drift };
 }
+
+// ---------- portrait screens (phones held upright): lens and lens shift on the film clock S. Landscape and desktop never change.
+// Lens: tan(fov / 2) x m, m = (1.12 / aspect)^e (at most 2.2), ramped in off the Austin hand-off. e = 1 keeps the width (the whole
+// Earth fits on the copy frame), e = 0 keeps the height. From the push in on e eases to PORTRAIT_E: Mars, the entry, the colony and
+// the launch are framed taller rather than wider, so the end shot stays under ~70 deg vertical (it went to ~91).
+const PORTRAIT_E = 0.45;
+const q5 = (x, a, b) => smoother(clamp01((x - a) / (b - a)));
+export function portraitFov(S, fov, aspect) {
+  if (!(aspect < 1)) return fov;
+  const e = 1 - (1 - PORTRAIT_E) * q5(S, -0.86, -0.74), m = Math.min(2.2, (1.12 / aspect) ** e), k = q5(S, -1, -0.9);
+  return 2 * Math.atan(Math.tan(fov * Math.PI / 360) * (1 + k * (m - 1))) * 180 / Math.PI;
+}
+// Lens shift (fraction of the screen height, + moves the picture up), full on phones (aspect <= 0.6), none from 0.8 (tablets keep
+// the desktop composition). The copy on a phone runs the full width, so the subject goes above it: the whole Earth sits in the
+// upper part on the copy frame (the copy is in the lower part there), and the colony sits high while its copy rises from the bottom,
+// easing back level for the launch (the climb wants the top of the frame, the city settles to the bottom).
+export function portraitLift(S, aspect) {
+  const a = 1 - q5(aspect, 0.6, 0.8);
+  if (a <= 0) return 0;
+  const earth = q5(S, -1, -0.93) * (1 - q5(S, -0.84, -0.74)), colony = q5(S, 0.5, 0.6) * (1 - q5(S, 0.88, 0.98));
+  return a * (0.2 * earth + 0.14 * colony);
+}
