@@ -78,15 +78,16 @@ export function createHud(host, words, pal) {
       g.fillStyle = col; g.beginPath(); g.moveTo(lx - 2, my); g.lineTo(lx - 9, my - 4.5); g.lineTo(lx - 9, my + 4.5); g.closePath(); g.fill();
       text(pad(gv, 1, 2) + ' m', lx - 13, my + 3.5, small ? 10 : 11, col, { align: 'right' });
     }
-    // autopilot readout, bottom of the safe band (the hint sits above it): only while the autopilot drives
+    // readout, bottom of the safe band, level with the hint: always on in the dig view. Autopilot blinks, Manual holds steady.
     const ty = (1 - s.safeBottom) * H - (small ? 12 : 16), x0 = Math.max(16, Math.min(40, W * 0.03)), T = s.tel, sz = small ? 9 : 10.5;
-    if (s.autoA > 0.01) {
-      const b = a * s.autoA, cr = k => rgba(A, b * k);
+    {
+      const cr = k => rgba(A, a * k);
       let x = x0;
       const item = (label, val) => { x += text(label.toUpperCase(), x, ty, sz, cr(0.5), { font: sans, weight: 500 }) + 6; x += text(val, x, ty, sz, cr(0.92)) + (small ? 12 : 22); };
-      const blink = 0.55 + 0.45 * Math.sin(s.t * 4);
+      const blink = T.auto ? 0.55 + 0.45 * Math.sin(s.t * 4) : 1;
       g.fillStyle = cr(0.9 * blink); g.beginPath(); g.arc(x + 3, ty - 3.5, 3, 0, Math.PI * 2); g.fill(); x += 12;
-      x += text(words.auto.toUpperCase(), x, ty, sz, cr(0.92), { font: sans, weight: 600 }) + (small ? 12 : 22);
+      const wA = text((T.auto ? words.auto : words.manual).toUpperCase(), x, ty, sz, cr(0.92), { font: sans, weight: 600 });
+      x += Math.max(wA, g.measureText((T.auto ? words.manual : words.auto).toUpperCase()).width) + (small ? 12 : 22);   // same slot for both words: the values never shift
       item(words.swing, pad(T.swing, 3, 1) + '°');
       item(words.reach, T.reach.toFixed(2).padStart(5, '0') + ' m');
       if (!small) item(words.depth, pad(T.grade, 1, 2) + ' m');

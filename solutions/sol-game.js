@@ -314,8 +314,13 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   const api = {
     get tip() { return tip; }, get load() { return load / CAP; }, get user() { return user; }, get touched() { return everClicked; },
     get step() { return user ? 'user:' + step : step; }, home, body, op, queued, marks, drv, IDLE, RMAX,
-    // what the hint should say: 'dig' | 'drop' | '' (busy, or no pointer)
-    get hint() { if (!interactive) return ''; if (!user) return 'dig'; return op.on || queued.on ? '' : load > CAP * 0.15 ? 'drop' : 'dig'; },
+    // what the next click does: 'dig' | 'drop' ('' without a pointer). Mirrors click(): ready, retarget, or queue.
+    get hint() {
+      if (!interactive) return ''; if (!user || !op.on) return user && load > CAP * 0.15 ? 'drop' : 'dig';
+      const busyDig = op.kind === 'dig' && (step === 'empty' || ((step === 'drive' || step === 'reach') && load < CAP * 0.05));
+      const busyDrop = op.kind === 'drop' && (step === 'drive' || step === 'swing');
+      return busyDig || busyDrop ? op.kind : op.kind === 'dig' ? 'drop' : 'dig';
+    },
     get driving() { return step === 'drive' || step === 'home'; },
     // armed: the dig view has landed and this is a desktop pointer; the canvas only takes pointer events then
     setArmed(a) {

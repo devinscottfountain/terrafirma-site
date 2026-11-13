@@ -23,6 +23,7 @@ const DEG = Math.PI / 180;
 const MSCALE = 1.4;      // machine scale (model metres -> world)
 const FLIGHT = 1.4;      // s, camera flight between the three shots
 const PR_MAX = 1.5;
+const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-topo] element (was .42 before #41)
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
 const WORDS = {
@@ -67,6 +68,46 @@ export function machineZones(crew) {
   const lx0 = R.x0 - F.grade.hx + F.grade.off, lx1 = R.x1 + F.grade.hx + F.grade.off, lzh = R.zh + F.grade.hz, mx = (lx0 + lx1) / 2;
   const grade = rectPts(P.x + mx * c, P.z - mx * s, P.rot, (lx1 - lx0) / 2, lzh);
   return [dig, haul, grade];
+}
+
+// Topographic map (#41): the contour art lives in Webflow, an inline SVG inside [data-sol-topo] in the section (written by
+// solutions/tools/topo-svg.mjs, world metres: SVG x = x, SVG y = z). Its viewBox maps onto the 100 m site square, so swapped
+// art still lands on the site. Each line is draped on the design surface. Returns segments in the buildContours layout
+// [x0, y0, z0, x1, y1, z1, t, major], or null (no element, no paths) so the caller falls back to the built-in contours.
+const TOPO_HALF = 50, TOPO_SUB = 1.2;   // m: half the site square, longest draped piece
+export function topoFromSvg(el) {
+  const svg = el && el.querySelector('svg'), vb = svg && (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+  if (!vb || vb.length !== 4 || !(vb[2] > 0 && vb[3] > 0)) return null;
+  const k = (TOPO_HALF * 2) / Math.max(vb[2], vb[3]), cx = SITE.centre.x, cz = SITE.centre.z;
+  const ox = cx - (vb[0] + vb[2] / 2) * k, oz = cz - (vb[1] + vb[3] / 2) * k, out = [];
+  for (const p of svg.querySelectorAll('path')) {
+    const major = p.closest('[data-major]') ? 1 : 0, tok = (p.getAttribute('d') || '').match(/[a-df-z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) || [];
+    let i = 0, cmd = '', x = 0, z = 0, sx = 0, sz = 0;
+    const seg = (nx, nz) => {   // one straight piece in SVG units, cut so it follows the ground
+      const ax = ox + x * k, az = oz + z * k, bx = ox + nx * k, bz = oz + nz * k, n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / TOPO_SUB));
+      for (let q = 0; q < n; q++) {
+        const x0 = lerp(ax, bx, q / n), z0 = lerp(az, bz, q / n), x1 = lerp(ax, bx, (q + 1) / n), z1 = lerp(az, bz, (q + 1) / n);
+        const t = Math.min(1, Math.hypot((x0 + x1) / 2 - cx, (z0 + z1) / 2 - cz) / (TOPO_HALF * 1.2));
+        out.push(x0, hD(x0, z0) + 0.05, z0, x1, hD(x1, z1) + 0.05, z1, t, major);
+      }
+      x = nx; z = nz;
+    };
+    while (i < tok.length) {
+      if (/[a-z]/i.test(tok[i])) cmd = tok[i++];
+      const C = cmd.toUpperCase(), r = cmd !== C, n = () => +tok[i++];
+      if (C === 'Z') { seg(sx, sz); cmd = ''; continue; }
+      if (!C || i >= tok.length) break;
+      if (C === 'M') { const a = n(), b = n(); x = r ? x + a : a; z = r ? z + b : b; sx = x; sz = z; cmd = r ? 'l' : 'L'; }
+      else if (C === 'L' || C === 'T') { const a = n(), b = n(); seg(r ? x + a : a, r ? z + b : b); }
+      else if (C === 'H') { const a = n(); seg(r ? x + a : a, z); }
+      else if (C === 'V') { const a = n(); seg(x, r ? z + a : a); }
+      else { // curves and arcs: straight to the end point (the generator writes straight lines only)
+        const m = C === 'C' ? 6 : C === 'S' || C === 'Q' ? 4 : C === 'A' ? 7 : 0; if (!m) break;
+        i += m - 2; const a = n(), b = n(); seg(r ? x + a : a, r ? z + b : b);
+      }
+    }
+  }
+  return out.length ? out : null;
 }
 
 export function createSolutions({ THREE, host, root = host, quality = 'high', interactive = true, safe = null }) {
@@ -138,7 +179,11 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   // ------------------------------------------------------------------ plan graphics (lines)
   const L = (color, width, maxSeg, opts) => { const s = lineSet(THREE, lineMaterial(THREE, RES, PRU, TU, color, { width, ...opts }), maxSeg); s.mesh.renderOrder = 4; scene.add(s.mesh); return s; };
-  const contourSegs = buildContours({ step: LOW ? 1.2 : 0.8 });
+  // topographic map: art from the Webflow element when there is one (that element is hidden while the canvas lives, it is
+  // the source and the no-3D fallback), else the built-in contours. Strength: the element's CSS opacity (see readTopoA()).
+  const topoEl = root.querySelector('[data-sol-topo]'), topoVis = topoEl ? topoEl.style.visibility : '';
+  const contourSegs = topoFromSvg(topoEl) || buildContours({ step: LOW ? 1.2 : 0.8 });
+  if (topoEl) topoEl.style.visibility = 'hidden';
   const contours = L(col(pal.accent), 1, contourSegs.length / 8);
   for (let i = 0, c = contourSegs, n = c.length / 8; i < n; i++) { const o = i * 8; contours.set(i, c[o], c[o + 1], c[o + 2], c[o + 3], c[o + 4], c[o + 5], c[o + 6], c[o + 6], c[o + 7]); }
   contours.commit(contourSegs.length / 8);
@@ -324,11 +369,11 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // ------------------------------------------------------------------ per frame
   const tel = { swing: 0, reach: 0, grade: 0, load: 0, auto: true, ground: 0 };
   const v3 = new THREE.Vector3(), v4 = new THREE.Vector3(), pin = new THREE.Vector3(), bend = new THREE.Vector3();
-  let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0, autoA = 1;
+  let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0;
   const tipXY = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PH = [0, 0, 0];
   const LAB = [tagWords.dig, tagWords.haul, tagWords.grade], TCOL = [pal.cut, pal.accent, pal.fill];
   const MRK = 28, GHOST = 18;   // points per marker ring, per ghost path
-  const hudState = { wDig: 0, wPlan: 0, wExec: 0, tip: [0, 0], tipOn: false, tel, safeTop: 0.2, safeBottom: 0.3, hint: 0, hintText: words.hint, autoA: 1, t: 0, tags: [{}, {}, {}], zones: [{}, {}],
+  const hudState = { wDig: 0, wPlan: 0, wExec: 0, tip: [0, 0], tipOn: false, tel, safeTop: 0.2, safeBottom: 0.3, hint: 0, hintText: words.hint, t: 0, tags: [{}, {}, {}], zones: [{}, {}],
     // click markers (ring on the ground, projected) and the ghost path while it drives; mbox: machine screen boxes (tags avoid them)
     marks: [0, 1].map(() => ({ a: 0, kind: 'dig', queued: false, pop: 1, n: 0, pts: new Float32Array(MRK * 2), c: [0, 0] })),
     ghost: { a: 0, n: 0, pts: new Float32Array(GHOST * 2), foot: new Float32Array(8), footOn: false },
@@ -444,7 +489,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
     // plan graphics
     const pv = clamp01((wP - 0.25) / 0.75), zv = Math.max(pv, clamp01((wE - 0.3) / 0.7) * 0.4);   // zones: full in plan, faint in exec
-    contours.mat.uniforms.uOpacity.value = 0.42 * pv; contours.mat.uniforms.uReveal.value = mode === 0 ? clamp01((planT - 0.2) / 2.2) * 1.08 : 1.08;
+    contours.mat.uniforms.uOpacity.value = topoA * pv; contours.mat.uniforms.uReveal.value = mode === 0 ? clamp01((planT - 0.2) / 2.2) * 1.08 : 1.08;
     for (const z of [zCut, zFill]) z.mat.uniforms.uOpacity.value = 0.95 * zv;
     zAcc.mat.uniforms.uOpacity.value = 0.6 * pv;   // platform + road: plan only (in exec it would sit up by the heading)
     contours.mesh.visible = pv > 0.004; zCut.mesh.visible = zFill.mesh.visible = zAcc.mesh.visible = zv > 0.004;
@@ -479,13 +524,12 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     hudState.wDig = wD * (fl ? 0 : 1) + (fl ? Math.max(0, wTo.y * (k - 0.75) * 4) : 0); hudState.wPlan = clamp01((wP - 0.6) / 0.4); hudState.wExec = clamp01((wE - 0.6) / 0.4);
     hudState.safeTop = SAFE.top; hudState.safeBottom = SAFE.bottom; hudState.t = clockT;
     hudState.tip = project(tip.x, tip.y, tip.z, tipXY) ? tipXY : null;
-    // hint: what a click does next ("Click to dig" / "Click to drop"); a change of text fades out and back in
-    const want = interactive && mode === 1 && !fl ? dig.hint : '', wantText = want === 'drop' ? words.hintDrop : want ? words.hint : '';
-    if (hintA < 0.03 && wantText) hudState.hintText = wantText;
-    const showHint = !!wantText && wantText === hudState.hintText;
-    hintA += ((showHint ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (showHint ? 3 : 8))); hudState.hint = hintA;
-    // the autopilot readout (state + telemetry strip) only while the autopilot drives
-    autoA += ((dig.user ? 0 : 1) - autoA) * (1 - Math.exp(-dt * 5)); hudState.autoA = autoA;
+    // hint: what a click does next ("Click to dig" / "Click to drop"). It stays up the whole time the dig view is on (busy
+    // or not, #43); a change of text swaps in place. It only fades with the tab change.
+    const want = interactive && mode === 1 && !fl ? dig.hint : '';
+    if (want) hudState.hintText = want === 'drop' ? words.hintDrop : words.hint;
+    hintA += ((want ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (want ? 3 : 8))); hudState.hint = hintA;
+    // the readout (Autopilot / Manual + telemetry) is always on in the dig view too; only its values change (sol-hud.js)
     if (hudState.wDig > 0.01) digMarks(dt);
     if (hudState.wExec > 0.01 && hudState.anchors) {
       const A = hudState.anchors;
@@ -552,8 +596,12 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     hud.resize(alloc ? cw : 1, alloc ? ch : 1, window.devicePixelRatio || 1);
   }
   function edges() { post.P.edge.set(0.07, Math.max(0.08, SAFE.top * 0.8), Math.max(0.08, SAFE.bottom * 0.45), 0); }
+  // contour strength: the [data-sol-topo] element's computed opacity (a Fountwind opacity class in the Designer, so it can
+  // change per breakpoint), else TOPO_A. Read on every resize, never per frame.
+  let topoA = TOPO_A;
+  function readTopoA() { const v = topoEl ? parseFloat(getComputedStyle(topoEl).opacity) : NaN; topoA = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : TOPO_A; }
   function resize() {
-    edges();
+    edges(); readTopoA();
     cw = Math.max(1, host.clientWidth); ch = Math.max(1, host.clientHeight);
     camera.aspect = cw / ch; setBuf(); refit();
   }
@@ -653,6 +701,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       for (const m of [exc, loader, roller]) m.dispose();
       kit.disposeAll();
       renderer.dispose(); canvas.remove();
+      if (topoEl) topoEl.style.visibility = topoVis;   // the 2D art shows again (no-3D fallback)
     },
   };
 }

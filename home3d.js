@@ -5,6 +5,7 @@
 //   section[data-three="solutions"]#solutions   position: relative; overflow: hidden
 //   [data-three-mount="solutions"]              absolute inset-0 empty div, aria-hidden; the canvas is added inside it
 //   [data-solutions-spacer]                     still observed for layout changes (the framing now uses the safe insets)
+//   [data-sol-topo]                             optional: the topographic map art (inline SVG) and its strength (CSS opacity)
 //   [data-tabs="solutions"] [data-tab]          owned by the page script, which dispatches window "tf:solutions"
 //                                               with detail.mode = 'orchestration' | 'planning' | 'execution'
 //   data-sol-safe-top / data-sol-safe-bottom    on the section or mount: fractions of its height kept clear of the subject
