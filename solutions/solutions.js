@@ -27,14 +27,14 @@ const PR_MAX = 1.5;
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
 const WORDS = {
   hint: ['hint', 'Click to dig'], hintDrop: ['hint-drop', 'Click to drop'],
-  dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Loader 02'], grade: ['tag-grade', 'Roller 03'],
+  dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Dozer 02'], grade: ['tag-grade', 'Compactor 03'],
   auto: ['hud-auto', 'Autopilot'], manual: ['hud-manual', 'Manual'], swing: ['hud-swing', 'Swing'], reach: ['hud-reach', 'Reach'],
   depth: ['hud-depth', 'To grade'], load: ['hud-load', 'Load'], grade_: ['hud-grade', 'Grade'],
   cut: ['label-cut', 'Cut'], fill: ['label-fill', 'Fill'],
 };
 
 // Working zones as ground polygons [[x, z], ...] (dig, haul, grade): the excavator's drive zone grown by its house radius,
-// the hull of every loader footprint along its routes (pivots included), and the roller's lanes grown by its footprint.
+// the hull of every dozer footprint along its push line, and the compactor's lanes grown by its footprint.
 // Built once; the plan view draws them and QA checks they never overlap.
 const rectPts = (x, z, yaw, hx, hz, off = 0) => {
   const c = Math.cos(yaw), s = Math.sin(yaw); x += c * off; z -= s * off;
@@ -121,14 +121,15 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   const parts = particles(THREE, LOW ? 500 : 900, U); parts.pts.renderOrder = 6; scene.add(parts.pts);
 
   // ------------------------------------------------------------------ machines: one slot per job
-  // TODO(Tim, Figma notes): the new vehicle replaces one of these. Each job has one slot: swap the factory here (and model the
-  // new vehicle in sol-machines.js next to excavator / backhoe / roller). `dig` must keep the excavator rig API (setArm, tip,
-  // bucket, boom); `haul` and `grade` only need root, setDrive, setOpacity.
+  // Slots (Tim's Figma "New Vehicles", 23099:9765): the dozer took the haul job (it replaced the backhoe loader stand-in) and
+  // the padfoot compactor the grade job (it replaced the roller stand-in). To swap a model in later, change the factory here
+  // and model it in sol-machines.js (the old backhoe and roller are still in the kit). `dig` must keep the excavator rig API
+  // (setArm, tip, bucket, boom); `haul` and `grade` only need root, setDrive, setOpacity; the crew also drives setBlade /
+  // setRipper (haul) and setSteer (grade) when a model has them.
   const kit = createMachineKit(THREE, { line: pal.accent });
-  const SLOT = { dig: kit.excavator, haul: kit.backhoe, grade: kit.roller };
+  const SLOT = { dig: kit.excavator, haul: kit.dozer, grade: kit.compactor };
   const mk = fn => { const m = fn(); m.root.scale.setScalar(MSCALE); m.root.rotation.order = 'YXZ'; scene.add(m.root); m.setOpacity(1); return m; };
-  const exc = mk(SLOT.dig), loader = mk(SLOT.haul), roller = mk(SLOT.grade);
-  loader.setArm(0.9, -1.9, -1.0, 0);
+  const exc = mk(SLOT.dig), loader = mk(SLOT.haul), roller = mk(SLOT.grade);   // loader / roller: the haul and grade slots
 
   // ------------------------------------------------------------------ the dig and the crew
   let clockT = 0; const clock = () => clockT;
@@ -207,7 +208,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   const keyPlan = [], keyExec = [], keyDig = [];
   for (const P of [SITE.pit, SITE.pad, SITE.plat]) for (const [x, z] of rectPoly({ ...P, hx: P.hx + P.ws * 0.6, hz: P.hz + P.ws * 0.6 })) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));
   for (const Zn of ZONES) for (const [x, z] of Zn) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));   // the machine zones too
-  // exec frames the three machines' work: the pit and the pile (excavator), the loader's zone, the roller's zone
+  // exec frames the three machines' work: the pit and the pile (excavator), the dozer's zone, the compactor's zone
   const pitM = rectPoly({ ...SITE.pit, hx: SITE.pit.hx + 2, hz: SITE.pit.hz + 2 }), excM = [0, 1, 2, 3, 4, 5].map(k => [SITE.E.x + Math.cos(k * 1.047) * 4, SITE.E.z + Math.sin(k * 1.047) * 4]);
   for (const [x, z] of [...pitM, ...excM, [SITE.pile.x, SITE.pile.z], ...ZONES[1], ...ZONES[2]]) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));
   const mid = K => { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (const v of K) { x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z); } return { x: (x0 + x1) / 2, z: (z0 + z1) / 2 }; };
@@ -375,6 +376,10 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       out[0] = Math.min(out[0], pp[0]); out[1] = Math.min(out[1], pp[1]); out[2] = Math.max(out[2], pp[0]); out[3] = Math.max(out[3], pp[1]);
     }
   }
+  function growBox(out, q) {
+    if (!project(q.x, q.y + 0.6, q.z, pp)) return;
+    out[0] = Math.min(out[0], pp[0] - 14); out[1] = Math.min(out[1], pp[1] - 14); out[2] = Math.max(out[2], pp[0] + 14); out[3] = Math.max(out[3], pp[1] + 14);
+  }
   const zoneVals = { cut: 0, fill: 0 }; let zoneAcc = 1, tagAcc = 1;
   const project = (x, y, z, out) => { v3.set(x, y, z).project(camera); out[0] = (v3.x + 1) / 2 * cw; out[1] = (1 - v3.y) / 2 * ch; return v3.z < 1; };
   function setBox(k, x, z, yaw, hx, hz, h, s) { U.uBoxA.value[k].set(x, z, Math.cos(yaw), Math.sin(yaw)); U.uBoxB.value[k].set(hx, hz, h, s); }
@@ -427,14 +432,14 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     const tip = dig.tip, near = 1 - clamp01((tel.ground - 1.2) / 3);
     U.uBucket.value.set(tip.x, tip.z, 3.4, wD * (0.35 + 0.65 * near));
 
-    // machine shadows (boxes swept along the sun): excavator house + arm, loader, roller
+    // machine shadows (boxes swept along the sun): excavator house + arm, dozer, compactor
     { const E = dig.body, sw = tel.swing * DEG, a = E.yaw + sw;
       setBox(0, E.x - Math.cos(a) * 0.6, E.z + Math.sin(a) * 0.6, a, 3.1, 2.1, 4.3, 0.72);
       dig.arm(pin, bend); const mx = (pin.x + tip.x) / 2, mz = (pin.z + tip.z) / 2, len = Math.hypot(tip.x - pin.x, tip.z - pin.z) / 2;
       setBox(1, mx, mz, a, Math.max(0.5, len), 0.45, Math.max(1, (pin.y + bend.y) / 2 - field.ground(mx, mz) + 1.2), 0.6);
       const Lr = crew.L, Rr = crew.R;
-      setBox(2, Lr.x + Math.cos(Lr.yaw) * 1.2, Lr.z - Math.sin(Lr.yaw) * 1.2, Lr.yaw, 4.2, 1.7, 4.0, 0.7);
-      setBox(3, Rr.x + Math.cos(Rr.yaw) * 0.4, Rr.z - Math.sin(Rr.yaw) * 0.4, Rr.yaw, 3.4, 1.6, 4.2, 0.7);
+      setBox(2, Lr.x + Math.cos(Lr.yaw) * 0.4, Lr.z - Math.sin(Lr.yaw) * 0.4, Lr.yaw, 5.0, 2.6, 5.4, 0.7);
+      setBox(3, Rr.x - Math.cos(Rr.yaw) * 0.6, Rr.z + Math.sin(Rr.yaw) * 0.6, Rr.yaw, 3.6, 1.6, 4.2, 0.7);
     }
 
     // plan graphics
@@ -462,8 +467,8 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     if (links.mesh.visible) {
       const A = ANCH, E = dig.body;
       A[0][0] = E.x; A[0][1] = field.ground(E.x, E.z) + 7.5; A[0][2] = E.z;
-      A[1][0] = crew.L.x; A[1][1] = field.ground(crew.L.x, crew.L.z) + 6.5; A[1][2] = crew.L.z;
-      A[2][0] = crew.R.x; A[2][1] = field.ground(crew.R.x, crew.R.z) + 6; A[2][2] = crew.R.z;
+      A[1][0] = crew.L.x; A[1][1] = field.ground(crew.L.x, crew.L.z) + 6.6; A[1][2] = crew.L.z;
+      A[2][0] = crew.R.x - Math.cos(crew.R.yaw) * 1.0; A[2][1] = field.ground(crew.R.x, crew.R.z) + 6.2; A[2][2] = crew.R.z + Math.sin(crew.R.yaw) * 1.0;
       for (let j = 0; j < 3; j++) { const a = A[j], b = A[(j + 1) % 3]; links.set(j, a[0], a[1], a[2], b[0], b[1], b[2], j / 3, (j + 1) / 3, 1); }
       links.commit(3); links.mat.uniforms.uOpacity.value = 0.55 * ev; links.mat.uniforms.uFlow.value.set(0.45, 6, 1.6, 0.18);
       hudState.anchors = A;
@@ -486,10 +491,12 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       const A = hudState.anchors;
       for (let j = 0; j < 3; j++) { const T = hudState.tags[j]; T.p = T.p || [0, 0]; T.a = project(A[j][0], A[j][1], A[j][2], T.p) ? 1 : 0; T.label = LAB[j]; T.color = TCOL[j]; }
       const F = SITE.FOOT, MB = hudState.mbox;
-      machineBox(MB[0], dig.body.x, dig.body.z, dig.body.yaw, EXC_BOX, 9.5); machineBox(MB[1], crew.L.x, crew.L.z, crew.L.yaw, F.haul, 4.2); machineBox(MB[2], crew.R.x, crew.R.z, crew.R.yaw, F.grade, 4);   // the excavator box is tall: its boom stands up to ~9 m
+      machineBox(MB[0], dig.body.x, dig.body.z, dig.body.yaw, EXC_BOX, 9.5);   // the excavator box is tall: its boom stands up to ~9 m
+      growBox(MB[0], dig.tip); growBox(MB[0], exc.stick.getWorldPosition(v4));   // and reaches out: tags keep off the arm
+      machineBox(MB[1], crew.L.x, crew.L.z, crew.L.yaw, F.haul, 6.0); machineBox(MB[2], crew.R.x, crew.R.z, crew.R.yaw, F.grade, 4.6);
       if (tagAcc > 0.1) {   // the numbers tick at 10 Hz (fewer strings, and they stay readable)
         tagAcc = 0; const T = hudState.tags;
-        T[0].value = Math.round(tel.load * 100) + '%'; T[1].value = (crew.L.speed * 3.6).toFixed(1) + ' km/h'; T[2].value = (crew.R.speed * 3.6).toFixed(1) + ' km/h';
+        T[0].value = Math.round(tel.load * 100) + '%'; T[1].value = (Math.abs(crew.L.speed) * 3.6).toFixed(1) + ' km/h'; T[2].value = (crew.R.speed * 3.6).toFixed(1) + ' km/h';
       }
     }
     if (hudState.wPlan > 0.01) {

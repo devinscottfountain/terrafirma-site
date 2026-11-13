@@ -123,7 +123,7 @@ export function createHud(host, words, pal) {
       let ly = y - (small ? 26 : 34), lx = flip ? x - 18 : x + 18;
       const bx = flip ? lx - tw : lx;
       const minY = s0.safeTop * H + fs + 6, maxY = (1 - s0.safeBottom) * H - 8; let dir = -1; if (ly < minY) { ly = y + fs + 14; dir = 1; }   // never up into the heading
-      for (let n = 0; n < 24; n++) {
+      for (let n = 0; n < 48; n++) {
         let hit = false; for (let q = 0; q < nb && !hit; q++) { const B = boxes[q]; hit = bx < B[2] && bx + tw > B[0] && ly - fs < B[3] && ly + 4 > B[1]; }
         if (!hit && ly <= maxY) break; ly += dir * (fs + 6) * 0.5; if (ly < minY) { ly = y + fs + 14; dir = 1; } }   // up past its machine, else down below it
       const B = boxes[nb] || (boxes[nb] = [0, 0, 0, 0]); B[0] = bx; B[1] = ly - fs; B[2] = bx + tw; B[3] = ly + 4; nb++;

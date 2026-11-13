@@ -28,13 +28,16 @@ export function hF(x, z) {
 
 // ------------------------------------------------------------------ site layout (one place)
 // E: the dig excavator's home (where the autopilot works from, and its heading). Pit: the cut it digs to grade. Pile: where
-// it dumps (swing angle and radius from home). Pad: the fill pad; the loader dumps on its near end, the roller compacts the
-// far end. Plat: a building platform (part cut, part fill). Road: pile to pad.
+// it dumps (swing angle and radius from home). Pad: the fill pad; the dozer pushes spoil from the pile onto its near end, the
+// compactor works the far end. Plat: a building platform (part cut, part fill). Road: pile to pad.
 // Working zones: every machine keeps its body inside its own zone, and the zones sit at least 1.5 lengths of the shorter
-// machine of each pair apart (excavator 5.2 m, loader 9.2 m, roller 7.2 m footprints), so
-// the three never crowd each other in any view. digZone bounds the excavator's centre when a visitor drives it; the loader
-// and roller zones follow from their routes (sol-crew.js). FOOT: footprint half sizes (m, world) and the offset of the
-// rectangle centre ahead of the machine origin; the plan view draws these and the QA gap check measures them.
+// machine of each pair apart (footprints: excavator 5.2 m, dozer 12.7 m, compactor 8.5 m), so the three never crowd each
+// other in any view. digZone bounds the excavator's centre when a visitor drives it; the dozer and compactor zones follow
+// from their routes (sol-crew.js). FOOT: footprint half sizes (m, world) and the offset of the rectangle centre ahead of the
+// machine origin; the plan view draws these and the QA gap check measures them.
+// The dozer pushes in a straight line from the pile onto the pad. That line is tangent to a circle of radius push.r round
+// E at its blade start point B, so the dozer never comes closer than push.r - its blade half width (15 - 3.5 m) to the
+// excavator; the pile sits on the same bearing at pileR, under the inner end of the blade. pileSw follows from that.
 const E = { x: 2, z: 6, yaw: Math.PI };
 export const SITE = {
   E,
@@ -42,14 +45,23 @@ export const SITE = {
   pad: { x: 32.3, z: -21.7, hx: 14, hz: 5.5, rot: 0.5, ws: 3.2, fill: 1.3 },
   plat: { x: -22, z: -15, hx: 10, hz: 7, rot: -0.2, ws: 3.2 },
   road: { ax: 8, az: -8.5, bx: 17.5, bz: -13.5, hw: 2.6, ws: 2.6 },
-  pileSw: -1.85, pileR: 11,    // dump swing (rad, turret) and radius (m) from E
+  pileR: 11,                   // dump radius (m) from E; the swing (pileSw) is set below from the push line
+  push: { r: 15, lx: -14.3, lz: 2 },   // blade start radius from E; where the push ends (pad local x, z of the blade edge)
   digZone: { x: -4, z: 10, hx: 8, hz: 4, rot: 0 },   // where the excavator's centre may drive (contains E)
-  FOOT: { dig: { hx: 2.6, hz: 1.95, off: 0 }, house: { hx: 2.1, hz: 2.1 }, haul: { hx: 4.6, hz: 1.75, off: 1.5 }, grade: { hx: 3.6, hz: 1.6, off: 0.4 } },
+  FOOT: { dig: { hx: 2.6, hz: 1.95, off: 0 }, house: { hx: 2.1, hz: 2.1 }, haul: { hx: 6.37, hz: 3.46, off: -1.05 }, grade: { hx: 4.27, hz: 1.85, off: -0.77 } },
   dots: { x: -1.5, z: 3 },     // centre of the densest dots (the dig)
   centre: { x: 8, z: -8 },     // middle of the site (plan fade, contours)
   field: { x: 8, z: -8, size: 80, n: 320 },
   sun: { az: Math.atan2(-0.62, -0.78), el: 13 * Math.PI / 180 },   // low sun to the west-north-west
 };
+{ // push line: B on the circle of radius r round E where the line from B to the pad end T is tangent to it (the south branch)
+  const P = SITE.pad, c = Math.cos(P.rot), s = Math.sin(P.rot), K = SITE.push;
+  const tx = P.x + K.lx * c + K.lz * s, tz = P.z - K.lx * s + K.lz * c, dx = tx - E.x, dz = tz - E.z, D = Math.hypot(dx, dz);
+  const a = Math.atan2(dz, dx) - Math.acos(K.r / D), bx = E.x + Math.cos(a) * K.r, bz = E.z + Math.sin(a) * K.r, L = Math.hypot(tx - bx, tz - bz);
+  Object.assign(K, { bx, bz, tx, tz, ux: (tx - bx) / L, uz: (tz - bz) / L, len: L });
+  SITE.pileSw = Math.atan2(-Math.sin(a), Math.cos(a)) - E.yaw;   // turret swing that points at bearing a (forward is (cos, -sin))
+  SITE.pileSw = Math.atan2(Math.sin(SITE.pileSw), Math.cos(SITE.pileSw));
+}
 SITE.pile = { x: E.x + Math.cos(E.yaw + SITE.pileSw) * SITE.pileR, z: E.z - Math.sin(E.yaw + SITE.pileSw) * SITE.pileR };
 SITE.pit.level = hF(SITE.pit.x, SITE.pit.z) - SITE.pit.cut;
 SITE.pad.level = hF(SITE.pad.x, SITE.pad.z) + SITE.pad.fill;
@@ -149,7 +161,7 @@ export function createField(THREE) {
     }
     dirty = true;
   }
-  // remove up to vol m3 from a mound around (x, z) (the loader's scoop). Returns m3 taken.
+  // remove up to vol m3 from a mound around (x, z) (the dozer's blade biting the pile). Returns m3 taken.
   let tkTot = 0, tkK = 0, tkR = 1;
   const tkSum = k => { if (data[k * 2] > 0) tkTot += data[k * 2] * A; };
   const tkCut = (k, d) => { if (data[k * 2] > 0) data[k * 2] -= data[k * 2] * tkK * (1 - sstep(tkR * 0.6, tkR, d)); };
@@ -158,7 +170,7 @@ export function createField(THREE) {
     if (tkTot <= 0) return 0; tkK = Math.min(1, vol / tkTot);
     each(x, z, r, tkCut); dirty = true; return Math.min(vol, tkTot);
   }
-  // pull the ground toward lvl(x, z) under a footprint (roller drum): down at `down` m per call, up at `up`
+  // pull the ground toward lvl(x, z) under a footprint (compactor drum): down at `down` m per call, up at `up`
   let flL = null, flR = 0, flD = 0, flU = 0;
   const flFn = (k, d, i, j) => { const g = base[k] + data[k * 2], t = flL(ox + (i + 0.5) * cell, oz + (j + 0.5) * cell) - g, w = 1 - sstep(flR * 0.6, flR, d); data[k * 2] += Math.max(-flD, Math.min(flU, t)) * w; data[k * 2 + 1] *= 1 - 0.5 * w; };
   function flatten(x, z, r, lvl, down, up) { flL = lvl; flR = r; flD = down; flU = up; each(x, z, r, flFn); dirty = true; }
