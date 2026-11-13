@@ -127,6 +127,7 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   let W = 1, Hh = 1, docTop = 0, docH = 1, shipLen = 100;
   const px = new Float32Array(SAMPLES + 1), py = new Float32Array(SAMPLES + 1);   // path in section px (y down)
   let pathOK = false;
+  let pathLen = 0, drawnLast = -1;                // arc length in svg user units, last drawn fraction written to the dash
   const stats = {
     quality, programs: 0, calls: 0, triangles: 0, frames: 0, dpr: 1, w: 0, h: 0, p: 0, visible: false, running: false,
     earth: { cx: 0, cy: 0, r: 0 }, mars: { cx: 0, cy: 0, r: 0 },
@@ -156,6 +157,13 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     if (pathEl) {
       const ctm = pathEl.getScreenCTM(), len = pathEl.getTotalLength();
       if (ctm && len > 0) {
+        // the trail draws on behind the ship with a dash in svg user units. Chrome measures dashes in screen px when the stroke is
+        // non-scaling, so the stroke scales with the svg here and its width is set back to 1 css px by hand (the same look in every browser)
+        const scale = Math.hypot(ctm.a, ctm.b) || 1;
+        pathLen = len; drawnLast = -1;
+        pathEl.style.vectorEffect = 'none';
+        pathEl.style.strokeWidth = String(1 / scale);
+        pathEl.style.strokeDasharray = len + ' ' + len;
         for (let i = 0; i <= SAMPLES; i++) {
           const pt = pathEl.getPointAtLength(len * i / SAMPLES);
           px[i] = ctm.a * pt.x + ctm.c * pt.y + ctm.e - hr.left; py[i] = ctm.b * pt.x + ctm.d * pt.y + ctm.f - hr.top;
@@ -164,7 +172,7 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
       }
     }
     stats.pathOK = pathOK;
-    shipLen = Math.min(150, Math.max(64, W * 0.09));
+    shipLen = Math.min(75, Math.max(32, W * 0.045));   // half the earlier 64..150 (client ticket: the ship read too big)
     const s = shipLen / (shipModel.userData.h || 50.4);
     shipRoll.scale.setScalar(s);
     plume.scale.set(shipLen * 0.24, shipLen * 0.66, 1);
@@ -188,6 +196,11 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     const t = Math.min(T1, Math.max(T0, rawCur));
     const a = sstep(T0 - 0.1, T0, rawCur) * (1 - sstep(T1, T1 + 0.1, rawCur));   // fades in/out beyond the clamp, hidden at the extremes
     E.t = t; E.target = rawTarget; E.alpha = a;
+    // trail: drawn from Earth up to the ship, empty until the ship starts to fade in, and it stays drawn after the ship leaves
+    if (pathOK && pathLen) {
+      const drawn = rawCur > T0 - 0.1 ? t : 0;
+      if (Math.abs(drawn - drawnLast) > 1e-4) { pathEl.style.strokeDashoffset = String(pathLen * (1 - drawn)); drawnLast = drawn; }
+    }
     ship.visible = a > 0.004 && pathOK;
     if (!ship.visible) return;
     const f = t * SAMPLES, i = Math.min(SAMPLES - 1, Math.floor(f)), k = f - i;
@@ -316,6 +329,8 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     envRT.dispose();
     renderer.dispose(); renderer.forceContextLoss();
     canvas.remove();
+    // the poster fallback shows the full authored line again
+    if (pathEl) for (const k of ['vectorEffect', 'strokeWidth', 'strokeDasharray', 'strokeDashoffset']) pathEl.style[k] = '';
   }
 
   return {
