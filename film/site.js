@@ -37,10 +37,14 @@ float bicubicR(sampler2D t, vec2 uv, vec2 res){   // B-spline from 4 bilinear ta
 
 
 // photo frame: local metres (x east-ish, z south-ish, turned SITE_ROT) -> geographic metres (x east, z south) -> uv
-const ORTHO = /* glsl */ `
+// the 800 m photo is two textures: a lot crop (LH m half width) at the full 0.195 m/texel over the whole 800 m at a lower density.
+// Both are always sampled (no texture fetch under a branch); the crop hands over inside its own edge.
+const ORTHO = LH => /* glsl */ `
 vec2 toGeo(vec2 p){ return vec2(p.x*uRot.x-p.y*uRot.y, p.x*uRot.y+p.y*uRot.x); }
 float orthoW(vec2 g){ vec2 a=abs(g); return uOrthoOn*(1.-smoothstep(${OHALF - 90}.,${OHALF - 4}.,max(a.x,a.y))); }
-vec3 ortho(vec2 g){ return texture2D(tOrtho,vec2(g.x/${2 * OHALF}.+.5,.5-g.y/${2 * OHALF}.)).rgb; }
+vec3 ortho(vec2 g){ vec3 c=texture2D(tOrtho,vec2(g.x/${2 * OHALF}.+.5,.5-g.y/${2 * OHALF}.)).rgb;
+  vec3 l=texture2D(tOrthoL,vec2(g.x/${2 * LH}.+.5,.5-g.y/${2 * LH}.)).rgb; vec2 a=abs(g);
+  return mix(c,l,uOrthoLOn*(1.-smoothstep(${(LH * 0.85).toFixed(1)},${LH - 2}.,max(a.x,a.y)))); }
 // round feathers, never square: each photo hands over to the next one out well inside its own edge
 float circW(vec2 g, float hf){ return 1.-smoothstep(.55*hf,.95*hf,length(g)); }
 vec4 photoLayers(vec2 g){
@@ -70,15 +74,16 @@ const BUMP = k => /* glsl */ `{
     normal=normalize(normal+(viewMatrix*vec4(-gx,0.,-gz,0.)).xyz*${k}*fade);
   } }`;
 
-export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, earthU, orthoUrl }) {
+export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, earthU, ortho = {} }) {
+  const LH = ortho.lotHalf || 200, OGL = ORTHO(LH); // lot crop size is fixed per tier, so this is one program per tier
   const group = new THREE.Group(); group.position.copy(ORIGIN); group.visible = false; scene.add(group);
   const U = { uG: { value: 0 }, uNight: { value: 0 }, uT: { value: 0 }, uWork: { value: 0 }, uSunL: { value: new THREE.Vector3(0, 1, 0) },
     uOrigin: { value: ORIGIN.clone() }, tMap: earthU.tMap, tLights: earthU.tLights, uLL: { value: new THREE.Vector2(AUSTIN.lat, AUSTIN.lon) },
     uDig: { value: 0 }, uPile: { value: 0 }, uBack: { value: 0 }, uClear: { value: 0 }, uProg: { value: 0 },
-    tOrtho: { value: null }, uOrthoOn: { value: 0 }, tOrthoB: { value: null }, uOrthoBOn: { value: 0 }, tOrthoC: { value: null }, uOrthoCOn: { value: 0 }, uRot: { value: new THREE.Vector2(Math.cos(SITE_ROT), Math.sin(SITE_ROT)) } };
+    tOrtho: { value: null }, uOrthoOn: { value: 0 }, tOrthoL: { value: null }, uOrthoLOn: { value: 0 }, tOrthoB: { value: null }, uOrthoBOn: { value: 0 }, tOrthoC: { value: null }, uOrthoCOn: { value: 0 }, uRot: { value: new THREE.Vector2(Math.cos(SITE_ROT), Math.sin(SITE_ROT)) } };
   // real orthophoto: TxGIO StratMap 2019, 6 inch, Jan 2019 (public domain). Until it loads the procedural ground stands in.
-  { const d = new THREE.DataTexture(new Uint8Array([90, 80, 66, 255]), 1, 1); d.needsUpdate = true; U.tOrtho.value = d; }
-  // three nested photos, all north-up on the same centre: 800 m (6 in), 8 km (StratMap 2019 resampled ~4 m), 80 km (NAIP 2022 resampled ~40 m)
+  { const d = new THREE.DataTexture(new Uint8Array([90, 80, 66, 255]), 1, 1); d.needsUpdate = true; U.tOrtho.value = d; U.tOrthoL.value = d; }
+  // nested photos, all north-up on the same centre: lot crop + 800 m (6 in), 8 km (StratMap 2019 resampled ~4 m), 80 km (NAIP 2022 resampled ~40 m)
   { const d = new THREE.DataTexture(new Uint8Array([70, 72, 60, 255]), 1, 1); d.needsUpdate = true; U.tOrthoB.value = d; U.tOrthoC.value = d; }
   const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
   // load -> decode off the main thread -> upload -> swap, so the first frame that samples a photo never stalls on it.
@@ -96,9 +101,9 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
       });
     }, undefined, () => res(false));
   });
-  const [oA, oB, oC] = [].concat(orthoUrl || []);
-  const ready = loadInto(oA, 'tOrtho', 'uOrthoOn'); // the 800 m lot photo: the opening frame waits on this one (main.js races it)
-  const readyAll = Promise.all([ready, loadInto(oB, 'tOrthoB', 'uOrthoBOn', true), loadInto(oC, 'tOrthoC', 'uOrthoCOn', true)]);
+  // the opening frame waits on the lot crop and the 800 m photo (requested first); the 8 km and 80 km layers fade in when they land
+  const ready = Promise.all([loadInto(ortho.lot, 'tOrthoL', 'uOrthoLOn'), loadInto(ortho.site, 'tOrtho', 'uOrthoOn')]);
+  const readyAll = Promise.all([ready, loadInto(ortho.km8, 'tOrthoB', 'uOrthoBOn', true), loadInto(ortho.km80, 'tOrthoC', 'uOrthoCOn', true)]);
   let patchN = 0;
   const patch = (mat, vHead, vBody, fHead, fColor, fRough, fEmit, normalFn, fNormal) => {
     const key = 'tfsite' + patchN++; mat.customProgramCacheKey = () => key; // each patched material needs its own program
@@ -107,7 +112,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
       sh.vertexShader = 'uniform vec3 uOrigin; uniform float uDig,uPile,uBack; varying vec3 vLoc;\n' + GL + vHead + '\n' + sh.vertexShader;
       if (normalFn) sh.vertexShader = sh.vertexShader.replace('#include <beginnormal_vertex>', normalFn);
       sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + vBody + '\nvLoc=(modelMatrix*vec4(transformed,1.)).xyz-uOrigin;');
-      sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg,uOrthoOn,uOrthoBOn,uOrthoCOn; uniform vec3 uSunL; uniform sampler2D tMap,tLights,tOrtho,tOrthoB,tOrthoC; uniform vec2 uLL,uRot; varying vec3 vLoc;\n' + GL + ORTHO + fHead + '\n' + sh.fragmentShader
+      sh.fragmentShader = 'uniform float uG,uNight,uT,uWork,uClear,uProg,uOrthoOn,uOrthoLOn,uOrthoBOn,uOrthoCOn; uniform vec3 uSunL; uniform sampler2D tMap,tLights,tOrtho,tOrthoL,tOrthoB,tOrthoC; uniform vec2 uLL,uRot; varying vec3 vLoc;\n' + GL + OGL + fHead + '\n' + sh.fragmentShader
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + fColor)
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n' + fRough)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + fEmit)

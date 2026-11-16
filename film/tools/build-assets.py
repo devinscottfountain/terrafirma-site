@@ -4,10 +4,8 @@
   python3 film/tools/build-assets.py <d5-assets-dir> [<extra-dir>]
 
 <d5-assets-dir>  the prototype's d5/assets (d5-earth.jpg, d5-mars.jpg, earth_*.webp, milkyway.webp, stars.bin, ...)
-<extra-dir>      optional: the six Webflow-hosted source files, by these names (any missing one is skipped and the film
-                 falls back to its procedural ground):
-                 austin-site-ortho.jpg  austin-ortho-8km.jpg  austin-ortho-80km.jpg
-                 jezero-dtm-16bit.png   jezero-hirise-bump-1600m.jpg  jezero-ctx-bump-12km.jpg
+<extra-dir>      optional: the six terrain and aerial map sources; passed on to build-maps.py (see its header for the names).
+                 Without it the maps are left out and the film falls back to its procedural ground.
 Needs Pillow with WebP. Only the files listed in manifest.json are ever requested by the browser.
 """
 import json, os, struct, sys
@@ -38,7 +36,7 @@ PLAN = [
     ('mars',        'd5-mars.jpg',      {'high': ((4096, 2048), 80), 'low': ((2048, 1024), 78)}), # the sharpest map
     ('marsNorm',    'mars_normal.jpg',  {'high': ((2048, 1024), 74)}),
 ]
-manifest = {'tiers': {t: {'tex': {}, 'ortho': [], 'jezero': {}} for t in ('high', 'low')}, 'bytes': {}}
+manifest = {'tiers': {t: {'tex': {}, 'ortho': {}, 'jezero': {}} for t in ('high', 'low')}, 'bytes': {}}
 sizes = {'high': 0, 'low': 0}
 
 for key, f, tiers in PLAN:
@@ -63,33 +61,11 @@ for t, lim in (('high', 99.0), ('low', 5.2)):
     rel = f'{t}/stars.bin'; os.makedirs(os.path.join(out, t), exist_ok=True)
     open(os.path.join(out, rel), 'wb').write(keep); manifest['tiers'][t]['stars'] = rel; sizes[t] += len(keep); manifest['bytes'][rel] = len(keep)
 
-# the Webflow-hosted sources (optional)
-def opt(name):
-    p = os.path.join(extra, name) if extra else None
-    return Image.open(p) if p and os.path.exists(p) else None
-for i, (name, hi, lo) in enumerate([('austin-site-ortho.jpg', ((2048, 2048), 78), ((1024, 1024), 72)),
-                                    ('austin-ortho-8km.jpg', ((1024, 1024), 74), ((512, 512), 68)),
-                                    ('austin-ortho-80km.jpg', ((1024, 1024), 72), ((512, 512), 66))]):
-    im = opt(name)
-    if not im: print('skipped (not supplied):', name); continue
-    im = im.convert('RGB')
-    for t, (size, q) in (('high', hi), ('low', lo)):
-        rel = f'{t}/ortho{i}.webp'; n = save(im, rel, size, q); manifest['tiers'][t]['ortho'].append(rel); sizes[t] += n; manifest['bytes'][rel] = n
-for key, name, hi, lo in [('hiBump', 'jezero-hirise-bump-1600m.jpg', ((1024, 1024), 74), ((512, 512), 68)),
-                          ('ctxBump', 'jezero-ctx-bump-12km.jpg', ((1024, 1024), 74), ((512, 512), 68))]:
-    im = opt(name)
-    if not im: print('skipped (not supplied):', name); continue
-    im = im.convert('L').convert('RGB')
-    for t, (size, q) in (('high', hi), ('low', lo)):
-        rel = f'{t}/{key}.webp'; n = save(im, rel, size, q); manifest['tiers'][t]['jezero'][key] = rel; sizes[t] += n; manifest['bytes'][rel] = n
-im = opt('jezero-dtm-16bit.png')
-if im:   # height bytes live in R and G: lossless, same size for both tiers (the shader hardcodes 512 per half)
-    im = im.convert('RGB')
-    for t in ('high', 'low'):
-        rel = f'{t}/jezero-dtm.webp'; n = save(im, rel, None, 100, lossless=True); manifest['tiers'][t]['jezero']['dtm'] = rel; sizes[t] += n; manifest['bytes'][rel] = n
-else: print('skipped (not supplied): jezero-dtm-16bit.png')
-
+# the six terrain and aerial maps: film/tools/build-maps.py (run after this one, it merges into the manifest)
 manifest['totals'] = sizes
 json.dump(manifest, open(os.path.join(out, 'manifest.json'), 'w'), indent=1)
 print('high %.0f KB, low %.0f KB' % (sizes['high'] / 1024, sizes['low'] / 1024))
 for k, v in sorted(manifest['bytes'].items()): print('  %-28s %7.0f KB' % (k, v / 1024))
+if extra:
+    import subprocess
+    subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'build-maps.py'), extra], check=True)

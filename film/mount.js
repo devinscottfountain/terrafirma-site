@@ -93,16 +93,11 @@ if (!bail) {
   async function resolveFiles() {
     const res = await fetch(new URL('assets/manifest.json', BASE)); if (!res.ok) throw new Error('film manifest ' + res.status);
     const t = (await res.json()).tiers[quality], u = rel => new URL('assets/' + rel, BASE).href;
-    const tex = {}; for (const k in t.tex) tex[k] = u(t.tex[k]);
-    const jezero = {}; for (const k in t.jezero) jezero[k] = u(t.jezero[k]);
-    // large terrain and aerial maps are Webflow assets, named on the film section so the client owns them:
-    //   data-film-ortho="<site 800 m> <8 km> <80 km>"   data-film-jezero-dtm / -hi-bump / -ctx-bump
-    const d = root.dataset, list = s => (s || '').trim().split(/\s+/).filter(Boolean);
-    const ortho = list(d.filmOrtho).length ? list(d.filmOrtho) : t.ortho.map(u);
-    if (d.filmJezeroDtm) jezero.dtm = d.filmJezeroDtm;
-    if (d.filmJezeroHiBump) jezero.hiBump = d.filmJezeroHiBump;
-    if (d.filmJezeroCtxBump) jezero.ctxBump = d.filmJezeroCtxBump;
-    return { tex, stars: u(t.stars), milky: u(t.milky), ortho, jezero };
+    const map = o => { const r = {}; for (const k in o) r[k] = typeof o[k] === 'string' ? u(o[k]) : o[k]; return r; };
+    // the terrain and aerial maps ship with the repo too, sized per tier (the old data-film-* Webflow attributes are ignored:
+    // the DTM is packed 16-bit data that any lossy pass in the Assets panel would break)
+    const ortho = map(t.ortho || {}); ortho.lotHalf = t.lotHalf || 0;   // lot crop half width, m
+    return { tex: map(t.tex), stars: u(t.stars), milky: u(t.milky), ortho, jezero: map(t.jezero || {}) };
   }
 
   async function boot() {

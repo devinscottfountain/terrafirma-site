@@ -11,10 +11,21 @@
     "mars": "high/mars.webp",
     "marsNorm": "high/marsNorm.webp"
    },
-   "ortho": [],
-   "jezero": {},
+   "ortho": {
+    "lot": "high/ortho-lot.webp",
+    "site": "high/ortho-site.webp",
+    "km8": "high/ortho-km8.jpg",
+    "km80": "high/ortho-km80.webp"
+   },
+   "jezero": {
+    "hiBump": "high/jezero-hiBump.webp",
+    "ctxBump": "high/jezero-ctxBump.webp",
+    "dtm": "high/jezero-dtm.png",
+    "dtmN": 512
+   },
    "milky": "high/milkyway.webp",
-   "stars": "high/stars.bin"
+   "stars": "high/stars.bin",
+   "lotHalf": 150
   },
   "low": {
    "tex": {
@@ -25,10 +36,21 @@
     "moon": "low/moon.webp",
     "mars": "low/mars.webp"
    },
-   "ortho": [],
-   "jezero": {},
+   "ortho": {
+    "lot": "low/ortho-lot.webp",
+    "site": "low/ortho-site.webp",
+    "km8": "low/ortho-km8.webp",
+    "km80": "low/ortho-km80.webp"
+   },
+   "jezero": {
+    "hiBump": "low/jezero-hiBump.webp",
+    "ctxBump": "low/jezero-ctxBump.webp",
+    "dtm": "low/jezero-dtm.png",
+    "dtmN": 256
+   },
    "milky": "low/milkyway.webp",
-   "stars": "low/stars.bin"
+   "stars": "low/stars.bin",
+   "lotHalf": 100
   }
  },
  "bytes": {
@@ -49,10 +71,25 @@
   "high/milkyway.webp": 11012,
   "low/milkyway.webp": 3288,
   "high/stars.bin": 249900,
-  "low/stars.bin": 41440
+  "low/stars.bin": 41440,
+  "high/ortho-lot.webp": 526114,
+  "high/ortho-site.webp": 337878,
+  "low/ortho-lot.webp": 256056,
+  "low/ortho-site.webp": 141096,
+  "high/ortho-km8.jpg": 887949,
+  "low/ortho-km8.webp": 314240,
+  "high/ortho-km80.webp": 56060,
+  "low/ortho-km80.webp": 56060,
+  "high/jezero-hiBump.webp": 247498,
+  "low/jezero-hiBump.webp": 237436,
+  "high/jezero-ctxBump.webp": 145620,
+  "low/jezero-ctxBump.webp": 51638,
+  "high/jezero-dtm.png": 804134,
+  "low/jezero-dtm.png": 217960
  },
  "totals": {
-  "high": 1591090,
-  "low": 377462
- }
+  "high": 4596343,
+  "low": 1651948
+ },
+ "provisional": []
 }

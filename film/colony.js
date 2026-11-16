@@ -18,9 +18,10 @@ return mix(mix(mix(h3(i),h3(i+vec3(1,0,0)),f.x),mix(h3(i+vec3(0,1,0)),h3(i+vec3(
 mix(mix(h3(i+vec3(0,0,1)),h3(i+vec3(1,0,1)),f.x),mix(h3(i+vec3(0,1,1)),h3(i+vec3(1,1,1)),f.x),f.y),f.z);}
 float fbm(vec3 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*n3(p);p*=2.03;a*=.5;}return v;}`;
 
-// env: { THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files: { dtm, hiBump, ctxBump }, HIGH, lateRockets(rockets), lodPath() -> [Vector3] }
+// env: { THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files: { dtm, dtmN, hiBump, ctxBump }, HIGH, lateRockets(rockets), lodPath() -> [Vector3] }
 export function createColony({ THREE, renderer, scene, cam, planets, sunLight, ambient, hemi, files, HIGH, lateRockets, lodPath }) {
 const COLV = new THREE.Vector3(COL.x, COL.y, COL.z); // COL (module level) is plain numbers, COLV the Vector3
+const DN = files.dtmN || 512; // DTM texels per half side (512 high, 256 low): baked into the terrain program, one per tier
 const colony = new THREE.Group(); colony.position.copy(COLV); colony.visible = false; scene.add(colony);
 // sun shadow: orthographic box fitted around the colony (radius ~350 plus the solar farm). The map is wider than tall because a low sun
 // squashes the ground disc along the light's up axis; build() resizes the vertical extent with the sun elevation every frame.
@@ -47,7 +48,7 @@ function readHB0(tex) {
   const m = new THREE.ShaderMaterial({ uniforms: { tDtm: { value: tex } }, toneMapped: false, depthTest: false, depthWrite: false,
     vertexShader: 'void main(){ gl_Position=vec4(position.xy,0.,1.); }',
     fragmentShader: `uniform sampler2D tDtm; void main(){ float k=floor(gl_FragCoord.x); vec2 o=vec2(mod(k,2.),floor(k*.5));
-      vec2 uv=(vec2(255.5)+o)/512.; gl_FragColor=texture2D(tDtm,vec2(uv.x*.5+.5,uv.y)); }` });
+      vec2 uv=(vec2(${DN / 2 - 0.5})+o)/${DN}.; gl_FragColor=texture2D(tDtm,vec2(uv.x*.5+.5,uv.y)); }` });
   const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), m), sc = new THREE.Scene(); q.frustumCulled = false; sc.add(q);
   const px = new Uint8Array(16), prev = renderer.getRenderTarget();
   renderer.setRenderTarget(rt); renderer.render(sc, cam); renderer.readRenderTargetPixels(rt, 0, 0, 4, 1, px); renderer.setRenderTarget(prev);
@@ -79,8 +80,8 @@ const TERR_GL = /* glsl */ `
 uniform sampler2D tDtm, tHi, tCtx, tMars; uniform vec3 uOn; uniform float uHB0; // uHB0 = hB(vec2(0.)), read back once after the DTM loads
 // 16-bit heights live in R (hi byte) and G (lo byte); filter by hand so the bytes never blend across a carry
 float dtmTap(vec2 uv, float side){ vec2 t=vec2(uv.x*.5+side*.5, uv.y); vec4 c=texture2D(tDtm,t); return (c.r*255.*256.+c.g*255.)/65535.; }
-float dtmBil(vec2 uv, float side){ vec2 p=uv*512.-.5, f=fract(p), i=floor(p);
-  float a=dtmTap((i+vec2(.5,.5))/512.,side), b=dtmTap((i+vec2(1.5,.5))/512.,side), c=dtmTap((i+vec2(.5,1.5))/512.,side), d=dtmTap((i+vec2(1.5,1.5))/512.,side);
+float dtmBil(vec2 uv, float side){ vec2 p=uv*${DN}.-.5, f=fract(p), i=floor(p);
+  float a=dtmTap((i+vec2(.5,.5))/${DN}.,side), b=dtmTap((i+vec2(1.5,.5))/${DN}.,side), c=dtmTap((i+vec2(.5,1.5))/${DN}.,side), d=dtmTap((i+vec2(1.5,1.5))/${DN}.,side);
   return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
 float hA(vec2 p){ return -2621.547+62.5074*dtmBil(vec2(p.x/1600.+.5,.5-p.y/1600.),0.); }   // HiRISE DTM, metres (areoid)
 float hB(vec2 p){ return -2664.712+352.3924*dtmBil(vec2(p.x/12000.+.5,.5-p.y/12000.),1.); } // CTX DTM

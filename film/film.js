@@ -7,7 +7,7 @@
 //   section  the film track: its height is the scroll distance of the whole film
 //   scenes   { austin, earth, title, reind, colony, launch } text scene elements (read for layout only, never written)
 //   sol      { root, value } optional SOL readout elements (opacity on root, number into value)
-//   files    resolved asset urls: { tex: {...}, stars, milky, ortho: [3], jezero: { dtm, hiBump, ctxBump } }
+//   files    resolved asset urls: { tex: {...}, stars, milky, ortho: { lot, site, km8, km80, lotHalf }, jezero: { dtm, dtmN, hiBump, ctxBump } }
 // Scroll -> film: every scene anchor is read from the DOM, so any scene height works (see README for the recommended ones).
 import { createPost } from './post.js';
 import { createSky } from './sky.js';
@@ -117,7 +117,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
 
   // ---------- Austin: the opening lot, then a powers-of-ten pull out to the Earth frame below (camera in austin.js) ----------
   const SITE0 = new THREE.Vector3(0, 40000, 0);
-  const site = createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: planets.earth.material.uniforms, orthoUrl: files.ortho });
+  const site = createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN: SITE0, earthU: planets.earth.material.uniforms, ortho: files.ortho });
   const aircraft = createAircraft({ THREE, parent: site.group, high: HIGH }); // night traffic: nav lights only, lives (and compiles) with the site set
   const EARTH_SPIN = 0.012, U_PER_M = 10 / 6371000; // Earth radius is 10 units
   const latR = THREE.MathUtils.degToRad(AUSTIN.lat), lonU = (AUSTIN.lon + 180) / 360;
