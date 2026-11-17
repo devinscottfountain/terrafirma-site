@@ -27,14 +27,16 @@ const GRIME = /* glsl */ `
   diffuseColor.rgb = mix(diffuseColor.rgb, uDust*(.7+.5*gn1), mDust*.8);
 `;
 
-export function createMachines({ THREE, group, D = 4 }) {
+// only: 'excavator' builds just one CAT 336 (its own rnd sequence, so the film yard never changes). envMap replaces the canvas sky,
+// grime: { dirt, rust } scales the baked dirt and rust in the shader (1 = film look), transparent makes every material fade-capable.
+export function createMachines({ THREE, group, D = 4, only = null, envMap = null, grime: gs = null, transparent = false }) {
   const V3 = THREE.Vector3, Q = THREE.Quaternion;
   let seed = 1337;
   const rnd = () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   let TRIS = 0;
 
   // ------------------------------------------------------------ materials
-  const env = (() => { // equirect sky for glass + steel: blue zenith, bright hazy horizon, warm dirt below
+  const env = envMap || (() => { // equirect sky for glass + steel: blue zenith, bright hazy horizon, warm dirt below
     const c = document.createElement('canvas'); c.width = 256; c.height = 128; const x = c.getContext('2d');
     const gr = x.createLinearGradient(0, 0, 0, 128);
     gr.addColorStop(0, '#3d6db5'); gr.addColorStop(0.3, '#7aa2d6'); gr.addColorStop(0.47, '#dfe8ef'); gr.addColorStop(0.5, '#f4f2ea');
@@ -45,24 +47,25 @@ export function createMachines({ THREE, group, D = 4 }) {
   })();
   const dustC = new THREE.Color(0xa58f70), rustC = new THREE.Color(0x6a3418);
   const grime = (m, key) => {
+    const vg = gs ? `vMG = aG * vec3(1., ${(+gs.dirt).toFixed(3)}, ${(+gs.rust).toFixed(3)});` : 'vMG = aG;';   // film: untouched source
     m.onBeforeCompile = sh => {
       sh.uniforms.uDust = { value: dustC }; sh.uniforms.uRust = { value: rustC };
       sh.vertexShader = 'attribute vec3 aG; varying vec3 vMG, vMObj, vMN;\n' + sh.vertexShader.replace('#include <begin_vertex>',
-        '#include <begin_vertex>\nvMG = aG; vMN = normal; vMObj = position * vec3(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz), length(modelMatrix[2].xyz));');
+        '#include <begin_vertex>\n' + vg + ' vMN = normal; vMObj = position * vec3(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz), length(modelMatrix[2].xyz));');
       sh.fragmentShader = 'uniform vec3 uDust, uRust; varying vec3 vMG, vMObj, vMN;\n' + NOISE + sh.fragmentShader
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + GRIME)
         .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + mDust*.4 + mRust*.3 + mGr*.1, 0., 1.);')
         .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor *= 1. - max(mDust, mRust);');
     };
-    m.customProgramCacheKey = () => 'tfmach-' + key; return m;
+    m.customProgramCacheKey = () => (gs ? 'tfmachg-' : 'tfmach-') + key; return m;
   };
-  const S = o => new THREE.MeshStandardMaterial({ vertexColors: true, ...o });
+  const S = o => new THREE.MeshStandardMaterial({ vertexColors: true, ...(transparent ? { transparent: true } : {}), ...o });
   const MAT = {
     paint: grime(S({ roughness: 0.46, metalness: 0, envMap: env, envMapIntensity: 0.35 }), 'paint'),
     rough: grime(S({ roughness: 0.93, metalness: 0 }), 'rough'),
     metal: grime(S({ roughness: 0.34, metalness: 0.85, envMap: env, envMapIntensity: 1 }), 'metal'),
     glass: S({ roughness: 0.06, metalness: 0.82, envMap: env, envMapIntensity: 1.25 }),
-    glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
+    glow: new THREE.MeshBasicMaterial({ vertexColors: true, ...(transparent ? { transparent: true } : {}) }),
   };
 
   // ------------------------------------------------------------ geometry kit: collect parts per material, bake colour + grime data, merge
@@ -618,6 +621,7 @@ export function createMachines({ THREE, group, D = 4 }) {
     k.build(group);
   };
 
+  if (only === 'excavator') { const ex = excavator(); return { ex, tris: TRIS, materials: MAT, Kit, T, shapeOf, extrude }; }
   const exA = excavator(), exB = excavator();
   exA.g.position.set(-20, 0, -13); exB.g.position.set(-10, 0, 13);
   const trucks = [0, 1, 2, 3].map(truck);
@@ -630,6 +634,10 @@ export function createMachines({ THREE, group, D = 4 }) {
   furniture();
   return { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, tris: TRIS, materials: MAT };
 }
+
+// One standalone CAT 336 with the film's kit and materials (Careers mission rocket excavator). Kit/T/shapeOf/extrude come back so
+// extra hardware can be built in the same style and the same merged materials.
+export const createExcavator = (o) => createMachines({ ...o, only: 'excavator' });
 
 // =====================================================================================================================
 // Jezero colony life (D6.1): pressurised rovers on the avenues (headlights at dusk, dust trails), graded roads with lamp

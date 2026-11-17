@@ -7,7 +7,7 @@
 //   [data-foot-logo]    wrapper around the logotype svg (the halo and glow sit behind its rect)
 // Anything that goes wrong leaves the poster in place.
 //
-// Also mounts the Mission section (Earth, Mars and a Starship on an SVG arc) when [data-mission] exists:
+// Also mounts the Mission section (Earth, Mars and a rocket-boosted CAT 336 on an SVG arc) when [data-mission] exists:
 //   [data-mission]               section root (position: relative; overflow: hidden)
 //   [data-mission-canvas]        absolute inset-0 empty mount; the transparent WebGL canvas is added inside it
 //   [data-mission-earth|mars]    square boxes holding a poster <img>; each sphere renders exactly over its box

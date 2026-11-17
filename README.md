@@ -1,6 +1,6 @@
 # terrafirma-site
 
-Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Mission section (planets and Starship) on the careers page, the Solutions scene and the scroll film (Austin, Earth, Mars) on the homepage.
+Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Mission section (planets and the rocket excavator) on the careers page, the Solutions scene and the scroll film (Austin, Earth, Mars) on the homepage.
 
 ## Files
 
@@ -11,7 +11,7 @@ Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Miss
 - `footer/foot-tex.js`: texture streamer. Loads after the first frame, one upload per frame.
 - `footer/assets/tex/`: only the WebP textures the footer loads. High tier about 1.56 MB, low tier about 0.28 MB. `dusk_sky.hdr` and `256/dusk_sky_ldr.webp` are kept for reference; the footer bakes its own environment and never fetches them.
 - `kit/hero-model-kit.js`: shared modelling helpers, copied unchanged from the prototype.
-- `mission/mission3d.js`: `createMission({ THREE, section, quality, base })` returns `{ ready, start, stop, resize, dispose, stats, capture, canvas, renderer }`. Orthographic camera in section pixels, analytic planet quads, the footer's Starship on the SVG arc.
+- `mission/mission3d.js`: `createMission({ THREE, section, quality, base })` returns `{ ready, start, stop, resize, dispose, stats, capture, canvas, renderer }`. Orthographic camera in section pixels, analytic planet quads, the rocket excavator on the SVG arc (`mission/mission-rocketex.js`: the film's CAT 336 from `film/machines.js` `createExcavator()` plus two strapped boosters, posed and merged to 5 draws; one plume per nozzle). The trail draws on up to the nozzles.
 - `mission/mission-glsl.js`: Earth, Mars, engine plume and environment shaders.
 - `mission/assets/`: planet textures. High tier (2048 colour, 1024 normals, Earth clouds) about 0.70 MB, low tier (1024 colour) about 0.14 MB. See `CREDITS.md`.
 - `home3d.js`: homepage entry (ES module). Finds the Solutions section, lazy-loads three and `solutions/` within ~1.5 viewports, listens to `tf:solutions`, reads the safe insets, renders only while visible.
@@ -45,7 +45,7 @@ URL switches: `?foot=0` keeps the poster, `?q=low|high` forces a quality tier.
 - `[data-mission]`: section, `position: relative; overflow: hidden`
 - `[data-mission-canvas]`: absolute inset-0 empty mount, `pointer-events: none` (the canvas is created inside it)
 - `[data-mission-earth]`, `[data-mission-mars]`: square boxes, each with a poster `img`; the sphere is drawn exactly over its box (diameter = box width) and may bleed off the section edge. The imgs fade out once the first real frame is drawn.
-- `img[data-mission-billboard]`: the designer's static 2D rocket with plume, placed on the arc. It is the fallback for the 3D Starship, so it fades out with the posters on the first real frame and stays visible on any bail or failure.
+- `img[data-mission-billboard]`: the designer's static 2D rocket with plume, placed on the arc. It is the fallback for the 3D rocket excavator, so it fades out with the posters on the first real frame and stays visible on any bail or failure.
 - `[data-mission-arc]` containing `path[data-mission-path]`, left to right: the rocket's arc
 
 The rocket's arc parameter is `t = remap(p, 0.15..0.85 -> 0.04..0.96)`, where `p` is section progress (0 when the section top meets the viewport bottom, 1 when its bottom meets the viewport top). It is smoothed, clamped, and fades out at the extremes. Rings around the planets are Webflow CSS.

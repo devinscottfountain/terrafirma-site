@@ -1,5 +1,5 @@
-// TerraFirma careers Mission section: Earth (left) and Mars (right) turning in real time, a Starship that follows the section's
-// SVG arc between them as the page scrolls. Webflow owns everything 2D; this only draws into the transparent canvas.
+// TerraFirma careers Mission section: Earth (left) and Mars (right) turning in real time, a rocket-boosted CAT 336 (the "future
+// excavator", mission-rocketex.js) that follows the section's SVG arc between them as the page scrolls. Webflow owns everything 2D; this only draws into the transparent canvas.
 //
 // createMission({ THREE, section, quality, base }) -> { ready, start, stop, resize, dispose, stats, capture, canvas, renderer }
 //
@@ -8,8 +8,7 @@
 // of the mount, y up in world space (world y = height - css y). Planets are analytic quads (mission-glsl.js), so each disc is
 // exactly its box. Rendering is gated by an IntersectionObserver; all programs compile before the first visible frame.
 import { PLANET_VERT, EARTH_FRAG, MARS_FRAG, PLUME_VERT, PLUME_FRAG, ENV_VERT, ENV_FRAG } from './mission-glsl.js';
-import { buildStarships } from '../footer/foot-model-starship.js';
-import { buckets } from '../footer/foot-model-kit.js';
+import { buildRocketExcavator } from './mission-rocketex.js';
 
 const MARGIN = 0.12;                       // quad bleed around the disc (radii fraction) for the atmosphere rim
 // Texture slot (urls are relative to the assets base, or absolute). To swap in NASA Blue Marble later, change these lines only.
@@ -23,7 +22,7 @@ export const INITIAL_ROTATION = { earth: 0.345, mars: 0.346 };
 export const EARTH = { period: 360, tilt: 0.22, lean: 0.14, front: INITIAL_ROTATION.earth, sun: [0.42, 0.16, 0.89] };   // seconds per turn, axis tilt (z), lean toward us (x), start uv.x, sun
 export const MARS = { period: 450, tilt: -0.30, lean: 0.14, front: INITIAL_ROTATION.mars, sun: [-0.40, 0.18, 0.90] };
 // Each planet has its own sun: mostly frontal, offset toward the page centre and a little up, so the terminator falls on the off-screen side.
-const SUN = [-0.55, 0.28, 0.79];           // ship key light and environment only: front-left, a little above
+const SUN = [-0.55, 0.28, 0.79];           // excavator key light and environment only: front-left, a little above
 const T0 = 0.04, T1 = 0.96;                // rocket arc parameter limits
 const P0 = 0.15, P1 = 0.85;                // section progress mapped onto T0..T1
 const SAMPLES = 192;                       // path samples (cached in px on resize)
@@ -81,36 +80,28 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   const qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), m4 = new THREE.Matrix4();
   for (const P of pl) P.qt.setFromAxisAngle(AZ, P.cfg.tilt).multiply(qa.setFromAxisAngle(AX, P.cfg.lean));   // fixed axis tilt
 
-  // ---------------------------------------------------------------- Starship (footer model, one ship, uniform steel)
+  // ---------------------------------------------------------------- rocket excavator (film CAT 336 + boosters, merged: 5 draws)
   const envRT = buildEnv();
   scene.environment = envRT.texture;
-  const steel = new THREE.MeshStandardMaterial({ color: 0xe6e3de, roughness: 0.3, metalness: 1, envMapIntensity: 1.5, transparent: true });
-  const flapM = new THREE.MeshStandardMaterial({ color: 0xd2cfca, roughness: 0.4, metalness: 0.85, envMapIntensity: 1.2, transparent: true });
-  const darkM = new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.5, metalness: 0.4, transparent: true });
-  const dropM = new THREE.MeshBasicMaterial(), dropM2 = new THREE.MeshBasicMaterial();   // pad + beacon buckets, discarded below
-  const shipMats = [steel, flapM, darkM];
-  const shipModel = new THREE.Group();
-  {
-    const B = buckets(THREE);
-    buildStarships({ THREE, B, M: { stainless: steel, flap: flapM, dark: darkM, pad: dropM, beacon: dropM2 }, high, ships: [{ x: 0, z: 0, ry: 0, lod: 0 }] });
-    const parts = B.flush(shipModel, 'ship');
-    for (const m of parts) if (m.material === dropM || m.material === dropM2) { shipModel.remove(m); m.geometry.dispose(); }
-    // centre the hull on its own midpoint so the pivot sits mid-ship
-    const box = new THREE.Box3().setFromObject(shipModel), c = box.getCenter(new THREE.Vector3());
-    shipModel.traverse(o => { if (o.isMesh) { o.geometry.translate(-c.x, -c.y, -c.z); o.geometry.computeBoundingSphere(); o.frustumCulled = false; o.renderOrder = 2; } });
-    shipModel.userData.h = box.max.y - box.min.y;
-  }
-  const shipRoll = new THREE.Group(); shipRoll.add(shipModel); shipRoll.rotation.y = 0.5;   // roll about the hull axis so the flaps read in 3D
+  const rex = buildRocketExcavator({ THREE, envMap: envRT.texture, high });
+  const shipModel = rex.model, shipMats = rex.mats;
+  // model forward is +x: the group turns to the arc tangent, shipRoll yaws the tail toward us (nozzles read) and rolls the deck up
+  const shipRoll = new THREE.Group(); shipRoll.add(shipModel); shipRoll.rotation.set(0.4, 0.25, 0);
   const ship = new THREE.Group(); ship.add(shipRoll); ship.position.z = 50; ship.visible = false; scene.add(ship);
   const key = new THREE.DirectionalLight(0xffe6c8, 2.4);
   key.position.copy(sunW).multiplyScalar(100); scene.add(key);
 
+  // one plume per booster, pointing aft along the travel axis; placed at the nozzles' projected positions in measure()
   const plumeU = { uT: { value: 0 }, uA: { value: 0 } };
   const plumeGeo = new THREE.PlaneGeometry(1, 1).translate(0, -0.5, 0);   // y 0..-1, top edge at the nozzle
-  const plume = new THREE.Mesh(plumeGeo, new THREE.ShaderMaterial({ vertexShader: PLUME_VERT, fragmentShader: PLUME_FRAG, uniforms: plumeU,
+  const plumeM = new THREE.ShaderMaterial({ vertexShader: PLUME_VERT, fragmentShader: PLUME_FRAG, uniforms: plumeU,
     transparent: true, depthTest: false, depthWrite: false, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
-    blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor }));
-  plume.frustumCulled = false; plume.renderOrder = 3; ship.add(plume);
+    blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor });
+  const plumes = rex.nozzles.map(() => {
+    const p = new THREE.Mesh(plumeGeo, plumeM); p.frustumCulled = false; p.renderOrder = 3; p.rotation.z = -Math.PI / 2; ship.add(p); return p;
+  });
+  const nzV = new THREE.Vector3();
+  let tailT = 0;                                  // arc fraction from the machine's centre back to its nozzles (the trail stops there)
 
   // ---------------------------------------------------------------- environment (warm key front-left, cool rim, warm bounce)
   function buildEnv() {
@@ -172,11 +163,23 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
       }
     }
     stats.pathOK = pathOK;
-    shipLen = Math.min(75, Math.max(32, W * 0.045));   // half the earlier 64..150 (client ticket: the ship read too big)
-    const s = shipLen / (shipModel.userData.h || 50.4);
+    // overall length, boom and nozzles included: about 1.5x the half-size ship rule (32..75). The reaching arm is over half of it,
+    // so this keeps the machine body near the ship's old on-screen size and legible
+    shipLen = Math.min(110, Math.max(48, W * 0.068));
+    const s = shipLen / rex.length;
     shipRoll.scale.setScalar(s);
-    plume.scale.set(shipLen * 0.24, shipLen * 0.66, 1);
-    plume.position.y = -shipLen / 2 + shipLen * 0.015;
+    shipRoll.updateMatrix();
+    const ax = nzV.set(1, 0, 0).transformDirection(shipRoll.matrix), aim = -Math.PI / 2 + Math.atan2(ax.y, ax.x);   // booster axis on screen
+    let tail = 0;
+    for (let i = 0; i < plumes.length; i++) {
+      nzV.copy(rex.nozzles[i]).applyMatrix4(shipRoll.matrix);           // nozzle exit in ship space (yaw, roll, scale applied)
+      plumes[i].position.set(nzV.x + 0.15 * s, nzV.y, 10 + i);        // tucked a hair into the bell
+      plumes[i].scale.set(s * 2.8, s * 9, 1);                          // width, length (m at model scale)
+      plumes[i].rotation.z = aim;
+      tail = Math.max(tail, -nzV.x);
+    }
+    let arc = 0; for (let i = 0; i < SAMPLES; i++) arc += Math.hypot(px[i + 1] - px[i], py[i + 1] - py[i]);
+    tailT = pathOK && arc > 0 ? tail / arc : 0;
     stats.rocket.len = shipLen;
   }
 
@@ -198,7 +201,7 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     E.t = t; E.target = rawTarget; E.alpha = a;
     // trail: drawn from Earth up to the ship, empty until the ship starts to fade in, and it stays drawn after the ship leaves
     if (pathOK && pathLen) {
-      const drawn = rawCur > T0 - 0.1 ? t : 0;
+      const drawn = rawCur > T0 - 0.1 ? Math.max(0, t - tailT) : 0;
       if (Math.abs(drawn - drawnLast) > 1e-4) { pathEl.style.strokeDashoffset = String(pathLen * (1 - drawn)); drawnLast = drawn; }
     }
     ship.visible = a > 0.004 && pathOK;
@@ -210,11 +213,12 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     const ang = Math.atan2(ty, tx);
     E.x = x; E.y = y; E.angle = ang;
     ship.position.set(x, Hh - y, 50);
-    ship.rotation.z = ang - Math.PI / 2;                              // model nose is +y
+    ship.rotation.z = ang;                                            // model forward is +x; the arc stays within +-90 deg, so tracks stay down
     for (const m of shipMats) m.opacity = a;
     plumeU.uA.value = a * (0.92 + 0.08 * Math.sin(time * 41));
     plumeU.uT.value = time;
-    plume.scale.y = shipLen * 0.66 * (1 + 0.07 * Math.sin(time * 29) * Math.sin(time * 11.3));   // length flicker
+    const fl = shipRoll.scale.x * 9;
+    for (let i = 0; i < plumes.length; i++) plumes[i].scale.y = fl * (1 + 0.07 * Math.sin(time * 29 + i * 1.7) * Math.sin(time * 11.3 + i));   // length flicker, out of step
   }
 
   function updatePlanets() {
@@ -322,9 +326,8 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     io.disconnect(); ro.disconnect(); removeEventListener('load', onLoad);
     quadGeo.dispose(); plumeGeo.dispose();
     for (const P of pl) P.mesh.material.dispose();
-    plume.material.dispose();
-    shipModel.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
-    for (const m of shipMats) m.dispose();
+    plumeM.dispose();
+    rex.dispose();
     for (const t of loaded) t.dispose();
     envRT.dispose();
     renderer.dispose(); renderer.forceContextLoss();
