@@ -126,8 +126,9 @@ if (!bail) {
     } catch (err) { fail(err); }
   }
 
-  // lazy trigger: within ~1.5 viewports; two frames and an idle slot so the film never competes with first paint
+  // lazy trigger: within ~1.5 viewports, never before the page has loaded; two frames and an idle slot so the film never competes with first paint
   const idle = (fn, timeout) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 200));
-  const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); requestAnimationFrame(() => requestAnimationFrame(() => idle(boot, 1000))); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
+  const afterLoad = fn => (document.readyState === 'complete' ? fn() : addEventListener('load', () => fn(), { once: true }));
+  const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); afterLoad(() => requestAnimationFrame(() => requestAnimationFrame(() => idle(boot, 1000)))); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
   near.observe(root);
 }

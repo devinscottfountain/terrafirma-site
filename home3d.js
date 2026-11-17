@@ -45,6 +45,9 @@ function pickQuality() {
   return coarse || weak || saveData ? 'low' : 'high';
 }
 
+// runs fn once the page's own load is done (fonts, posters, hero media first), at once if it already is
+const afterLoad = fn => (document.readyState === 'complete' ? fn() : addEventListener('load', () => fn(), { once: true }));
+
 // phones: no pointer handling at all (the page scroll must never be captured), the dig runs on autopilot
 const phone = matchMedia('(pointer: coarse)').matches || innerWidth < 768;
 const SAFE_DEF = { top: 0.2, bottom: 0.3 };
@@ -151,8 +154,9 @@ if (!bail) {
     } catch (err) { fail(err); }
   }
 
-  // lazy trigger: only when the section is within ~1.5 viewports
-  const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); boot(); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
+  // lazy trigger: only when the section is within ~1.5 viewports, and never before the page has loaded
+  // (on a phone the section can sit inside that margin at load: three and the scene then raced the loader for the hero)
+  const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); afterLoad(boot); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
   near.observe(root);
 }
 

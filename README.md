@@ -4,7 +4,7 @@ Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Miss
 
 ## Files
 
-- `careers.js`: page mount (ES module). Finds `[data-foot]` and `[data-mission]`, lazy-loads three and each module, crossfades the canvas over the poster, drives the footer sunrise from scroll. Falls back to the posters on any failure.
+- `careers.js`: page mount (ES module). Finds `[data-foot]` and `[data-mission]`, lazy-loads three and each module only when it is within 2 viewports and the page has loaded (no idle-after-load boot: phones were pulling the footer from 12,000 px away), crossfades the canvas over the poster, drives the footer sunrise from scroll. Falls back to the posters on any failure.
 - `footer/footer3d.js`: `createFooter({ THREE, host, quality, base })`. Compositing, sky, post chain, camera, sunrise.
 - `footer/foot-glsl.js`: shaders for the sky, haze, bloom and the final grade.
 - `footer/foot-model*.js`: the procedural settlement (terrain, colony, plants, starships, life). `foot-model-plan.js` holds the colony layout (a local copy of the prototype's `colonyLayout`, no d5 dependency).
@@ -14,13 +14,13 @@ Custom JS for the TerraFirma Webflow site. Currently: the 3D footer and the Miss
 - `mission/mission3d.js`: `createMission({ THREE, section, quality, base })` returns `{ ready, start, stop, resize, dispose, stats, capture, canvas, renderer }`. Orthographic camera in section pixels, analytic planet quads, the rocket excavator on the SVG arc (`mission/mission-rocketex.js`: the film's CAT 336 from `film/machines.js` `createExcavator()` plus two strapped boosters, posed and merged to 5 draws; one plume per nozzle). The trail draws on up to the nozzles.
 - `mission/mission-glsl.js`: Earth, Mars, engine plume and environment shaders.
 - `mission/assets/`: planet textures. High tier (2048 colour, 1024 normals, Earth clouds) about 0.70 MB, low tier (1024 colour) about 0.14 MB. See `CREDITS.md`.
-- `home3d.js`: homepage entry (ES module). Finds the Solutions section, lazy-loads three and `solutions/` within ~1.5 viewports, listens to `tf:solutions`, reads the safe insets, renders only while visible.
+- `home3d.js`: homepage entry (ES module). Finds the Solutions section, lazy-loads three and `solutions/` within ~1.5 viewports (never before the window `load` event), listens to `tf:solutions`, reads the safe insets, renders only while visible.
 - `solutions/solutions.js`: `createSolutions({ THREE, host, root, quality, interactive, safe })` returns `{ ready, canvas, setSafe, setMode, start, step, stop, resize, warm, stats, dispose }` (`setFrame`, `onTelemetry`, `onGame` stay as no-ops for the old contract). One jobsite, three camera shots, flights between them, the governor. No assets: everything is procedural.
 - `solutions/sol-terrain.js`: the height field (JS + GLSL), the design surface, the site layout (`SITE`: pit, pad, platform, road, sun), the persistent edit field (dig delta + track marks) and the dot cloud.
 - `solutions/sol-fx.js`: palette, the dot shader, screen-space lines, dust motes, GPU dirt particles, sky haze, post (bloom, the film's grade, vignette, grain, soft edges).
 - `solutions/sol-game.js`: the dig (excavator rig, IK, autopilot, drag input, carving and dumping). `solutions/sol-crew.js`: the dozer (haul) and compactor (grade) loops. `solutions/sol-hud.js`: the 2D overlay (operator HUD, machine tags, zone labels).
 - `solutions/sol-machines.js`: procedural wireframe excavator, crawler dozer and padfoot compactor (the dozer and compactor are modelled from Tim's "New Vehicles" drawings, Figma `23099:9765`), plus the earlier backhoe loader and roller kept as spare slot models.
-- `film/mount.js`: film entry, imported by `home3d.js` when `section[data-three="film"]` exists. Lazy-loads three and the film modules within ~1.5 viewports, reads `film/assets/manifest.json`, fades the canvas in.
+- `film/mount.js`: film entry, imported by `home3d.js` when `section[data-three="film"]` exists. Lazy-loads three and the film modules within ~1.5 viewports (never before the window `load` event), reads `film/assets/manifest.json`, fades the canvas in.
 - `film/film.js`: `createFilm({ THREE, host, section, scenes, sol, quality, files })` returns `{ ready, canvas, start, stop, step, resize, relayout, snap, state, dispose }`. One canvas, scroll scrubbed: the Austin lot over one day (dawn to dusk) in one continuous pull-back out to the whole Earth (orbiting Moon), Mars rising over its limb, out to Mars, "One day on Mars" title, SpaceX line, atmospheric entry, Jezero colony timelapse with rockets, launch, SOL counter.
 - `film/look.json.js`: the film's grade and lens defaults (see Look below). `film/dial.js`: the `?grade` look panel, never loaded without `?grade`.
 - `film/flight.js`: the space camera from the Earth frame (S = -1) to the entry swap, the Moon's orbit and Mars's far-off size. Pure math, so node tests import it as shipped.
@@ -92,7 +92,7 @@ Input: the canvas takes pointer events only in orchestration on desktop, once th
 
 Performance: about 225k dots on high and 48k on low, one draw each; machines are line art, one solid and one line draw per moving part (dozer 10 draws, about 20k vertices and 5.7k lines with its track shoes; compactor 8 draws, about 22k vertices and 5.9k lines); 21 to 47 draw calls depending on the view. DPR capped at 1.5. An adaptive governor watches the frame time and steps down (DPR, then 70% dots, then 50% dots with no motes and no bloom) and back up. Every program is compiled by `warm()` on idle (12 programs; the count stays flat across tab switches). The site is pre-aged (about 75 s of work, simulated in small chunks before `ready`) so the first look already has a pit, a pile and tracks.
 
-Starts only when the section is within ~1.5 viewports; renders only while it is on screen (25% margin). Drives frames from `gsap.ticker` when present, else its own rAF. Leaves the section untouched (no canvas) on `prefers-reduced-motion`, no WebGL2, `?sol=0`, context loss or any error.
+Starts only when the section is within ~1.5 viewports and the page has loaded; renders only while it is on screen (25% margin). Drives frames from `gsap.ticker` when present, else its own rAF. Leaves the section untouched (no canvas) on `prefers-reduced-motion`, no WebGL2, `?sol=0`, context loss or any error.
 
 Switches: `?sol=0` bails, `?q=low|high` forces a tier, `?qa` exposes `window.TFSolutions`. Test page: `test/home.html` (`?layout=stage` for the planned 100svh stage with the tabs overlaid).
 

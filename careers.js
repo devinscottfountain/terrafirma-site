@@ -56,6 +56,8 @@ function pickQuality() {
 // Pages with the footer only (Careers, legal) never set any of it.
 const FILM_PAGE = !!document.querySelector('section[data-three="film"]');
 const OVERLAP_PR = 1.25;
+// runs fn once the page's own load is done (fonts, posters, hero media first), at once if it already is
+const afterLoad = fn => (document.readyState === 'complete' ? fn() : addEventListener('load', () => fn(), { once: true }));
 const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 if (!bail) {
@@ -185,14 +187,13 @@ if (!bail) {
     } catch (err) { fail(err); }
   }
 
-  // ---------------------------------------------------------------- lazy trigger: within 2 viewports, or idle after load
-  // Both paths wait two frames and an idle slot so the footer never competes with first paint.
+  // ---------------------------------------------------------------- lazy trigger: within 2 viewports, and only after the page has loaded
+  // No idle-after-load boot any more: on a phone that pulled three and the footer textures (about 0.5 MB) for a footer
+  // 12,000 px down. Waits two frames and an idle slot so the footer never competes with first paint.
   const idle = (fn, timeout) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 200));
-  const schedule = () => requestAnimationFrame(() => requestAnimationFrame(() => idle(boot, 1000)));
+  const schedule = () => afterLoad(() => requestAnimationFrame(() => requestAnimationFrame(() => idle(boot, 1000))));
   const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); schedule(); } }, { rootMargin: `${innerHeight * 2}px 0px` });
   near.observe(root);
-  if (document.readyState === 'complete') idle(boot, 3000);
-  else addEventListener('load', () => idle(boot, 3000), { once: true });
 }
 
 // =================================================================================================
@@ -241,11 +242,9 @@ if (!mBail) {
     } catch (err) { mFail(err); }
   }
 
-  // lazy trigger: within 2 viewports, or idle after load (same pattern as the footer)
+  // lazy trigger: within 2 viewports, and only after the page has loaded (same pattern as the footer)
   const mIdle = (fn, timeout) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 200));
-  const mSchedule = () => requestAnimationFrame(() => requestAnimationFrame(() => mIdle(mBoot, 1000)));
+  const mSchedule = () => afterLoad(() => requestAnimationFrame(() => requestAnimationFrame(() => mIdle(mBoot, 1000))));
   const mNear = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { mNear.disconnect(); mSchedule(); } }, { rootMargin: `${innerHeight * 2}px 0px` });
   mNear.observe(mRoot);
-  if (document.readyState === 'complete') mIdle(mBoot, 3000);
-  else addEventListener('load', () => mIdle(mBoot, 3000), { once: true });
 }
