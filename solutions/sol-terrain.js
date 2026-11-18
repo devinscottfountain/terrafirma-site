@@ -178,9 +178,32 @@ export function createField(THREE) {
   const mkFn = (k, d) => { const v = data[k * 2 + 1] + mkA * (1 - d / (mkR + 1e-6)); data[k * 2 + 1] = v > 1 ? 1 : v; };
   let mkR = 0.4;
   function mark(x, z, r, amt) { mkR = r; mkA = amt; each(x, z, r, mkFn); dirty = true; }
+  // snapshot of the height channel (the phone demo digs a zone, then heals the ground back to this between cycles, so the
+  // dug state never grows). Allocated on first use.
+  let snap = null;
+  function keep() { if (!snap) snap = new Float32Array(N * N); for (let k = 0; k < N * N; k++) snap[k] = data[k * 2]; }
+  // the ground as it was at keep() (bilinear), or today's ground before any keep()
+  function kept(x, z) {
+    if (!snap) return ground(x, z);
+    const u = ci(x), v = cj(z); if (u < 0 || v < 0 || u > N - 1.001 || v > N - 1.001) return hF(x, z);
+    const i = u | 0, j = v | 0, fx = u - i, fz = v - j, o = j * N + i;
+    return hF(x, z) + (snap[o] * (1 - fx) + snap[o + 1] * fx) * (1 - fz) + (snap[o + N] * (1 - fx) + snap[o + N + 1] * fx) * fz;
+  }
+  // ease the heights inside a rectangle (x0..x1, z0..z1) grown by m back toward the snapshot by a share a (full weight out
+  // to m / 2 past the rectangle, then a soft edge). A zero-size rectangle is a disk of radius m.
+  function heal(x0, z0, x1, z1, m, a) {
+    if (!snap) return;
+    const i0 = Math.max(1, Math.floor(ci(x0 - m))), i1 = Math.min(N - 2, Math.ceil(ci(x1 + m))), j0 = Math.max(1, Math.floor(cj(z0 - m))), j1 = Math.min(N - 2, Math.ceil(cj(z1 + m)));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const x = ox + (i + 0.5) * cell, z = oz + (j + 0.5) * cell, dx = Math.max(x0 - x, 0, x - x1), dz = Math.max(z0 - z, 0, z - z1);
+      const w = 1 - sstep(m * 0.5, m, Math.hypot(dx, dz)); if (w <= 0) continue;
+      const k = j * N + i; data[k * 2] += (snap[k] - data[k * 2]) * a * w;
+    }
+    dirty = true;
+  }
   // upload at most ~30 times a second, only when something changed
   function upload(dt) { upT += dt; if (dirty && upT > 1 / 30) { tex.needsUpdate = true; dirty = false; upT = 0; } }
-  return { tex, data, N, cell, ox, oz, at, ground, lower, raise, relax, take, flatten, mark, upload, get dirty() { return dirty; },
+  return { tex, data, N, cell, ox, oz, at, ground, lower, raise, relax, take, flatten, mark, upload, keep, kept, heal, get dirty() { return dirty; },
     uniform: new THREE.Vector4(ox, oz, cell, N), dispose() { tex.dispose(); } };
 }
 

@@ -362,7 +362,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     2: { pitch: 39 * DEG, fov: 30, fogD: 290, siteR: 1e4, siteW: 1, minS: 4.2, sizeK: 0.42, near: 0, moteA: 0.55, skyA: 0.85, moteW: 120, maxPx: 3.6 },
   };
   const SAFE = { top: 0.2, bottom: 0.3, ...(safe || {}) };
-  const TUNE = { execYaw: 0.8, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.22 };
+  const TUNE = { execYaw: 0.8, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.5 };
   const keyPlan = [], keyExec = [], keyDig = [];
   for (const P of [SITE.pit, SITE.pad, SITE.plat]) for (const [x, z] of rectPoly({ ...P, hx: P.hx + P.ws * 0.6, hz: P.hz + P.ws * 0.6 })) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));
   for (const Zn of ZONES) for (const [x, z] of Zn) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));   // the machine zones too
