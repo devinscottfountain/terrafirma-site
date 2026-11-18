@@ -1,7 +1,7 @@
 // solutions.js: TerraFirma homepage Solutions scene. One continuous jobsite seen three ways, chosen by the page's tabs (never
 // by scroll), with a real camera flight between them:
-//   Orchestration (mode 1) = the dig: a drone chase cam behind one excavator, an operator HUD, click to dig and click to
-//                            drop (desktop); it drives to the spot when it has to and the camera follows.
+//   Orchestration (mode 1) = the dig: a drone chase cam behind one excavator, an operator HUD; desktop: draw a dig zone
+//                            (click corners, close on the first) and the excavator digs it out; the camera follows.
 //   Planning (mode 0)      = the blueprint: top down, the ground morphs to the design surface, contours, cut and fill.
 //   Execution (mode 2)     = breadth: high and wide, three machines on three jobs, live paths, tags, data links.
 // The ground is a procedural survey point cloud lit by a low sun; the dig edits a persistent height field that the dots
@@ -12,6 +12,7 @@ import { createMachineKit } from './sol-machines.js';
 import { createDig } from './sol-game.js';
 import { createCrew } from './sol-crew.js';
 import { createHud } from './sol-hud.js';
+import { attachShroud } from './sol-shroud.js';
 
 export { hF as hField };
 
@@ -27,7 +28,8 @@ const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-top
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
 const WORDS = {
-  hint: ['hint', 'Click to dig'], hintDrop: ['hint-drop', 'Click to drop'],
+  hint: ['hint-zone', 'Click to draw a dig zone'], hintPoint: ['hint-point', 'Click to add corners'], hintClose: ['hint-close', 'Click the first corner to close'],
+  hintCancel: ['hint-cancel', 'Esc to cancel'], zone: ['label-zone', 'Zone'],
   dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Dozer 02'], grade: ['tag-grade', 'Compactor 03'],
   auto: ['hud-auto', 'Autopilot'], manual: ['hud-manual', 'Manual'], swing: ['hud-swing', 'Swing'], reach: ['hud-reach', 'Reach'],
   depth: ['hud-depth', 'To grade'], load: ['hud-load', 'Load'], grade_: ['hud-grade', 'Grade'],
@@ -238,6 +240,117 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   links.commit(3);
   const PATHS = [pathL, pathR, pathE];
 
+  // ------------------------------------------------------------------ the visitor's dig zone (dig view; also shown in plan)
+  // edges: 1 px screen-space lines draped on the ground (the zone being drawn with its live edge, and the closed zone,
+  // written once when it closes so it keeps the original ground line while the inside goes down); fill: a translucent grid
+  // draped on the ground inside the closed zone, re-draped a few times a second so it sinks with the dig. Corners, the snap
+  // ring and the cursor are drawn by the HUD. Fill and lines exist from the start, so warm() compiles them.
+  const ZSEG = 560, zDraw = L(col(pal.zone), 0.8, ZSEG), zJob = L(col(pal.zone), 0.8, ZSEG * 2 + 16);
+  // the closed zone's outline: the rim on the ground it had when it closed (kept), and the floor line just inside it on
+  // today's ground, with a drop line at each corner, so the cut reads as a hole as it goes down
+  const rim = new Float32Array(ZSEG * 3 + 3), floorP = new Float32Array(ZSEG * 2 + 2); let rimN = 0;
+  const zY = (x, z) => field.ground(x, z) + 0.1;
+  function zSeg(set, i, ax, az, bx, bz, k) {
+    const n = Math.max(1, Math.min(40, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5)));
+    for (let q = 0; q < n && i < ZSEG; q++) {
+      const x0 = lerp(ax, bx, q / n), z0 = lerp(az, bz, q / n), x1 = lerp(ax, bx, (q + 1) / n), z1 = lerp(az, bz, (q + 1) / n);
+      set.set(i++, x0, zY(x0, z0), z0, x1, zY(x1, z1), z1, 0, 0, k);
+    }
+    return i;
+  }
+  const FC = 0.35, FN = 52;   // fill grid: cell (m), vertices per side at most
+  const fillPos = new Float32Array(FN * FN * 3), fillIdx = new Uint32Array((FN - 1) * (FN - 1) * 6);
+  const fillGeo = new THREE.BufferGeometry();
+  fillGeo.setAttribute('position', new THREE.BufferAttribute(fillPos, 3).setUsage(THREE.DynamicDrawUsage));
+  fillGeo.setIndex(new THREE.BufferAttribute(fillIdx, 1).setUsage(THREE.DynamicDrawUsage)); fillGeo.setDrawRange(0, 0);
+  fillGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+  const fillMat = new THREE.MeshBasicMaterial({ color: col(pal.zone), transparent: true, opacity: 0, depthWrite: false });   // front side only (faces up): a transparent DoubleSide draws twice and needs two programs
+  const fillM = new THREE.Mesh(fillGeo, fillMat); fillM.frustumCulled = false; fillM.renderOrder = 2; scene.add(fillM);
+  const fillG = { x0: 0, z0: 0, nx: 0, nz: 0 }, fillXZ = new Float32Array(FN * FN * 2), fillUse = new Uint16Array(FN * FN), fillMark = new Uint8Array(FN * FN);
+  let fillN = 0;   // grid points the fill uses (only those are re-draped)
+  let zDrawVer = -1, zJobVer = -1, zA = 0, zFlash = 0, fillT = 0;
+  function fillDrape() {
+    for (let q = 0; q < fillN; q++) { const k = fillUse[q], o = k * 3, x = fillXZ[k * 2], z = fillXZ[k * 2 + 1]; fillPos[o] = x; fillPos[o + 1] = field.ground(x, z) + 0.06; fillPos[o + 2] = z; }
+    fillGeo.attributes.position.needsUpdate = true;
+  }
+  // grid cells that touch the zone; grid points outside it are pulled onto its edge, so the fill ends on the outline
+  function fillBuild() {
+    const J = dig.job; let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let i = 0; i < J.n; i++) { x0 = Math.min(x0, J.x[i]); x1 = Math.max(x1, J.x[i]); z0 = Math.min(z0, J.z[i]); z1 = Math.max(z1, J.z[i]); }
+    const G = fillG; G.x0 = Math.floor(x0 / FC) * FC - FC; G.z0 = Math.floor(z0 / FC) * FC - FC;
+    G.nx = Math.min(FN, Math.ceil((x1 - G.x0) / FC) + 2); G.nz = Math.min(FN, Math.ceil((z1 - G.z0) / FC) + 2);
+    for (let j = 0; j < G.nz; j++) for (let i = 0; i < G.nx; i++) {
+      const k = j * G.nx + i; let x = G.x0 + i * FC, z = G.z0 + j * FC;
+      if (!inPolyXZ(J.x, J.z, J.n, x, z)) { // nearest point on the outline
+        let bd = 1e9, bx = x, bz = z;
+        for (let a = 0, b = J.n - 1; a < J.n; b = a++) {
+          const ax = J.x[b], az = J.z[b], ex = J.x[a] - ax, ez = J.z[a] - az, l = ex * ex + ez * ez, t = l ? clamp01(((x - ax) * ex + (z - az) * ez) / l) : 0;
+          const px = ax + ex * t, pz = az + ez * t, d = (px - x) * (px - x) + (pz - z) * (pz - z); if (d < bd) { bd = d; bx = px; bz = pz; }
+        }
+        x = bx; z = bz;
+      }
+      fillXZ[k * 2] = x; fillXZ[k * 2 + 1] = z;
+    }
+    let n = 0;
+    for (let j = 0; j < G.nz - 1; j++) for (let i = 0; i < G.nx - 1; i++) {
+      const X = G.x0 + i * FC, Z = G.z0 + j * FC, inn = (x, z) => inPolyXZ(J.x, J.z, J.n, x, z);
+      if (!(inn(X + FC / 2, Z + FC / 2) || inn(X, Z) || inn(X + FC, Z) || inn(X, Z + FC) || inn(X + FC, Z + FC))) continue;
+      const a = j * G.nx + i, b = a + 1, c = a + G.nx, d = c + 1; fillIdx.set([a, c, b, b, c, d], n); n += 6;
+    }
+    fillMark.fill(0); fillN = 0;
+    for (let q = 0; q < n; q++) { const k = fillIdx[q]; if (!fillMark[k]) { fillMark[k] = 1; fillUse[fillN++] = k; } }
+    fillGeo.index.needsUpdate = true; fillGeo.setDrawRange(0, n); fillDrape();
+  }
+  function inPolyXZ(X, Z, n, x, z) { let c = false; for (let i = 0, j = n - 1; i < n; j = i++) if ((Z[i] > z) !== (Z[j] > z) && x < (X[j] - X[i]) * (z - Z[i]) / (Z[j] - Z[i]) + X[i]) c = !c; return c; }
+  function rimBuild() {   // rim points along the zone's edges (0.5 m apart), each with the floor point 0.5 m inside it
+    const J = dig.job; rimN = 0;
+    for (let q = 0; q < J.n; q++) {
+      const ax = J.x[q], az = J.z[q], bx = J.x[(q + 1) % J.n], bz = J.z[(q + 1) % J.n];
+      const n = Math.max(1, Math.min(40, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.5)));
+      for (let k = 0; k < n && rimN < ZSEG; k++, rimN++) {
+        const x = lerp(ax, bx, k / n), z = lerp(az, bz, k / n), dx = J.cx - x, dz = J.cz - z, d = Math.hypot(dx, dz) || 1, f = Math.min(0.5 / d, 0.35);
+        rim[rimN * 3] = x; rim[rimN * 3 + 1] = zY(x, z); rim[rimN * 3 + 2] = z; floorP[rimN * 2] = x + dx * f; floorP[rimN * 2 + 1] = z + dz * f;
+      }
+    }
+  }
+  function jobLines() {   // rim (kept), floor line (today's ground), corner drops; no allocation
+    let i = 0;
+    for (let k = 0; k < rimN; k++) { const a = k * 3, b = ((k + 1) % rimN) * 3; zJob.set(i++, rim[a], rim[a + 1], rim[a + 2], rim[b], rim[b + 1], rim[b + 2], 0, 0, 1); }
+    let py = 0;
+    for (let k = 0; k <= rimN; k++) {
+      const m = k % rimN, x = floorP[m * 2], z = floorP[m * 2 + 1], y = field.ground(x, z) + 0.08;
+      if (k) { const p = (k - 1) * 2; zJob.set(i++, floorP[p], py, floorP[p + 1], x, y, z, 0, 0, 0.5); }
+      py = y;
+    }
+    const J = dig.job;
+    for (let q = 0, k = 0; q < J.n && k < rimN; q++) {   // a drop line at each corner (the first rim point of each edge)
+      while (k < rimN && (Math.abs(rim[k * 3] - J.x[q]) > 1e-4 || Math.abs(rim[k * 3 + 2] - J.z[q]) > 1e-4)) k++;
+      if (k >= rimN) break;
+      const x = floorP[k * 2], z = floorP[k * 2 + 1]; zJob.set(i++, rim[k * 3], rim[k * 3 + 1], rim[k * 3 + 2], x, field.ground(x, z) + 0.08, z, 0, 0, 0.7);
+    }
+    zJob.commit(i);
+  }
+  function zoneFrame(dt, wD, wP, wE) {
+    const D = dig.draw, J = dig.job;
+    if (D.ver !== zDrawVer) {   // the zone being drawn: its edges and the live edge to the cursor (or to the first corner when it snaps)
+      zDrawVer = D.ver; let i = 0;
+      for (let q = 0; q + 1 < D.n; q++) i = zSeg(zDraw, i, D.x[q], D.z[q], D.x[q + 1], D.z[q + 1], 1);
+      if (D.n && (D.hov || D.snap)) i = zSeg(zDraw, i, D.x[D.n - 1], D.z[D.n - 1], D.snap ? D.x[0] : D.hx, D.snap ? D.z[0] : D.hz, D.snap ? 1 : 0.5);
+      zDraw.commit(i);
+    }
+    if (J.ver !== zJobVer) {   // a zone just closed: its rim on today's ground, its fill, a brief flash
+      zJobVer = J.ver;
+      if (J.on && !J.done && J.n > 2) { rimBuild(); fillBuild(); jobLines(); zFlash = 1; }
+    }
+    zA += ((J.on ? 1 : 0) - zA) * (1 - Math.exp(-dt * (J.on ? 6 : 1.5)));
+    zFlash = Math.max(0, zFlash - dt * 1.6);
+    if (J.on && !J.done) { fillT += dt; if (fillT > 0.2) { fillT = 0; fillDrape(); jobLines(); } }   // 5 Hz: the cut sinks smoothly enough
+    const view = Math.max(wD, wP * 0.9, wE * 0.5), dim = J.done ? 0.6 : 1;
+    zJob.mesh.visible = zA * view > 0.004; zJob.mat.uniforms.uOpacity.value = Math.min(1, zA * view * dim + zFlash * 0.5);
+    fillM.visible = zJob.mesh.visible; fillMat.opacity = zA * view * (0.11 * dim + zFlash * 0.25);
+    zDraw.mesh.visible = D.n > 0 && wD > 0.004; zDraw.mat.uniforms.uOpacity.value = wD;
+  }
+
   // ------------------------------------------------------------------ camera: three staged shots and flights between them
   // pose: look target (tx, ty, tz), yaw, pitch, dist, fov, sy = NDC y the target sits at (lens shift); plus the look of the
   // ground for that shot (fog, site fade, dot thinning, sizes, motes, sky). Flights blend every field.
@@ -340,7 +453,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
         zoom += (zg - zoom) * (1 - Math.exp(-dt * (zg > zoom ? 2.5 : 0.6)));
       }
       o.dist *= zoom;
-      const fg = dig.user ? 0 : Math.max(-0.25, Math.min(0.25, T.swing * DEG * 0.22));   // a gentle drift with the autopilot's swing
+      const fg = dig.user || dig.drawing ? 0 : Math.max(-0.25, Math.min(0.25, T.swing * DEG * 0.22));   // a gentle drift with the autopilot's swing (held still while a zone is drawn)
       follow += (fg - follow) * (1 - Math.exp(-dt * 0.7));
       o.yaw += follow;
       o.yaw += Math.sin(clockT * 0.71) * 0.006 + Math.sin(clockT * 1.93 + 1) * 0.003;   // a little handheld life
@@ -354,6 +467,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     return o;
   }
   const cam = pose(), from = pose();
+  let camOv = null;
   let mode = 1, fl = null;   // fl: { t0, to, far } while flying
   const wFrom = new THREE.Vector3(0, 1, 0), wTo = new THREE.Vector3(0, 1, 0), wG = new THREE.Vector3(0, 1, 0);
   const modeVec = (m, v) => v.set(m === 0 ? 1 : 0, m === 1 ? 1 : 0, m === 2 ? 1 : 0);
@@ -377,7 +491,10 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     // click markers (ring on the ground, projected) and the ghost path while it drives; mbox: machine screen boxes (tags avoid them)
     marks: [0, 1].map(() => ({ a: 0, kind: 'dig', queued: false, pop: 1, n: 0, pts: new Float32Array(MRK * 2), c: [0, 0] })),
     ghost: { a: 0, n: 0, pts: new Float32Array(GHOST * 2), foot: new Float32Array(8), footOn: false },
-    mbox: [new Float32Array(4), new Float32Array(4), new Float32Array(4)] };
+    mbox: [new Float32Array(4), new Float32Array(4), new Float32Array(4)],
+    // the zone being drawn (corners on screen, snap, cursor) and the closed zone's tag (what it has dug)
+    zone: { n: 0, pts: new Float32Array(dig.MAXV * 2), ok: new Uint8Array(dig.MAXV), snap: false, hov: false, h: [0, 0] },
+    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '' };
   const MRK_R = 1.6, pp = [0, 0], EXC_BOX = { hx: 3, hz: 3, off: 0 };
   // project the click markers and the ghost path (no allocation: straight into the preallocated arrays)
   function digMarks(dt) {
@@ -411,6 +528,20 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       G.foot[q * 2] = pp[0]; G.foot[q * 2 + 1] = pp[1];
     }
   }
+  // the zone being drawn, on screen: corners, snap ring, cursor (no allocation)
+  function zoneHud() {
+    const D = dig.draw, Z = hudState.zone; Z.n = D.n; Z.snap = D.snap; Z.hov = false;
+    for (let i = 0; i < D.n; i++) { Z.ok[i] = project(D.x[i], field.ground(D.x[i], D.z[i]) + 0.1, D.z[i], pp) ? 1 : 0; Z.pts[i * 2] = pp[0]; Z.pts[i * 2 + 1] = pp[1]; }
+    if (D.n && D.hov && !D.snap && project(D.hx, field.ground(D.hx, D.hz) + 0.1, D.hz, pp)) { Z.hov = true; Z.h[0] = pp[0]; Z.h[1] = pp[1]; }
+  }
+  // the closed zone's tag at its centre: label, m3 dug, share done (numbers at 4 Hz)
+  let zTagAcc = 1;
+  function zoneTag(dt) {
+    const J = dig.job, T = hudState.zoneTag;
+    T.a = J.n > 2 ? zA : 0; if (T.a < 0.01) return;
+    T.a = project(J.cx, field.ground(J.cx, J.cz) + 0.2, J.cz, T.p) ? T.a : 0;
+    zTagAcc += dt; if (zTagAcc > 0.25) { zTagAcc = 0; const st = dig.zoneStats(); T.k = st.k; T.value = st.dug.toFixed(1) + ' m³  ' + Math.round(st.k * 100) + '%'; }
+  }
   // screen box of a machine: its footprint at the ground and h m up
   function machineBox(out, x, z, yaw, F, h) {
     const c = Math.cos(yaw), s = Math.sin(yaw), ox = x + c * (F.off || 0), oz = z - s * (F.off || 0);
@@ -443,7 +574,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     if (fl) { k = clamp01((clockT - fl.t0) / FLIGHT); if (k >= 1) { fl = null; wFrom.copy(wTo); } }
     // a fresh flight eases in and out; a retarget leaves at a moderate speed (Hermite, start slope 1.2) so the move never stops
     const ek = fl && fl.re ? (k * k * k - 2 * k * k + k) * 1.2 + (3 - 2 * k) * k * k : easeIO(k);
-    const tp = target(mode, dt);
+    const tp = camOv ? Object.assign(live[mode], base[mode], camOv) : target(mode, dt);   // camOv: QA close-ups only
     if (fl) blendPose(cam, from, tp, ek, fl.arc); else Object.assign(cam, tp);
     wG.lerpVectors(wFrom, wTo, ek);
     const wP = wG.x, wD = wG.y, wE = wG.z;
@@ -519,18 +650,22 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       hudState.anchors = A;
     }
 
+    zoneFrame(dt, wD, wP, wE);
+
     // HUD state
     tagAcc += dt;
     hudState.wDig = wD * (fl ? 0 : 1) + (fl ? Math.max(0, wTo.y * (k - 0.75) * 4) : 0); hudState.wPlan = clamp01((wP - 0.6) / 0.4); hudState.wExec = clamp01((wE - 0.6) / 0.4);
     hudState.safeTop = SAFE.top; hudState.safeBottom = SAFE.bottom; hudState.t = clockT;
     hudState.tip = project(tip.x, tip.y, tip.z, tipXY) ? tipXY : null;
-    // hint: what a click does next ("Click to dig" / "Click to drop"). It stays up the whole time the dig view is on (busy
-    // or not, #43); a change of text swaps in place. It only fades with the tab change.
+    // hint: what a click does next (start a zone / add corners / close it on the first corner). It stays up the whole time
+    // the dig view is on (busy or not, #43); a change of text swaps in place. It only fades with the tab change.
     const want = interactive && mode === 1 && !fl ? dig.hint : '';
-    if (want) hudState.hintText = want === 'drop' ? words.hintDrop : words.hint;
+    if (want) { hudState.hintText = want === 'close' ? words.hintClose : want === 'point' ? words.hintPoint : words.hint; hudState.hintSub = want === 'zone' ? '' : words.hintCancel; }
     hintA += ((want ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (want ? 3 : 8))); hudState.hint = hintA;
     // the readout (Autopilot / Manual + telemetry) is always on in the dig view too; only its values change (sol-hud.js)
-    if (hudState.wDig > 0.01) digMarks(dt);
+    if (hudState.wDig > 0.01) { digMarks(dt); zoneHud(); }
+    else hudState.zone.n = 0;
+    if (hudState.wDig > 0.01 || hudState.wPlan > 0.01) zoneTag(dt); else hudState.zoneTag.a = 0;
     if (hudState.wExec > 0.01 && hudState.anchors) {
       const A = hudState.anchors;
       for (let j = 0; j < 3; j++) { const T = hudState.tags[j]; T.p = T.p || [0, 0]; T.a = project(A[j][0], A[j][1], A[j][2], T.p) ? 1 : 0; T.label = LAB[j]; T.color = TCOL[j]; }
@@ -616,6 +751,20 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     renderer.render(skyScene, camera);
     renderer.render(scene, camera);
     post.end(clockT);
+    if (!shroudQ) { shroudQ = true; idle(loadShroud); }   // the shroud loads once the first frame is out
+  }
+
+  // ------------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud on the excavator roof
+  // Lazy (after the first frame, on idle), high tier only (on the low tier it is a few px). Brighter line art than the
+  // machines (HDR, so the bloom lifts it a touch): it is the product. Same programs as the machines: no compile.
+  let shroud = null, shroudP = null, shroudQ = false, dead = false;
+  const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 200));
+  function loadShroud() {
+    if (shroudP || dead || LOW) return shroudP;
+    shroudP = attachShroud({ THREE, exc, url: new URL('./assets/cyber-shroud.glb', import.meta.url).href, color: col(pal.accent).multiplyScalar(1.7), alive: () => !dead })
+      .then(g => { shroud = g; return g; })
+      .catch(err => { console.warn('TerraFirma solutions: no shroud.', err); return null; });
+    return shroudP;
   }
   function loop(ts) {
     raf = requestAnimationFrame(loop);
@@ -690,13 +839,15 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     },
     // QA: camera pose (position + forward), the dig, the crew and the field
     camState() { camera.getWorldDirection(v4); return { p: camera.position.toArray(), d: v4.toArray(), fov: camera.fov }; },
-    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); } },
+    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, camera, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); },
+      get shroud() { return shroud; }, loadShroud: () => { shroudQ = true; return loadShroud(); }, camHold(o) { camOv = o || null; } },
     dispose() {
-      this.stop(); clearTimeout(freeT); if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
+      dead = true; this.stop(); clearTimeout(freeT); if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
       dig.dispose(); hud.dispose(); post.dispose(); field.dispose();
       scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });
       mote.material.dispose(); parts.pts.material.dispose();
-      for (const s of [contours, zCut, zFill, zAcc, foot, pathL, pathR, pathE, links]) s.mat.dispose();
+      for (const s of [contours, zCut, zFill, zAcc, foot, pathL, pathR, pathE, links, zDraw, zJob, ...zoneL]) s.mat.dispose();
+      fillMat.dispose();
       dotMat.dispose(); sky.geometry.dispose(); sky.material.dispose();
       for (const m of [exc, loader, roller]) m.dispose();
       kit.disposeAll();

@@ -253,9 +253,9 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     for (const [a, b] of [[cx0 + 0.06, 0.6], [0.7, cx1 - 0.06]]) { t.bx(a, 0.8, cz0 - 0.02, b, cy1 - 0.06, cz0 - 0.01); t.bx(a, 0.8, cz1 + 0.01, b, cy1 - 0.06, cz1 + 0.02); }
     t.bx(cx0 - 0.02, 0.8, cz0 + 0.06, cx0 - 0.01, cy1 - 0.06, cz1 - 0.06);
     t.bx(0.2, 1.3, cz0 - 0.03, 0.62, 1.32, cz0 - 0.02); // door handle bar
-    t.rod([0.3, cy1 + 0.1, -1.0], [0.3, cy1 + 0.55, -1.0], 0.02, 6); t.cyl(0.08, 0.04, 0.3, cy1 + 0.57, -1.0, 12, 'y'); // GNSS mast
+    // the cab roof is left clear for the TerraFirma ATLAS Cyber Shroud (sol-shroud.js, mounted by excavator().mount); it
+    // carries the GNSS and the beacon, so only the rear GNSS mast stays
     t.rod([-1.5, 1.28, 0.9], [-1.5, 2.0, 0.9], 0.02, 6); t.cyl(0.1, 0.05, -1.5, 2.02, 0.9, 12, 'y');
-    t.box(0.12, 0.12, 0.12, 0.3, cy1 + 0.16, -0.65); // beacon
     for (const z of [-0.05, 0.45]) t.ext([[0.2, 0.28], [1.25, 0.28], [1.2, 1.25], [0.75, 1.35]], 0.12, z - 0.06); // boom foot bracket
     t.cyl(0.13, 0.75, 0.95, 1.0, 0.2, 16);
     const upper = t.build();
@@ -304,13 +304,30 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     const bucket = node(T.bucket, m); bucket.position.set(T.SL, 0, 0); stick.add(bucket);
     const tip = new THREE.Object3D(); tip.position.set(1.38, -1.25, 0); bucket.add(tip);
     let trackOff = 0;
+    const fade = opacityFn(root, m), extra = [];   // extra: mounted parts [group, line material, line opacity]
+    let op = 1;
     return {
       root, body, turret, boom, stick, bucket, tip, kind: 'excavator',
+      // cab roof in the upper structure's space (model metres): top of the roof slab and its centre
+      ROOF: { y: 2.15, x: 0.66, z: -0.975, len: 1.58, wid: 1.01 },
       setArm(a1, a2, a3, sw) { turret.rotation.y = sw; boom.rotation.z = a1; stick.rotation.z = a2; bucket.rotation.z = a3; },
       drive(dist) { trackOff += dist; track.update(trackOff); },
       setDrive(d) { trackOff = d; track.update(d); },
-      setOpacity: opacityFn(root, m),
-      dispose() { track.dispose(); m.solid.dispose(); m.line.dispose(); },
+      setOpacity(o) { op = o; fade(o); for (const [, lm, k] of extra) lm.opacity = k * o; },
+      // a part on the upper structure in this machine's look: the shared occluder solid plus its own line colour (same
+      // programs as every machine line, so mounting it compiles nothing). Returns the group; unmount(g) frees it.
+      mount(geo, edges, color, k = 1) {
+        const lm = clipped(new THREE.LineBasicMaterial({ color, transparent: true, opacity: k * op }), false);
+        const g = new THREE.Group(), mesh = new THREE.Mesh(geo, m.solid), ls = new THREE.LineSegments(edges, lm);
+        mesh.renderOrder = 1; ls.renderOrder = 2; g.add(mesh, ls); turret.add(g); extra.push([g, lm, k]);
+        return g;
+      },
+      unmount(g) {
+        const i = extra.findIndex(e => e[0] === g); if (i < 0) return;
+        const [, lm] = extra.splice(i, 1)[0]; g.removeFromParent();
+        g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); lm.dispose();
+      },
+      dispose() { while (extra.length) this.unmount(extra[0][0]); track.dispose(); m.solid.dispose(); m.line.dispose(); },
     };
   }
 

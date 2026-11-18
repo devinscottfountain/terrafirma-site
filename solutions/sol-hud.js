@@ -54,10 +54,34 @@ export function createHud(host, words, pal) {
   }
   let s0t = 0;
 
+  // the zone being drawn: a 6 px dot on every corner, the first one ringed (14 px) when a click there would close it, and a
+  // small cross where the next corner would go
+  function zone(Z, a) {
+    if (!Z || !Z.n) return;
+    const col = pal.zone || pal.fill, P = Z.pts;
+    g.fillStyle = rgba(col, 0.95 * a);
+    for (let i = 0; i < Z.n; i++) if (Z.ok[i]) { g.beginPath(); g.arc(P[i * 2], P[i * 2 + 1], i === 0 && Z.n > 2 ? 4 : 3, 0, Math.PI * 2); g.fill(); }
+    if (Z.snap && Z.ok[0]) {
+      g.lineWidth = 1.5; g.strokeStyle = rgba(col, 0.95 * a); g.fillStyle = rgba(col, 0.18 * a);
+      g.beginPath(); g.arc(P[0], P[1], 7, 0, Math.PI * 2); g.fill(); g.stroke();
+    }
+    if (Z.hov) {
+      const [x, y] = Z.h; g.lineWidth = 1; g.strokeStyle = rgba(col, 0.8 * a);
+      g.beginPath(); g.moveTo(x - 5, y); g.lineTo(x + 5, y); g.moveTo(x, y - 5); g.lineTo(x, y + 5); g.stroke();
+    }
+  }
+  // the closed zone's tag: label and what it has dug, at its centre
+  function zoneTag(T, a) {
+    if (!T || T.a < 0.01 || !T.value) return;
+    const k = a * T.a, [x, y] = T.p, col = pal.zone || pal.fill;
+    text(T.label.toUpperCase(), x, y - 4, 10.5, rgba(col, 0.95 * k), { font: sans, weight: 600, align: 'center' });
+    text(T.value, x, y + 11, 10.5, rgba(pal.accent, 0.8 * k), { align: 'center' });
+  }
+
   // the dig: click markers, ghost path, reticle on the bucket teeth, a grade ladder beside it, the autopilot readout, the hint
   function dig(s, a) {
     const A = pal.accent, cream = k => rgba(A, a * k), small = W < 600;
-    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a);
+    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a); zone(s.zone, a);
     if (s.tip) {
       const [x, y] = s.tip, r = small ? 13 : 17;
       const gv = s.tel.grade, col = Math.abs(gv) < 0.12 ? cream(0.95) : rgba(gv > 0 ? pal.cut : pal.fill, a * 0.95);
@@ -80,6 +104,7 @@ export function createHud(host, words, pal) {
     }
     // readout, bottom of the safe band, level with the hint: always on in the dig view. Autopilot blinks, Manual holds steady.
     const ty = (1 - s.safeBottom) * H - (small ? 12 : 16), x0 = Math.max(16, Math.min(40, W * 0.03)), T = s.tel, sz = small ? 9 : 10.5;
+    let rx = x0;   // where the readout ends
     {
       const cr = k => rgba(A, a * k);
       let x = x0;
@@ -93,6 +118,7 @@ export function createHud(host, words, pal) {
       if (!small) item(words.depth, pad(T.grade, 1, 2) + ' m');
       item(words.load, String(Math.round(T.load * 100)).padStart(3, '0') + '%');
       g.strokeStyle = cr(0.18); g.beginPath(); g.moveTo(x0, ty - 15); g.lineTo(Math.min(W - x0, x - 10), ty - 15); g.stroke();
+      rx = x;
     }
     // hint
     const ht = s.hintText;
@@ -103,6 +129,10 @@ export function createHud(host, words, pal) {
       g.beginPath(); g.roundRect ? g.roundRect(hx - tw / 2, hy - 15, tw, 26, 13) : g.rect(hx - tw / 2, hy - 15, tw, 26); g.fill(); g.stroke();
       text(ht, hx, hy + 2.5, 12, cream(0.95 * s.hint), { font: sans, align: 'center', weight: 500 });
       hintBox[0] = hx - tw / 2; hintBox[1] = hy - 15; hintBox[2] = hx + tw / 2; hintBox[3] = hy + 11;
+      if (s.hintSub) { // "Esc to cancel" while drawing, left of the pill when there is room beside the readout
+        g.font = `400 11px ${sans}`; const sx = hx - tw / 2 - 12;
+        if (sx - g.measureText(s.hintSub).width > rx + 8) text(s.hintSub, sx, hy + 2.5, 11, cream(0.55 * s.hint), { font: sans, align: 'right' });
+      }
     }
   }
 
@@ -156,6 +186,7 @@ export function createHud(host, words, pal) {
       blank = false;
       g.setTransform(pr, 0, 0, pr, 0, 0); g.clearRect(0, 0, W, H);
       if (s.wDig > 0.01) dig(s, s.wDig);
+      if (s.wDig > 0.01 || s.wPlan > 0.01) zoneTag(s.zoneTag, Math.max(s.wDig, s.wPlan));
       for (const O of tagOut) O[4] = 0;
       if (s.wExec > 0.01) { s0 = s; tags(s.tags, s.wExec); }
       if (s.wPlan > 0.01) zones(s.zones, s.wPlan);

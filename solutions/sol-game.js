@@ -2,18 +2,21 @@
 // (swing, reach, height, bucket angle) through hydraulic-feeling servos and an IK arm, and the machine can drive (pivot on
 // its tracks, travel, leave track marks). Where the teeth go below the ground the edit field is carved and the bucket
 // fills; when the bucket opens the load falls as particles and piles up (angle of repose).
-// Desktop: click the ground to dig there (it drives to a working spot if it has to, swings and digs until the bucket is
-// full), click again to drop the load there (drives if out of reach, swings, dumps). Clicks while it is busy retarget the
-// move in progress or queue the next one. A press that moves more than a few px is a drag or a scroll and is ignored.
-// Nobody clicking: an autopilot dig loop from home. It runs on arrival, and takes back over IDLE s after the last click
-// once the machine has nothing left to do.
-// Wheel and vertical touch pan are never captured (no wheel listener, touch-action: pan-y, nothing is ever prevented).
-// Phones: no listeners at all, the autopilot plays.
-import { SITE, hD } from './sol-terrain.js';
+// Desktop: draw a dig zone. Each click on the ground places a corner (a live edge follows the cursor); a click on the first
+// corner (a snap ring shows), a double-click or Enter closes it, Escape cancels it. Corners can be dragged while drawing.
+// Closing the zone hands the machine over: it drives to a working spot clear of the zone, digs it out pass by pass down to
+// ZDEPTH below the existing ground (only inside the zone), and dumps each load on the spoil pile (or beside the zone when
+// the pile is out of reach). A new zone can be drawn while it works; closing it replaces the old one. Escape with no zone
+// in progress stops the dig. A press that moves more than a few px is a drag or a scroll and never places a corner.
+// Nobody drawing: an autopilot dig loop from home. It runs on arrival, and takes back over IDLE s after the last input
+// once the zone is dug (or the dig was stopped).
+// Wheel and vertical touch pan are never captured (no wheel listener, touch-action: pan-y, nothing is ever prevented; a
+// corner drag only takes the pointer for a mouse or a pen). Phones: no listeners at all, the autopilot plays.
+import { SITE, hF, hD } from './sol-terrain.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
-export const IDLE = 8;   // s with no click (and nothing queued) before the autopilot takes back over
+export const IDLE = 8;   // s with no input (and the zone dug or stopped) before the autopilot takes back over
 const CAP = 1.9;         // bucket capacity, m3
 const PEN = 0.6;         // how deep one pass bites, m
 const OVER = 0.45;       // how far below grade a visitor's dig may go, m
@@ -25,6 +28,18 @@ const RMIN = 5, RMAX = 11.2, RWORK = 7.6;   // reach band for a target from the 
 const VMAX = 2.2, ACC = 1.3, PIVOT = 0.75;  // travel speed m/s, acceleration m/s2, pivot rate rad/s
 const TRACK = 1.79;                         // track centre offset from the machine axis, m
 const CLICK_PX = 6;                         // a press that moves further than this is a drag or a scroll, not a click
+// the zone
+const MAXV = 12;        // corners (the zone closes itself on the last one)
+const SNAP_PX = 14;     // a click this close to the first corner closes the zone (the snap ring shows)
+const HANDLE_PX = 10;   // grab radius of a corner while drawing (mouse / pen)
+const GAP = 1.2;        // m, closest two consecutive corners
+const ZEXT = 7.5;       // m, furthest a corner may sit from the first one (a zone stays diggable in about a minute)
+const ZAREA = 3;        // m2, smallest zone that counts
+const ZDEPTH = 0.8;     // m, a zone is dug this far below the existing ground (or to design grade where that is deeper)
+const ZK = 2.4;         // a zone bite fills the bucket to ZK x CAP (game pace)
+const ZR = 1.4, ZPEN = 0.75;    // m, carve radius and depth of one pass in a zone
+const ZNEAR = RMIN + 1.4, ZFAR = 8.4;   // m, a zone bite's distance from the turret: room for the drag, and low reach
+const SMAX = 600;       // sample points that track what is left to dig
 
 export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock }) {
   const E = SITE.E, Z = SITE.digZone, home = { x: E.x, z: E.z, yaw: E.yaw };
@@ -37,12 +52,39 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   let rootY = 0;
   const ground = (x, z) => field.ground(x, z);
   const along = (sw, r, out) => { const a = body.yaw + sw; out.x = body.x + Math.cos(a) * r; out.z = body.z - Math.sin(a) * r; return out; };
-  const tmp = { x: 0, z: 0 };
-  // where a bite at (sw, r) bottoms out: one pass deep, never under grade (autopilot) or grade - OVER (visitor)
-  function digY(sw, r, manual) {
-    along(sw, r, tmp); const g = ground(tmp.x, tmp.z), gr = hD(tmp.x, tmp.z);
-    if (g - gr < 0.1 && !manual) return gr - 0.02;   // at grade: a trim pass that barely skims
-    return Math.max(g - PEN, gr - (manual ? OVER : 0.04));
+  const tmp = { x: 0, z: 0 }, pk = { x: 0, z: 0 };
+
+  // ------------------------------------------------------------------ zones: the one being drawn, and the one being dug
+  // draw: corners so far, the cursor (hov) and whether a click there closes it (snap); ver bumps on every change
+  const draw = { n: 0, x: new Float32Array(MAXV), z: new Float32Array(MAXV), hov: false, hx: 0, hz: 0, snap: false, drag: -1, ver: 0 };
+  // job: the closed zone, its samples (what is left to dig), the bite in progress; on: drawn + worked, done: nothing left
+  const job = { on: false, done: false, n: 0, x: new Float32Array(MAXV), z: new Float32Array(MAXV), cx: 0, cz: 0, area: 0, ver: 0, doneT: -9,
+    ns: 0, cell: 1, sx: new Float32Array(SMAX), sz: new Float32Array(SMAX), dead: new Uint8Array(SMAX), vol0: 0, bi: -1, lx: 0, lz: 0 };
+  function inPoly(X, Z, n, x, z) {
+    let c = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) if ((Z[i] > z) !== (Z[j] > z) && x < (X[j] - X[i]) * (z - Z[i]) / (Z[j] - Z[i]) + X[i]) c = !c;
+    return c;
+  }
+  function edgeDist(X, Z, n, x, z) {
+    let d = 1e9;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const ax = X[j], az = Z[j], bx = X[i] - ax, bz = Z[i] - az, l = bx * bx + bz * bz, t = l ? clamp(((x - ax) * bx + (z - az) * bz) / l, 0, 1) : 0;
+      d = Math.min(d, Math.hypot(x - ax - bx * t, z - az - bz * t));
+    }
+    return d;
+  }
+  const inJob = (x, z) => job.n > 2 && inPoly(job.x, job.z, job.n, x, z);
+  const zfloor = (x, z) => Math.min(hD(x, z), hF(x, z) - ZDEPTH);
+  const capNow = () => (op.zone ? CAP * ZK : CAP);
+
+  // where a bite at (sw, r) bottoms out: one pass deep, never under grade (autopilot); in a zone, one zone pass, never under
+  // the zone floor, and a skim outside it (only the zone is cut)
+  function digY(sw, r) {
+    along(sw, r, tmp); const g = ground(tmp.x, tmp.z);
+    if (op.zone) return inJob(tmp.x, tmp.z) ? Math.max(g - ZPEN, zfloor(tmp.x, tmp.z) - 0.04) : g - 0.06;
+    const gr = hD(tmp.x, tmp.z);
+    if (g - gr < 0.1) return gr - 0.02;   // at grade: a trim pass that barely skims
+    return Math.max(g - PEN, gr - 0.04);
   }
 
   // bucket load: a few dirt points that ride in the bucket
@@ -66,21 +108,36 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     p.x = zc.x + dx / d * R; p.z = zc.z + dz / d * R; return true;
   }
 
-  // ------------------------------------------------------------------ jobs: one op at a time (dig at a spot, or drop at a spot)
+  // ------------------------------------------------------------------ ops: one at a time (dig at a spot, or drop at a spot)
   // step: idle | drive | reach | lower | drag | curl | swing | dump | back | empty | home
-  const op = { on: false, kind: 'dig', x: 0, z: 0, user: false, passes: 0 };
-  const queued = { on: false, kind: 'dig', x: 0, z: 0 };
+  const op = { on: false, kind: 'dig', x: 0, z: 0, user: false, zone: false, passes: 0, took: 0 };
+  const queued = { on: false, kind: 'dig', x: 0, z: 0 };   // kept for the HUD contract (no queue since the zone)
   const drv = { x: 0, z: 0, rev: false, yaw: 0, final: false, x0: 0, z0: 0 };   // drive goal, reverse, optional final heading
-  // markers for the HUD: [0] the op in progress, [1] the queued one. t0: when it was placed (pop), out: when it ended (fade)
+  // markers for the HUD: [0] the bite or the drop in progress. t0: when it was placed (pop), out: when it ended (fade)
   const marks = [{ on: false, kind: 'dig', x: 0, z: 0, t0: -9, out: -9, clamped: false }, { on: false, kind: 'dig', x: 0, z: 0, t0: -9, out: -9, clamped: false }];
   let step = 'idle', stepT = 0, dragR0 = 0;
   function go(s) { step = s; stepT = 0; }
+  const mark = (kind, x, z) => Object.assign(marks[0], { on: true, kind, x, z, t0: clock(), out: -9, clamped: false });
 
-  // the machine parks RWORK short of the target on the line it is coming from, inside its zone
-  function startOp(kind, x, z, isUser) {
-    op.on = true; op.kind = kind; op.x = x; op.z = z; op.user = isUser; op.passes = 0;
-    const dx = x - body.x, dz = z - body.z, d = Math.hypot(dx, dz);
-    if (d >= RMIN && d <= RMAX) { go(kind === 'dig' ? 'reach' : 'swing'); return; }
+  // a working spot for a zone bite: inside digZone, in reach with room for the drag, the machine clear of the zone
+  function park(x, z, out) {
+    const a0 = Math.atan2(body.z - z, body.x - x), q = pk; let best = 1e9;
+    for (const da of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.75, -1.75, 2.1, -2.1, 2.6, -2.6, Math.PI])
+      for (const r of [RWORK, 6.8, 8.2]) {
+        inZone(x + Math.cos(a0 + da) * r, z + Math.sin(a0 + da) * r, q);
+        const d = Math.hypot(x - q.x, z - q.z); if (d < ZNEAR || d > ZFAR) continue;
+        if (inJob(q.x, q.z) || edgeDist(job.x, job.z, job.n, q.x, q.z) < 3.3) continue;   // 3.3: its half diagonal
+        const c = Math.hypot(q.x - body.x, q.z - body.z) + Math.abs(da) * 0.6;
+        if (c < best) { best = c; out.x = q.x; out.z = q.z; }
+      }
+    return best < 1e9;
+  }
+  // the machine parks RWORK short of the target on the line it is coming from, inside its zone (a zone bite: clear of it)
+  function startOp(kind, x, z, isUser, zone = false) {
+    op.on = true; op.kind = kind; op.x = x; op.z = z; op.user = isUser; op.zone = zone; op.passes = 0; op.took = 0;
+    const dx = x - body.x, dz = z - body.z, d = Math.hypot(dx, dz), zd = zone && kind === 'dig';
+    if (d >= (zd ? ZNEAR : RMIN) && d <= (zd ? ZFAR : RMAX) && !(zone && inJob(body.x, body.z))) { go(kind === 'dig' ? 'reach' : 'swing'); return; }
+    if (zone && job.n > 2 && park(x, z, tmp)) { driveTo(tmp.x, tmp.z, null); go('drive'); return; }
     const ux = d > 0.01 ? dx / d : Math.cos(body.yaw), uz = d > 0.01 ? dz / d : -Math.sin(body.yaw);
     inZone(x - ux * RWORK, z - uz * RWORK, tmp);
     let wd = Math.hypot(x - tmp.x, z - tmp.z);
@@ -95,14 +152,47 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     const want = Math.atan2(-(z - body.z), x - body.x), d = Math.hypot(x - body.x, z - body.z);
     drv.rev = d < 9 && Math.abs(wrap(want - body.yaw)) > 2.0;   // short hops behind it: back up instead of turning round
   }
+  // where a visitor's load goes: the spoil pile when it is in reach, else the nearest spot to it that is in reach and clear
+  // of the zone
+  function dumpSpot(out) {
+    const ok = (x, z) => { const d = Math.hypot(x - body.x, z - body.z); return d >= RMIN + 0.5 && d <= RMAX - 0.6 && !(job.n > 2 && (inJob(x, z) || edgeDist(job.x, job.z, job.n, x, z) < 2.2)); };
+    const P = SITE.pile, t = clock(), px = P.x + Math.sin(t * 0.37) * 0.8, pz = P.z + Math.sin(t * 0.23) * 0.8;
+    if (ok(px, pz)) { out.x = px; out.z = pz; return out; }
+    let best = 1e9;
+    for (let k = 0; k < 32; k++) for (const r of [8.6, 10]) {
+      const a = k / 32 * Math.PI * 2, x = body.x + Math.cos(a) * r, z = body.z + Math.sin(a) * r;
+      if (!ok(x, z)) continue; const c = Math.hypot(x - P.x, z - P.z); if (c < best) { best = c; out.x = x; out.z = z; }
+    }
+    if (best === 1e9) along(SITE.pileSw, SITE.pileR, out);
+    return out;
+  }
+  // next bite of the zone: the sample with the most left to cut, favouring ones in reach from here (no drive) and close to
+  // the last bite (it works across the zone instead of hopping). false: nothing left.
+  function nextBite(out, noDrive = false) {
+    let best = -1e9, bi = -1;
+    for (let i = 0; i < job.ns; i++) {
+      if (job.dead[i]) continue;
+      const x = job.sx[i], z = job.sz[i], rem = ground(x, z) - zfloor(x, z); if (rem < 0.15) continue;
+      const dB = Math.hypot(x - body.x, z - body.z), here = dB >= ZNEAR && dB <= ZFAR && !inJob(body.x, body.z);
+      if (noDrive && !here) continue;
+      const sc = rem + (here ? 0.5 : 0) - Math.hypot(x - job.lx, z - job.lz) * 0.04;
+      if (sc > best) { best = sc; bi = i; }
+    }
+    if (bi < 0) return false;
+    job.bi = bi; out.x = job.lx = job.sx[bi]; out.z = job.lz = job.sz[bi]; return true;
+  }
+  function markDead(i) { const x = job.sx[i], z = job.sz[i]; for (let k = 0; k < job.ns; k++) if (Math.hypot(job.sx[k] - x, job.sz[k] - z) < 1) job.dead[k] = 1; }
   function endOp() {
     op.on = false; doneT = clock();
     if (op.user) marks[0].out = clock();
-    if (queued.on) { // the queued click becomes the next op
-      queued.on = false; marks[1].on = false;
-      Object.assign(marks[0], { on: true, kind: queued.kind, x: queued.x, z: queued.z, t0: marks[1].t0, out: -9, clamped: marks[1].clamped });
-      startOp(queued.kind, queued.x, queued.z, true);
-    } else go('idle');
+    if (!user) { go('idle'); return; }
+    if (load > CAP * 0.15) { dumpSpot(pick0); mark('drop', pick0.x, pick0.z); startOp('drop', pick0.x, pick0.z, true, op.zone || (job.on && !job.done)); return; }
+    if (job.on && !job.done) {
+      // the last few % are slivers along the edge: call it dug
+      if (zoneStats().k < 0.97 && nextBite(pick0)) { mark('dig', pick0.x, pick0.z); startOp('dig', pick0.x, pick0.z, true, true); return; }
+      job.done = true; job.doneT = clock(); job.ver++;
+    }
+    go('idle');
   }
 
   // ------------------------------------------------------------------ autopilot: dig a bite in the pit, dump it on the pile
@@ -127,29 +217,63 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     } else { pickSpot(pick0); startOp('dig', pick0.x, pick0.z, false); }
   }
 
-  // ------------------------------------------------------------------ a click on the ground (already clamped to reachable)
-  function click(x, z, clamped) {
+  // ------------------------------------------------------------------ drawing a zone (all clicks are already in reach)
+  // clamp a corner: into reachable ground, and within ZEXT of the first corner; true if it had to move
+  function clampCorner(p, i = draw.n) {
+    let c = reachable(p);
+    if (i > 0 && draw.n > 0) { const dx = p.x - draw.x[0], dz = p.z - draw.z[0], d = Math.hypot(dx, dz); if (d > ZEXT) { p.x = draw.x[0] + dx / d * ZEXT; p.z = draw.z[0] + dz / d * ZEXT; c = true; } }
+    return c;
+  }
+  function addCorner(x, z) {
     const t = clock(); lastInput = t; everClicked = true;
-    if (!user) { // taking over from the autopilot: whatever it carries is emptied where the bucket is, then the dig starts
-      user = true; queued.on = false; marks[1].on = false;
-      Object.assign(marks[0], { on: true, kind: 'dig', x, z, t0: t, out: -9, clamped });
-      if (load > CAP * 0.15) { op.on = true; op.kind = 'dig'; op.x = x; op.z = z; op.user = true; op.passes = 0; dumpAt.on = false; go('empty'); }
-      else startOp('dig', x, z, true);
-      return;
+    if (draw.n && Math.hypot(x - draw.x[draw.n - 1], z - draw.z[draw.n - 1]) < GAP) return;
+    if (draw.n > 2 && Math.hypot(x - draw.x[0], z - draw.z[0]) < GAP) { closeZone(); return; }
+    draw.x[draw.n] = x; draw.z[draw.n] = z; draw.n++; draw.ver++;
+    if (draw.n >= MAXV) closeZone();
+  }
+  function cancelDraw() { if (!draw.n) return; draw.n = 0; draw.drag = -1; draw.snap = false; draw.ver++; }
+  // close the zone being drawn: it becomes the job (replacing any zone in progress) and the machine is handed over
+  function closeZone() {
+    const n = draw.n; if (n < 3) return false;
+    let A = 0, cx = 0, cz = 0, x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      A += draw.x[j] * draw.z[i] - draw.x[i] * draw.z[j]; cx += draw.x[i] / n; cz += draw.z[i] / n;
+      x0 = Math.min(x0, draw.x[i]); x1 = Math.max(x1, draw.x[i]); z0 = Math.min(z0, draw.z[i]); z1 = Math.max(z1, draw.z[i]);
     }
-    const busyDig = op.on && op.kind === 'dig' && (step === 'empty' || ((step === 'drive' || step === 'reach') && load < CAP * 0.05));
-    const busyDrop = op.on && op.kind === 'drop' && (step === 'drive' || step === 'swing');
-    if (!op.on) { // ready: dig if the bucket is empty, drop if it carries a load
-      const kind = load > CAP * 0.15 ? 'drop' : 'dig';
-      Object.assign(marks[0], { on: true, kind, x, z, t0: t, out: -9, clamped }); startOp(kind, x, z, true);
-    } else if (busyDig || busyDrop) { // still on its way: retarget the move in progress
-      Object.assign(marks[0], { on: true, kind: op.kind, x, z, t0: t, out: -9, clamped });
-      if (step === 'empty') { op.x = x; op.z = z; } else startOp(op.kind, x, z, true);
-    } else { // working: queue the next move (a newer click replaces an older queued one)
-      const kind = op.kind === 'dig' ? 'drop' : 'dig';
-      queued.on = true; queued.kind = kind; queued.x = x; queued.z = z;
-      Object.assign(marks[1], { on: true, kind, x, z, t0: t, out: -9, clamped });
+    A = Math.abs(A) / 2; draw.snap = false; draw.drag = -1;
+    if (A < ZAREA) { cancelDraw(); return false; }   // a sliver: nothing to dig
+    job.n = n; job.x.set(draw.x.subarray(0, n)); job.z.set(draw.z.subarray(0, n)); job.cx = cx; job.cz = cz; job.area = A;
+    // samples on a grid, inset from the edges (the bucket's radius keeps the cut inside anyway)
+    const cell = Math.max(0.7, Math.sqrt(A / SMAX) * 1.05); job.cell = cell; job.ns = 0; job.dead.fill(0);
+    for (let pass = 0; pass < 2 && !job.ns; pass++)
+      for (let x = x0 + cell / 2; x < x1; x += cell) for (let z = z0 + cell / 2; z < z1; z += cell) {
+        if (job.ns >= SMAX || !inPoly(job.x, job.z, n, x, z) || (!pass && edgeDist(job.x, job.z, n, x, z) < 0.35)) continue;
+        job.sx[job.ns] = x; job.sz[job.ns] = z; job.ns++;
+      }
+    job.vol0 = 0; for (let i = 0; i < job.ns; i++) job.vol0 += Math.max(0, ground(job.sx[i], job.sz[i]) - zfloor(job.sx[i], job.sz[i])) * cell * cell;
+    job.on = true; job.done = false; job.lx = body.x; job.lz = body.z; job.ver++;
+    draw.n = 0; draw.ver++;
+    lastInput = clock(); handOver();
+    return true;
+  }
+  // the machine takes up the new zone: a loaded autopilot empties where it is first; a visitor's bite already on its way
+  // is re-aimed; a bite or a drop in progress finishes and the next op comes from the new zone
+  function handOver() {
+    const was = user; user = true;
+    if (!was) {
+      queued.on = false; marks[1].on = false;
+      if (load > CAP * 0.15) { op.on = true; op.kind = 'dig'; op.user = true; op.zone = false; dumpAt.on = false; go('empty'); return; }
+      op.on = false; op.user = true; endOp(); return;
     }
+    if (!op.on) { op.user = true; endOp(); return; }
+    if (op.kind === 'dig' && load < CAP * 0.05 && (step === 'drive' || step === 'reach')) { op.on = false; op.user = true; endOp(); }
+  }
+  // Escape while it digs: the zone stops at once (a bite on its way is dropped, a bite in the ground is curled up and dumped)
+  function stopJob() {
+    if (!job.on || job.done) return; job.done = true; job.doneT = clock(); job.ver++; lastInput = clock();
+    if (!op.on || op.kind !== 'dig' || !op.user) return;
+    if (load < CAP * 0.15 && (step === 'drive' || step === 'reach' || step === 'lower')) { body.speed = 0; op.on = false; endOp(); }
+    else if (step === 'lower' || step === 'drag') go('curl');
   }
 
   // ------------------------------------------------------------------ the step machine (visitor and autopilot alike)
@@ -198,12 +322,17 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
         aimAt(op.x, op.z, 1.3); along(tg.sw, tg.r, tmp); tg.y = ground(tmp.x, tmp.z) + 1.3; tg.ph = PH.open;
         if ((near(1.5) && stepT > 0.3) || stepT > 4) go('lower'); break;
       }
-      case 'lower': tg.y = digY(tg.sw, tg.r, !auto); tg.ph = PH.dig; if ((near() && stepT > 0.2) || stepT > 1.2) { dragR0 = tg.r; go('drag'); } break;
+      case 'lower': tg.y = digY(tg.sw, tg.r); tg.ph = PH.dig; if ((near() && stepT > 0.2) || stepT > 1.2) { dragR0 = tg.r; op.took = 0; go('drag'); } break;
       case 'drag': {
-        const k = Math.min(1, stepT / 1.9);
-        tg.r = Math.max(RMIN, dragR0 - 2.6 * k); tg.y = digY(tg.sw, tg.r, !auto); tg.ph = PH.dig + (PH.full - PH.dig) * k;
-        if (load >= CAP * 0.98) go('curl');
-        else if (k >= 1) { if (!auto && op.passes < 3) { op.passes++; go('reach'); } else go('curl'); }   // a visitor's dig goes on until the bucket is full
+        const k = Math.min(1, stepT / 1.9), cap = capNow();
+        tg.r = Math.max(RMIN, dragR0 - 2.6 * k); tg.y = digY(tg.sw, tg.r); tg.ph = PH.dig + (PH.full - PH.dig) * k;
+        if (load >= cap * 0.98) go('curl');
+        else if (k >= 1) {
+          if (op.zone && op.took < 0.04 && job.bi >= 0) markDead(job.bi);   // that spot will not cut: stop trying it
+          // a zone bite goes on with the next spot in reach until the bucket is well filled (two more passes at most)
+          if (op.zone && !auto && op.passes < 2 && load < cap * 0.6 && job.on && !job.done && nextBite(pick0, true)) { op.passes++; op.x = pick0.x; op.z = pick0.z; mark('dig', op.x, op.z); go('reach'); }
+          else go('curl');
+        }
         break;
       }
       case 'curl': tg.ph = PH.carry; along(tg.sw, tg.r, tmp); tg.y = Math.max(cur.y, ground(tmp.x, tmp.z) + 2.6); if (stepT > 0.9) endOp(); break;
@@ -214,9 +343,9 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
       }
       case 'dump': tg.ph = PH.dump; if ((load <= 0.001 && stepT > 0.7) || stepT > 3) go('back'); break;
       case 'back': tg.ph = PH.open; if (stepT > 0.35) endOp(); break;
-      case 'empty': // a visitor took over from a loaded autopilot: open up where it is, then dig
+      case 'empty': // a visitor took over from a loaded autopilot: open up where it is, then take up the zone
         if (!dumpAt.on) { dumpAt.x = tip.x; dumpAt.z = tip.z; dumpAt.on = true; }
-        tg.ph = PH.dump; if ((load <= 0.001 && stepT > 0.5) || stepT > 2.5) startOp('dig', op.x, op.z, true);
+        tg.ph = PH.dump; if ((load <= 0.001 && stepT > 0.5) || stepT > 2.5) endOp();
         break;
     }
   }
@@ -244,14 +373,15 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   }
 
   // ------------------------------------------------------------------ ground contact: carve, fill, dump
-  const floorFn = (x, z) => hD(x, z) - OVER;
+  // the floor under the teeth: in a zone op only the zone is cut (down to its floor); otherwise grade - OVER
+  const floorFn = (x, z) => (op.zone ? (inJob(x, z) ? zfloor(x, z) : 1e9) : hD(x, z) - OVER);
   let emitAcc = 0;
   function contact(dt, t) {
     exc.root.updateMatrixWorld(true); exc.tip.getWorldPosition(tip);
-    const g = ground(tip.x, tip.z);
-    if (tip.y < g - 0.02 && load < CAP && cur.ph < -0.6) {
-      const rem = field.lower(tip.x, tip.z, 0.85, tip.y, floorFn, Math.min(CAP - load, CAP * dt * 0.8));   // fills over ~1.3 s of drag
-      load += rem; emitAcc += rem * 30;
+    const g = ground(tip.x, tip.z), cap = capNow();
+    if (tip.y < g - 0.02 && load < cap && cur.ph < -0.6) {
+      const rem = field.lower(tip.x, tip.z, op.zone ? ZR : 0.85, tip.y, floorFn, Math.min(cap - load, cap * dt * 0.8));   // fills over ~1.3 s of drag
+      load += rem; op.took += rem; emitAcc += rem * 30 / (op.zone ? ZK : 1);
       while (emitAcc > 1) { // clods spill over the lip, dust puffs off the cut
         emitAcc -= 1; const a = Math.random() * 6.283, sp = 0.6 + Math.random() * 1.4;
         parts.emit(t, tip.x, g + 0.1, tip.z, Math.cos(a) * sp, 1.5 + Math.random() * 2.2, Math.sin(a) * sp, 1.2, g - 0.05, 1);
@@ -261,7 +391,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     // the bucket opens: the load pours out under the teeth
     if (cur.ph > -0.75 && load > 0) {
       if (!dumpAt.on) { dumpAt.x = tip.x; dumpAt.z = tip.z; dumpAt.on = true; }
-      const dv = Math.min(load, CAP * dt * 1.4); load -= dv;
+      const dv = Math.min(load, cap * dt * 1.4); load -= dv;
       field.raise(dumpAt.x, dumpAt.z, 1.7, dv); relaxT = 1.2;
       const n = 2 + Math.round(dv * 60);
       for (let i = 0; i < n; i++) parts.emit(t, tip.x + (Math.random() - 0.5) * 1.1, tip.y + Math.random() * 0.4, tip.z + (Math.random() - 0.5) * 1.1, (Math.random() - 0.5) * 1.2, -0.5 - Math.random() * 1.5, (Math.random() - 0.5) * 1.2, 1.6, g + 0.05, 1);
@@ -269,7 +399,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     }
     if (load <= 0) dumpAt.on = false;
     if (relaxT > 0) { relaxT -= dt; field.relax(dumpAt.on ? dumpAt.x : tip.x, dumpAt.on ? dumpAt.z : tip.z, 3.2, 2); }
-    loadMat.opacity = clamp(load / CAP * 1.6, 0, 1); loadPts.scale.setScalar(0.6 + 0.4 * clamp(load / CAP, 0, 1));
+    const f = load / cap; loadMat.opacity = clamp(f * 1.6, 0, 1); loadPts.scale.setScalar(0.6 + 0.4 * clamp(f, 0, 1));
   }
 
   // ------------------------------------------------------------------ body on the ground
@@ -282,54 +412,100 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   }
 
   // ------------------------------------------------------------------ pointer (desktop only): click = press + release within CLICK_PX
-  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), hit = new THREE.Vector3(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), hit = new THREE.Vector3(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), sp = new THREE.Vector3();
   let armed = false, downId = -1, downX = 0, downY = 0, moved = 0, downScroll = 0;
-  // the ground under a screen point; a ray that misses (above the horizon) runs out along its heading
+  const P0 = { x: 0, z: 0 };
+  // the ground under a screen point, or null when the ray misses it (above the horizon)
   function pick(e) {
     const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera); plane.constant = -rootY;
     let ok = false;
     for (let k = 0; k < 5; k++) { if (!ray.ray.intersectPlane(plane, hit)) break; ok = true; plane.constant = -ground(hit.x, hit.z); }
-    if (!ok) { const d = ray.ray.direction, l = Math.hypot(d.x, d.z) || 1; hit.set(camera.position.x + d.x / l * 80, 0, camera.position.z + d.z / l * 80); }
-    return hit;
+    return ok && hit.distanceTo(camera.position) < 400 ? hit : null;
+  }
+  // px between a ground point and the pointer
+  function screenD(x, z, e) {
+    const r = canvas.getBoundingClientRect(); sp.set(x, ground(x, z), z).project(camera);
+    return Math.hypot((sp.x + 1) / 2 * r.width + r.left - e.clientX, (1 - sp.y) / 2 * r.height + r.top - e.clientY);
+  }
+  // the cursor while drawing: where a click would put the next corner (clamped), and whether it would close the zone
+  function hover(e) {
+    if (!armed || !draw.n) { if (draw.hov || draw.snap) { draw.hov = draw.snap = false; draw.ver++; } return; }
+    const p = draw.drag < 0 && pick(e);
+    draw.snap = draw.drag < 0 && draw.n > 2 && screenD(draw.x[0], draw.z[0], e) < SNAP_PX;
+    if (p) { P0.x = p.x; P0.z = p.z; clampCorner(P0); draw.hx = P0.x; draw.hz = P0.z; }
+    draw.hov = !!p; draw.ver++;
   }
   const onDown = e => {
     if (!armed || e.button !== 0 || !e.isPrimary) return;
     downId = e.pointerId; downX = e.clientX; downY = e.clientY; moved = 0; downScroll = window.scrollY;
+    if (draw.n && e.pointerType !== 'touch') { // a corner under a mouse or a pen: grab it (touch never grabs, it scrolls)
+      for (let i = 0; i < draw.n; i++) if (screenD(draw.x[i], draw.z[i], e) < HANDLE_PX) { draw.drag = i; try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* fine */ } break; }
+    }
   };
-  const onMove = e => { if (e.pointerId === downId) moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY)); };
+  const onMove = e => {
+    if (e.pointerId === downId) moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
+    if (draw.drag >= 0 && e.pointerId === downId && moved > CLICK_PX) {
+      const p = pick(e);
+      if (p) { const i = draw.drag; P0.x = p.x; P0.z = p.z; clampCorner(P0, i); draw.x[i] = P0.x; draw.z[i] = P0.z; draw.ver++; lastInput = clock(); }
+    }
+    hover(e);
+  };
   const onUp = e => {
     if (e.pointerId !== downId) return; downId = -1;
     moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
-    if (!armed || moved > CLICK_PX || Math.abs(window.scrollY - downScroll) > 2) return;   // a drag or a scroll
-    const p = pick(e), c = reachable(p); click(p.x, p.z, c);
+    const dragged = draw.drag >= 0 && moved > CLICK_PX; draw.drag = -1;
+    if (!armed || dragged || moved > CLICK_PX || Math.abs(window.scrollY - downScroll) > 2) { hover(e); return; }   // a drag or a scroll
+    // a click: on the first corner closes the zone; anywhere else on the ground places a corner
+    if (draw.n > 2 && screenD(draw.x[0], draw.z[0], e) < SNAP_PX) closeZone();
+    else { const p = pick(e); if (p) { P0.x = p.x; P0.z = p.z; clampCorner(P0); addCorner(P0.x, P0.z); } }
+    hover(e);
   };
-  const onCancel = () => { downId = -1; };
+  const onCancel = () => { downId = -1; draw.drag = -1; };
+  const onLeave = () => { if (draw.hov || draw.snap) { draw.hov = draw.snap = false; draw.ver++; } };
+  const onDbl = () => { if (armed && draw.n > 2) closeZone(); };
+  // Escape cancels the zone being drawn, or (with none) stops the dig; Enter closes it. Never prevented, never in a field.
+  const onKey = e => {
+    if (!armed || e.defaultPrevented || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '') || e.target?.isContentEditable) return;
+    if (e.key === 'Escape') { if (draw.n) cancelDraw(); else stopJob(); }
+    else if (e.key === 'Enter' && draw.n > 2) closeZone();
+  };
   if (interactive) {
     canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onCancel);
+    canvas.addEventListener('pointerleave', onLeave); canvas.addEventListener('dblclick', onDbl);
+    window.addEventListener('keydown', onKey);
   }
 
   // ------------------------------------------------------------------ per frame
+  // what is left to dig in the zone (m3) and the share dug, from the samples (call at a few Hz)
+  const zs = { left: 0, dug: 0, k: 0 };
+  function zoneStats() {
+    let v = 0; for (let i = 0; i < job.ns; i++) v += Math.max(0, ground(job.sx[i], job.sz[i]) - zfloor(job.sx[i], job.sz[i]));
+    zs.left = v * job.cell * job.cell; zs.dug = Math.max(0, job.vol0 - zs.left); zs.k = job.vol0 > 0 ? clamp(zs.dug / job.vol0, 0, 1) : 1;
+    return zs;
+  }
   const api = {
-    get tip() { return tip; }, get load() { return load / CAP; }, get user() { return user; }, get touched() { return everClicked; },
+    get tip() { return tip; }, get load() { return load / capNow(); }, get user() { return user; }, get touched() { return everClicked; },
     get step() { return user ? 'user:' + step : step; }, home, body, op, queued, marks, drv, IDLE, RMAX,
-    // what the next click does: 'dig' | 'drop' ('' without a pointer). Mirrors click(): ready, retarget, or queue.
-    get hint() {
-      if (!interactive) return ''; if (!user || !op.on) return user && load > CAP * 0.15 ? 'drop' : 'dig';
-      const busyDig = op.kind === 'dig' && (step === 'empty' || ((step === 'drive' || step === 'reach') && load < CAP * 0.05));
-      const busyDrop = op.kind === 'drop' && (step === 'drive' || step === 'swing');
-      return busyDig || busyDrop ? op.kind : op.kind === 'dig' ? 'drop' : 'dig';
-    },
+    draw, job, zoneStats, MAXV,
+    // what the next click does: 'zone' (start a zone) | 'point' (add a corner) | 'close' (a corner, or close on the first)
+    // ('' without a pointer)
+    get hint() { if (!interactive) return ''; return draw.n ? (draw.n > 2 ? 'close' : 'point') : 'zone'; },
+    get drawing() { return draw.n > 0; },
     get driving() { return step === 'drive' || step === 'home'; },
-    // armed: the dig view has landed and this is a desktop pointer; the canvas only takes pointer events then
+    // armed: the dig view has landed and this is a desktop pointer; the canvas only takes pointer events then.
+    // Leaving the dig view drops a zone that was still being drawn (the one being dug carries on).
     setArmed(a) {
       a = !!(a && interactive); if (a === armed) return; armed = a;
       canvas.style.pointerEvents = a ? 'auto' : 'none'; canvas.style.cursor = a ? 'crosshair' : '';
-      if (!a) downId = -1;
+      if (!a) { downId = -1; cancelDraw(); onLeave(); }
     },
     update(dt, t) {
-      if (user && !op.on && !queued.on && t - Math.max(lastInput, doneT) > IDLE) { user = false; marks[0].out = Math.min(marks[0].out, t); }   // back to the autopilot
+      // back to the autopilot once the zone is dug (or stopped) and nothing has happened for IDLE s
+      if (user && !op.on && !(job.on && !job.done) && t - Math.max(lastInput, doneT) > IDLE) {
+        user = false; marks[0].out = Math.min(marks[0].out, t); if (job.on) { job.on = false; job.ver++; }
+      }
       if (!user && !op.on && (step === 'idle')) autopilot();
       run(dt);
       seat(); servo(dt); ik(); contact(dt, t);
@@ -337,17 +513,21 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     // world points of the arm for shadows and the HUD: boom pin, stick end, teeth
     arm(outPin, outEnd) { exc.boom.getWorldPosition(outPin); exc.bucket.getWorldPosition(outEnd); },
     telemetry(out) {
-      out.swing = cur.sw * 180 / Math.PI; out.reach = cur.r; out.grade = tip.y - hD(tip.x, tip.z); out.load = load / CAP; out.auto = !user;
+      out.swing = cur.sw * 180 / Math.PI; out.reach = cur.r; out.grade = tip.y - hD(tip.x, tip.z); out.load = load / capNow(); out.auto = !user;
       out.ground = tip.y - ground(tip.x, tip.z);
       return out;
     },
-    // test hooks: click(x, z) runs the same path as a real click (clamp included)
-    qa: { cur, tg, get load() { return load; }, set load(v) { load = v; }, get stepName() { return step; },
-      click(x, z) { const p = { x, z }, c = reachable(p); click(p.x, p.z, c); return [p.x, p.z, c]; },
+    // test hooks: corner(x, z) runs the same path as a click on the ground there (clamp included); close() / cancel() /
+    // stop() as the snap click, Escape (drawing) and Escape (digging)
+    qa: { cur, tg, get load() { return load; }, set load(v) { load = v; }, get stepName() { return step; }, zfloor,
+      corner(x, z) { const p = { x, z }, c = clampCorner(p); addCorner(p.x, p.z); return [p.x, p.z, c]; },
+      close: () => closeZone(), cancel: () => cancelDraw(), stop: () => stopJob(),
       forceUser(v) { user = !!v; lastInput = clock(); } },
     dispose() {
       canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onCancel);
+      canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('dblclick', onDbl);
+      window.removeEventListener('keydown', onKey);
       loadGeo.dispose(); loadMat.dispose();
     },
   };

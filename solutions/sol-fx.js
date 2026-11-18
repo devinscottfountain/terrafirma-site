@@ -5,7 +5,7 @@ import { H_GLSL, D_GLSL, SITE } from './sol-terrain.js';
 
 // Palette (display sRGB hex). The host can override any of these with CSS custom properties of the same name
 // (--sol-dot, --sol-cut, --sol-fill, --sol-haze, --sol-accent). Warm site palette, no red/green.
-export const PALETTE = { dot: '#ddd2c2', cut: '#e8772f', fill: '#77b4bf', haze: '#b97a4e', accent: '#f4e4c8' };
+export const PALETTE = { dot: '#ddd2c2', cut: '#e8772f', fill: '#77b4bf', haze: '#b97a4e', accent: '#f4e4c8', zone: '#97ddfb' };
 
 // The film's grade (copy of CINE_GLSL in film/post.js: ACES Hill fit, warm balance, toe lift, teal shadows, warm highlights).
 const CINE = /* glsl */ `
