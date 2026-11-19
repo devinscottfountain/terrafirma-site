@@ -1,12 +1,16 @@
 // Careers mission "future excavator": the film's solid CAT 336 (film/machines.js, same kit, materials and grime shader) with a pair
 // of stainless boosters saddled on the counterweight, posed for flight (boom and stick reaching forward, bucket curled).
 //
-// buildRocketExcavator({ THREE, envMap, high }) -> { model, mats, nozzles, length, tris, dispose }
+// buildRocketExcavator({ THREE, envMap, high }) -> { model, mats, nozzles, length, tris, addShroud, dispose }
 //   model: Group centred on its bounding box, metres, forward +x, up +y, right +z (the camera sees the right side)
 //   mats: every material (all transparent-capable, fade with .opacity), nozzles: nozzle exit points in model space,
 //   length: bounding box length along x (m). Everything is merged per material: 5 draw calls for the whole machine.
+//   addShroud(): Promise, hangs the TerraFirma ATLAS Cyber Shroud on the cab roof as on the film's yard excavators (same seat, the
+//   film's solid look) by merging it into the model's own paint / metal / glass meshes: no draw call and no program. Lazy: call it
+//   after the first frame. At 48 to 110 px of ship it is a light block on the cab, so it is clustered to 4 cm (~1.7k triangles).
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { createExcavator } from '../film/machines.js';
+import { createExcavator, shroudSolid } from '../film/machines.js';
+import { loadShroud, lod } from '../kit/shroud.js';
 
 // flight pose (radians, film rig: boom pivot on the upper, stick on the boom tip, bucket on the stick)
 export const POSE = { boom: 0.12, stick: -0.2, bucket: -1.9 };
@@ -51,22 +55,38 @@ export function buildRocketExcavator({ THREE, envMap = null, high = true }) {
 
   // ---------------------------------------------------------------- bake the pose and merge per material
   tmp.updateMatrixWorld(true);
+  const roofM = new THREE.Matrix4().makeTranslation(...ex.roof.at).premultiply(ex.up.matrixWorld);   // shroud seat, model space (before centring)
   const by = new Map();
   tmp.traverse(o => { if (o.isMesh) { const g = o.geometry.clone().applyMatrix4(o.matrixWorld); (by.get(o.material) || by.set(o.material, []).get(o.material)).push(g); o.geometry.dispose(); } });
-  const model = new THREE.Group();
+  const model = new THREE.Group(), byMat = new Map();
   let tris = 0;
   for (const [m, gs] of by) {
     const g = mergeGeometries(gs); gs.forEach(x => x.dispose());
     tris += g.attributes.position.count / 3;
-    const mesh = new THREE.Mesh(g, m); mesh.frustumCulled = false; mesh.renderOrder = 2; model.add(mesh);
+    const mesh = new THREE.Mesh(g, m); mesh.frustumCulled = false; mesh.renderOrder = 2; model.add(mesh); byMat.set(m, mesh);
   }
   // centre on the bounding box so the pivot sits mid-machine
   const box = new THREE.Box3().setFromObject(model), c = box.getCenter(new THREE.Vector3());
   model.traverse(o => { if (o.isMesh) { o.geometry.translate(-c.x, -c.y, -c.z); o.geometry.computeBoundingSphere(); } });
   for (const n of nozzles) n.sub(c);
+  roofM.premultiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
   const mats = Object.values(MAT);
+  let dead = false, shroudP = null;
+  function addShroud() {
+    return shroudP || (shroudP = loadShroud().then(src => {
+      if (dead) return 0;
+      const kinds = shroudSolid(THREE, lod(src, 0.04), { dirt: 0.06 });
+      let n = 0;
+      for (const kind in kinds) {
+        const mesh = byMat.get(MAT[kind]), add = kinds[kind].applyMatrix4(roofM);
+        if (mesh) { const old = mesh.geometry; mesh.geometry = mergeGeometries([old, add]); old.dispose(); n += add.attributes.position.count / 3; }
+        add.dispose();
+      }
+      return n;
+    }));
+  }
   return {
-    model, mats, nozzles, tris, length: box.max.x - box.min.x, height: box.max.y - box.min.y,
-    dispose() { model.traverse(o => { if (o.isMesh) o.geometry.dispose(); }); for (const m of mats) m.dispose(); },
+    model, mats, nozzles, tris, length: box.max.x - box.min.x, height: box.max.y - box.min.y, addShroud,
+    dispose() { dead = true; model.traverse(o => { if (o.isMesh) o.geometry.dispose(); }); for (const m of mats) m.dispose(); },
   };
 }

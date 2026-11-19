@@ -4,7 +4,7 @@
 // dust, mottled dirt and rust in object space so it never crawls when a machine moves.
 // Everything is merged per material per moving part, so the whole yard is a few dozen draw calls.
 // Units are metres; forward of every vehicle is +x, right is +z, up is +y.
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const NOISE = /* glsl */ `
 float mh3(vec3 p){ p=fract(p*.3183099+.1); p*=17.; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
@@ -168,17 +168,17 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
     // boom foot bracket
     k.B('paint', CAT, 0.25, 0.26, 0.06, 1.55, 1.3, 0.18); k.B('paint', CAT, 0.25, 0.26, 0.72, 1.55, 1.3, 0.84);
     k.B('rough', 0x232323, 0.15, 0.26, 0.18, 1.55, 0.62, 0.72);
-    // cab (left front): black frame, big glass, skylight, beacon
+    // cab (left front): black frame, big glass, skylight. No roof beacon: the roof carries the Cyber Shroud (GNSS and beacon in it)
     k.B('paint', 0x1e1e1d, -0.36, 0.26, -1.49, 1.5, 0.86, -0.52, { dirt: 0.6 });
     k.B('glass', GLS, -0.33, 0.86, -1.47, 1.47, 1.96, -0.54);
     for (const x of [-0.31, 0.62, 1.45]) for (const z of [-1.445, -0.565]) k.B('paint', 0x1e1e1d, x - 0.045, 0.86, z - 0.045, x + 0.045, 1.96, z + 0.045);
     k.B('paint', 0x2c2c2a, -0.4, 1.96, -1.52, 1.53, 2.07, -0.49, { dirt: 0.35 });
     k.B('glass', GLS, 0.2, 2.07, -1.3, 1.25, 2.085, -0.71);
-    k.rod('glow', AMBER, [-0.22, 2.07, -0.66], [-0.22, 2.21, -0.66], 0.07, 8);
+    rnd();   // the beacon's colour jitter draw: keeps the random stream, so the rest of the yard is unchanged
     // mirrors on stalks
     k.bar('metal', 0x222222, [1.45, 1.1, 1.47], [1.62, 1.85, 1.62], 0.03); k.B('glass', 0x6f7f8a, 1.57, 1.72, 1.52, 1.64, 2.02, 1.78);
     k.bar('metal', 0x222222, [1.48, 1.4, -1.5], [1.66, 1.95, -1.64], 0.03); k.B('glass', 0x6f7f8a, 1.6, 1.85, -1.75, 1.67, 2.12, -1.52);
-    k.build(up);
+    const upM = k.build(up);
 
     // boom: banana profile, pivot at (1.1, 1.0, 0.45) in up space, tip pin at (6.4, 0, 0)
     const boom = new THREE.Group(); boom.position.set(1.1, 1.0, 0.45); up.add(boom);
@@ -209,7 +209,8 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
     kk.B('rough', 0x6a5640, 0.5, -0.4, -0.66, 1.5, -0.3, 0.66, { dirt: 1 }); // packed dirt in the mouth
     for (let i = 0; i < 5; i++) { const z = -0.56 + i * 0.28; kk.bar('metal', 0x8b857a, [1.62, -0.6, z], [1.84, -0.82, z], 0.1, { rust: 0.3 }); }
     kk.build(bucket);
-    return { g, up, boom, stick, bucket };
+    // roof: the Cyber Shroud's seat in the upper's space, on the skylight, centred on the cab roof (mountShroud)
+    return { g, up, boom, stick, bucket, roof: { meshes: upM, at: [0.565, 2.085, -1.005] } };
   };
 
   // ------------------------------------------------------------ tri-axle dump truck (9.6 m), forward +x
@@ -263,7 +264,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
       wheel(k, -0.6, 0.66, z * 1.0, 0.5, 0.28);
       for (const x of [-2.4, -3.75]) { wheel(k, x, 0.53, z * 1.1, 0.53, 0.28); k.rod('rough', 0x161514, [x, 0.53, z * 0.68], [x, 0.53, z * 0.94], 0.53, 16, { dirt: 1, h: 0 }); }
     }
-    k.build(g);
+    const roof = { meshes: k.build(g), at: [2.29, 3.12, 0] };   // cab roof top, centred
     // load: heaped dirt, rough clods, top lighter where it dried
     const kl = Kit(0, 1), lg = new THREE.PlaneGeometry(5.9, 2.3, 22, 9).rotateX(-Math.PI / 2), lp = lg.attributes.position, cl = new THREE.Color(P.load), cd = cl.clone().multiplyScalar(0.62), tmp = new THREE.Color();
     const hgt = (x, z) => { const u = (x - (x0 + x1) / 2) / 2.95, w = z / 1.15, hump = Math.max(0, 1 - u * u * 0.85) * Math.max(0, 1 - w * w * 0.9); return 1.42 + 0.95 * hump + (Math.sin(x * 7.1 + z * 3.3) * Math.sin(z * 9.7 - x * 2.1)) * 0.07 + (rnd() - 0.5) * 0.06; };
@@ -272,7 +273,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
     kl.add('rough', P.load, lg, null, { dirt: 0.25, cf: (x, y, z) => tmp.copy(cd).lerp(cl, Math.min(1, Math.max(0, (y - 1.5) / 0.9)) * (0.75 + rnd() * 0.25)) });
     for (let j = 0; j < 9; j++) { const x = x0 + 0.8 + rnd() * 4.6, z = (rnd() - 0.5) * 1.8; kl.add('rough', P.load, new THREE.IcosahedronGeometry(0.12 + rnd() * 0.12, 0), T(x, hgt(x, z), z, rnd(), rnd(), rnd()), { dirt: 0.3 }); }
     const lm = kl.build(g).rough;
-    return { g, load: lm };
+    return { g, load: lm, roof };
   };
 
   // ------------------------------------------------------------ CAT D6 dozer (5.3 m with blade, 3.4 m blade, 1.88 m gauge)
@@ -300,8 +301,8 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
     k.B('paint', CAT, -1.55, 1.07, -0.82, 0.22, 1.85, 0.82);
     k.B('glass', GLS, -1.5, 1.85, -0.78, 0.18, 2.94, 0.78);
     for (const x of [-1.52, 0.18]) for (const z of [-0.79, 0.79]) k.B('paint', CAT, x - 0.05, 1.85, z - 0.05, x + 0.05, 2.95, z + 0.05);
-    k.B('paint', CAT, -1.62, 2.94, -0.88, 0.3, 3.1, 0.88, { dirt: 0.4 });
-    k.rod('glow', AMBER, [-1.35, 3.1, 0.62], [-1.35, 3.24, 0.62], 0.065, 8);
+    k.B('paint', CAT, -1.62, 2.94, -0.88, 0.3, 3.1, 0.88, { dirt: 0.4 });   // ROPS roof: no beacon, it carries the Cyber Shroud
+    rnd();   // the beacon's colour jitter draw: keeps the random stream, so the rest of the yard is unchanged
     for (const z of [-1, 1]) { k.bar('metal', 0x222222, [0.2, 2.3, z * 0.82], [0.35, 2.55, z * 0.98], 0.03); k.B('glass', 0x6f7f8a, 0.3, 2.45, z * 0.98 - 0.08, 0.38, 2.75, z * 0.98 + 0.08); }
     k.B('paint', CAT, -1.9, 1.0, -0.62, -1.55, 1.85, 0.62); // fuel tank
     // ripper
@@ -313,7 +314,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
       k.add('paint', CAT, extrude(shapeOf(pts), 3.4, 0.02), null, { dirt: 0.95, rust: 0.2 }); }
     k.B('metal', 0x8d877c, 2.75, 0.02, -1.72, 2.92, 0.18, 1.72, { dirt: 0.9, rust: 0.35 });
     for (const z of [-1, 1]) k.B('paint', CATd, 2.45, 0.25, z * 1.7 - 0.06, 2.75, 1.25, z * 1.7 + 0.06, { dirt: 0.9 });
-    k.build(g);
+    g.userData.roof = { meshes: k.build(g), at: [-0.66, 3.1, 0] };   // ROPS roof top, centred
     return g;
   };
 
@@ -356,7 +357,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
       k.B('paint', 0x1c1c1c, -4.85, 1.08, z * 0.62, -2.3, 1.14, z * 1.28, { dirt: 0.9 });
       k.B('glow', RED, -6.08, 1.05, z * 1.0 - 0.1, -6.04, 1.15, z * 1.0 + 0.1);
     }
-    k.build(g);
+    const roof = { meshes: k.build(g), at: [5.225, 3.3, 0] };   // cab-over roof top, centred (the marker lamps stay ahead of it)
     // boom segments: unit length along +x, centred. site.js stretches x to the segment length
     const seg = (h0, h1, w0, w1, joints, tipElbow) => {
       const kk = Kit(14, 0.25), N = 6;
@@ -373,7 +374,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
     const s2 = seg(0.6, 0.32, 0.44, 0.28, [-0.49, -0.16, 0.18], true);
     const kh = Kit(5, 0.6); kh.rod('rough', 0x121212, [-0.5, 0, 0], [0.5, 0, 0], 0.085, 8);
     const hose = new THREE.Mesh(kh.geo('rough'), MAT.rough); hose.castShadow = hose.receiveShadow = true; group.add(hose);
-    return { g, s1, s2, hose };
+    return { g, s1, s2, hose, roof };
   };
 
   // ------------------------------------------------------------ tri-axle drum mixer (10 m)
@@ -411,7 +412,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
       k.B('paint', 0x1c1c1c, -4.5, 1.08, z * 0.62, -1.95, 1.14, z * 1.28, { dirt: 0.9 });
       k.B('glow', RED, -4.85, 1.05, z * 1.0 - 0.1, -4.82, 1.15, z * 1.0 + 0.1);
     }
-    k.build(g);
+    const roof = { meshes: k.build(g), at: [2.675, 3.08, 0] };   // cab roof top, centred (the marker lamps stay ahead of it)
     // drum: lathe with a two-start helix painted on it so the spin reads; tilted rear-up inside a fixed group
     const tilt = new THREE.Group(); tilt.position.set(-1.25, 2.62, 0); tilt.rotation.z = -0.2; g.add(tilt);
     const d = new THREE.Group(); tilt.add(d);
@@ -425,7 +426,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
     kd.rod('metal', 0x55534f, [-0.52, 0, 0], [-0.4, 0, 0], 1.2, 32, { rust: 0.4 }); // roller ring
     for (let j = 0; j < 6; j++) { const a = j / 6 * Math.PI * 2; kd.bar('rough', 0x9b978f, [-2.0, Math.cos(a) * 0.86, Math.sin(a) * 0.86], [-1.2, Math.cos(a + 0.5) * 1.17, Math.sin(a + 0.5) * 1.17], 0.08, { dirt: 1 }); } // concrete drips
     kd.build(d);
-    return { g, d };
+    return { g, d, roof };
   };
 
   // ------------------------------------------------------------ flat-top tower crane: lattice mast (shader), strut jib 52 m, counter-jib 15 m
@@ -632,7 +633,51 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
   const crew = makeCrew();
   const towers = [[-60, -42], [60, -42], [-60, 42], [20, 30]].map(([x, z]) => tower(x, z));
   furniture();
-  return { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, tris: TRIS, materials: MAT };
+  // every machine with a cab roof gets the Cyber Shroud (site.js mounts it lazily); the crane and the light towers do not
+  const roofs = [exA.roof, exB.roof, dozer.userData.roof, ...trucks.map(t => t.roof), pump.roof, ...mixers.map(m => m.roof)];
+  return { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, roofs, tris: TRIS, materials: MAT };
+}
+
+// ------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud in the film's solid look
+// Real part (kit/shroud.js: parsed once per page, machine frame, base at y 0). As on the prototype hero excavator: the 7 MTL
+// colours fold into the machine materials (paint / metal / glass) with vertex colours, creased normals and a little grime
+// data, so it adds no draw and no program once merged into a machine's own meshes.
+// shroudSolid(THREE, src, { h, dirt }) -> { paint, metal, glass } BufferGeometry (position, normal, color, aG), non-indexed
+//   h: height of the roof above the machine's ground (dust term), dirt: 0..1 (the part is kept fairly clean)
+export function shroudSolid(THREE, src, { h = 3, dirt = 0.12 } = {}) {
+  // MTL colour (linear) -> [kind, sRGB hex]: off-white powder coat, dark anodised greys, sensor window, CAT yellow (hero mapping)
+  const pick = ([r, g, b]) => {
+    if (r > 0.9 && g > 0.9 && b > 0.9) return ['paint', 0xe6e4de];
+    if (r > 0.9 && g > 0.6 && b < 0.2) return ['paint', 0xfab601];
+    if (b > r + 0.1 && b > 0.85) return ['glass', 0x8fb8d0];
+    const l = (r + g + b) / 3; return ['metal', l > 0.7 ? 0x55585d : l > 0.5 ? 0x45484d : 0x2c2f33];
+  };
+  const by = {}, col = new THREE.Color();
+  for (const part of src.parts) {
+    const [kind, hex] = pick(part.color); col.set(hex);
+    let g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(part.pos.slice(), 3));
+    g = toCreasedNormals(g, Math.PI / 6);
+    const n = g.attributes.position.count, C = new Float32Array(n * 3), G = new Float32Array(n * 3), p = g.attributes.position;
+    for (let i = 0; i < n; i++) { C[i * 3] = col.r; C[i * 3 + 1] = col.g; C[i * 3 + 2] = col.b; G[i * 3] = p.getY(i) + h; G[i * 3 + 1] = dirt; G[i * 3 + 2] = 0; }
+    g.setAttribute('color', new THREE.BufferAttribute(C, 3)); g.setAttribute('aG', new THREE.BufferAttribute(G, 3));
+    (by[kind] ||= []).push(g);
+  }
+  const out = {};
+  for (const kind in by) { out[kind] = by[kind].length > 1 ? mergeGeometries(by[kind]) : by[kind][0]; if (by[kind].length > 1) by[kind].forEach(g => g.dispose()); }
+  return out;
+}
+
+// merge the shroud into a machine's own meshes per material (roof: { meshes: { kind: Mesh }, at: [x, y, z] } from createMachines).
+// A kind the machine has no mesh for is skipped (every yard machine has paint, metal and glass). Returns the triangles added.
+export function mountShroud(roof, kinds) {
+  let tris = 0;
+  for (const kind in kinds) {
+    const mesh = roof.meshes[kind]; if (!mesh) continue;
+    const add = kinds[kind].clone().translate(roof.at[0], roof.at[1], roof.at[2]), old = mesh.geometry;
+    mesh.geometry = mergeGeometries([old, add]); add.dispose(); old.dispose();
+    tris += kinds[kind].attributes.position.count / 3;
+  }
+  return tris;
 }
 
 // One standalone CAT 336 with the film's kit and materials (Careers mission rocket excavator). Kit/T/shapeOf/extrude come back so

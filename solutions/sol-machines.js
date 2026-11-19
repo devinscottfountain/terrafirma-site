@@ -202,13 +202,35 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
   };
   // the black hidden-line occluder fades with the wireframe: no fill and no depth while a machine is mostly faded,
   // so a machine crossfading in never darkens or cuts the zones under it
-  const opacityFn = (root, m) => o => {
+  const opacityFn = (root, m) => Object.assign(o => {
     root.visible = o > 0.004;
     m.line.opacity = 0.92 * o;
     const so = Math.min(1, Math.max(0, (o - 0.8) / 0.2)), tr = so < 0.999; // occluder clears first: no black silhouette left behind
     if (m.solid.transparent !== tr) { m.solid.transparent = tr; m.solid.needsUpdate = true; }
     m.solid.opacity = so * so * so; m.solid.depthWrite = so > 0.9; m.solid.colorWrite = so > 0.004;
-  };
+  }, { solid: m.solid });
+
+  // parts mounted on a machine (the Cyber Shroud): geometry from the caller (shared, never freed here), the machine's own occluder
+  // solid, and a line material per mount in the given colour that fades with the machine. Same programs as every machine line,
+  // so mounting compiles nothing. mount() returns the group (the caller places it); unmount(g) frees its line material.
+  function mounts(parent, fade) {
+    const extra = []; let op = 1;   // extra: [group, line material, line opacity]
+    const api = {
+      setOpacity(o) { op = o; fade(o); for (const [, lm, k] of extra) lm.opacity = k * o; },
+      mount(geo, edges, color, k = 1) {
+        const lm = clipped(new THREE.LineBasicMaterial({ color, transparent: true, opacity: k * op }), false);
+        const g = new THREE.Group(), mesh = new THREE.Mesh(geo, fade.solid), ls = new THREE.LineSegments(edges, lm);
+        mesh.renderOrder = 1; ls.renderOrder = 2; g.add(mesh, ls); parent.add(g); extra.push([g, lm, k]);
+        return g;
+      },
+      unmount(g) {
+        const i = extra.findIndex(e => e[0] === g); if (i < 0) return;
+        const [, lm] = extra.splice(i, 1)[0]; g.removeFromParent(); lm.dispose();
+      },
+      clear() { while (extra.length) api.unmount(extra[0][0]); },
+    };
+    return api;
+  }
 
   // ================================================================== EXCAVATOR (36 t class)
   const TL = 3.7, TR = 0.46, TW = 0.6, TZ = 1.28, TY = 0.53;
@@ -304,8 +326,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     const bucket = node(T.bucket, m); bucket.position.set(T.SL, 0, 0); stick.add(bucket);
     const tip = new THREE.Object3D(); tip.position.set(1.38, -1.25, 0); bucket.add(tip);
     let trackOff = 0;
-    const fade = opacityFn(root, m), extra = [];   // extra: mounted parts [group, line material, line opacity]
-    let op = 1;
+    const mt = mounts(turret, opacityFn(root, m));
     return {
       root, body, turret, boom, stick, bucket, tip, kind: 'excavator',
       // cab roof in the upper structure's space (model metres): top of the roof slab and its centre
@@ -313,21 +334,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
       setArm(a1, a2, a3, sw) { turret.rotation.y = sw; boom.rotation.z = a1; stick.rotation.z = a2; bucket.rotation.z = a3; },
       drive(dist) { trackOff += dist; track.update(trackOff); },
       setDrive(d) { trackOff = d; track.update(d); },
-      setOpacity(o) { op = o; fade(o); for (const [, lm, k] of extra) lm.opacity = k * o; },
-      // a part on the upper structure in this machine's look: the shared occluder solid plus its own line colour (same
-      // programs as every machine line, so mounting it compiles nothing). Returns the group; unmount(g) frees it.
-      mount(geo, edges, color, k = 1) {
-        const lm = clipped(new THREE.LineBasicMaterial({ color, transparent: true, opacity: k * op }), false);
-        const g = new THREE.Group(), mesh = new THREE.Mesh(geo, m.solid), ls = new THREE.LineSegments(edges, lm);
-        mesh.renderOrder = 1; ls.renderOrder = 2; g.add(mesh, ls); turret.add(g); extra.push([g, lm, k]);
-        return g;
-      },
-      unmount(g) {
-        const i = extra.findIndex(e => e[0] === g); if (i < 0) return;
-        const [, lm] = extra.splice(i, 1)[0]; g.removeFromParent();
-        g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); lm.dispose();
-      },
-      dispose() { while (extra.length) this.unmount(extra[0][0]); track.dispose(); m.solid.dispose(); m.line.dispose(); },
+      setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
+      dispose() { mt.clear(); track.dispose(); m.solid.dispose(); m.line.dispose(); },
     };
   }
 
@@ -562,7 +570,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     c.bx(x0 - 0.3, 3.76, -1.0, x1 + 0.22, 3.84, 1.0); c.bx(x0 - 0.22, 3.84, -0.92, x1 + 0.14, 4.2, 0.92);   // ROPS canopy
     for (let k = 1; k < 6; k++) c.line([[x0 - 0.22 + k * 0.27, 4.205, -0.92], [x0 - 0.22 + k * 0.27, 4.205, 0.92]]);
     for (const z of [-0.8, 0.8]) c.box(0.12, 0.1, 0.18, x1 + 0.26, 3.72, z);   // work lights
-    c.box(0.12, 0.12, 0.12, -0.6, 4.27, 0.6);   // beacon
+    // the canopy top is left clear for the Cyber Shroud (it carries the GNSS and the beacon): no roof beacon
     // rear: ripper mount plates and drawbar
     for (const z of [-0.55, 0.55]) c.ext([[-2.15, 0.55], [-2.8, 0.55], [-2.8, 2.15], [-2.15, 2.3]], 0.12, z - 0.06);
     c.bx(-2.75, 0.6, -0.5, -2.3, 0.9, 0.5);
@@ -643,8 +651,11 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     const rip = node(T.ripper, m); rip.position.set(DZ.rip[0], DZ.rip[1], 0); body.add(rip);
     const ex = DZ.cylEnd[0] - DZ.trun[0], ey = DZ.cylEnd[1] - DZ.trun[1];
     let trackOff = 0;
+    const mt = mounts(body, opacityFn(root, m));
     const api = {
       root, body, kind: 'dozer', blade: tilt, ripper: rip,
+      // ROPS canopy top in the body's space (model metres): its top face and centre
+      ROOF: { y: 4.2, x: -0.69, z: 0, len: 1.76, wid: 1.84 },
       // lift: rad about the trunnions (+ raises the edge, 0 = edge on the ground), tilt: rad about the blade's centre line
       setBlade(a, t = 0) {
         lift.rotation.z = a; tilt.rotation.x = t;
@@ -654,8 +665,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
       setRipper(k) { rip.rotation.z = -0.2 * (1 - k); },   // k 0 = raised (travel), 1 = shank in the ground
       setDrive(d) { if (d !== trackOff) { trackOff = d; track.update(d); } },
       setArm() {},
-      setOpacity: opacityFn(root, m),
-      dispose() { track.dispose(); m.solid.dispose(); m.line.dispose(); },
+      setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
+      dispose() { mt.clear(); track.dispose(); m.solid.dispose(); m.line.dispose(); },
     };
     api.setBlade(0.12); api.setRipper(0);
     return api;
@@ -725,8 +736,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     }
     for (const x of [x0 - 0.015, x1 + 0.015]) { c.line([[x, ys + 0.1, 0], [x, y1 - 0.06, 0]]); c.line([[x, 2.5, z0 + 0.06], [x, 2.5, z1 - 0.06]]); }   // front and rear mullions
     c.bx(x0 - 0.1, y1, z0 - 0.12, x1 + 0.16, y1 + 0.13, z1 + 0.12);   // roof
-    c.cyl(0.2, 0.08, -1.1, y1 + 0.17, 0.25, 16, 'y'); c.cyl(0.08, 0.1, -1.1, y1 + 0.26, 0.25, 10, 'y');   // roof unit (the round fitting on the drawing)
-    c.box(0.12, 0.14, 0.12, -0.5, y1 + 0.2, -0.5);   // beacon
+    // the roof is left clear for the Cyber Shroud (it carries the GNSS and the beacon): no roof unit, no beacon
     for (const z of [-1, 1]) { c.rod([x1 + 0.05, y1 - 0.15, z * 0.8], [x1 + 0.35, y1 - 0.4, z * 0.98], 0.02, 6); c.box(0.06, 0.24, 0.14, x1 + 0.38, y1 - 0.52, z * 1.0); }   // mirrors
     for (const s of [-1, 1]) {   // ladder ahead of the tyre, up to the platform, with a grab rail
       const zl = s * 1.12;
@@ -776,13 +786,16 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     const drum = node(T.drum, m); drum.position.set(CP.lf, R, 0); front.add(drum);
     body.add(node(T.chassis, m));
     const tyres = node(T.tyres, m); tyres.position.set(-CP.lr, CP.ty, 0); body.add(tyres);
+    const mt = mounts(body, opacityFn(root, m));
     return {
       root, body, kind: 'compactor', front, lf: CP.lf, lr: CP.lr,
+      // cab roof in the rear frame's space (model metres): its top face and centre
+      ROOF: { y: 3.13, x: -0.945, z: 0, len: 1.81, wid: 1.88 },
       setDrive(d) { drum.rotation.z = -d / R; tyres.rotation.z = -d / CP.ty; },
       setSteer(a) { front.rotation.y = a; },   // articulation, rad (+ turns the drum to the machine's left)
       setArm() {},
-      setOpacity: opacityFn(root, m),
-      dispose() { m.solid.dispose(); m.line.dispose(); },
+      setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
+      dispose() { mt.clear(); m.solid.dispose(); m.line.dispose(); },
     };
   }
 

@@ -303,6 +303,8 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     await nextFrame();
     if (dead) return false;
     isReady = true; sync();
+    // the Cyber Shroud on the excavator's cab roof, after the first frame: merged into the ship's own meshes (no draw, no program)
+    rex.addShroud().catch(err => console.warn('TerraFirma mission: no shroud.', err));
     return true;
   })();
   ready.catch(() => {});

@@ -5,7 +5,8 @@
 // The ground is one camera-following quad whose shader paints the neighbourhood procedurally and fades into the
 // real Earth colour + NASA night-lights maps at altitude, so the hand-off to the globe in film.js matches.
 
-import { createMachines } from './machines.js';
+import { createMachines, shroudSolid, mountShroud } from './machines.js';
+import { loadShroud, lod } from '../kit/shroud.js';
 import { sunAt } from './austin.js';
 import { snapShadow } from './util.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
@@ -405,7 +406,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   workLights[0].position.set(-30, 14, -10); workLights[1].position.set(30, 14, 10); workLights.forEach(l => group.add(l));
 
   // ---------------------------------------------------------------- machines, crew, light towers, site furniture (machines.js: CAT 336s, tri-axle dumps, D6, boom pump, mixers, flat-top crane)
-  const { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers } = createMachines({ THREE, group, D });
+  const { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, roofs } = createMachines({ THREE, group, D });
   const NW = 44;
   // building: 40 columns, two cores, then the first deck's forms
   const COLS = []; for (let x = -28; x <= 28; x += 8) for (let z = -16; z <= 16; z += 8) COLS.push([x, z]);
@@ -533,5 +534,21 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   function follow(camLocal, alt) {
     const s = Math.max(4000, alt * 12); ground.scale.set(s, 1, s); ground.position.x = camLocal.x; ground.position.z = camLocal.z;
   }
-  return { group, update, follow, uniforms: U, D, ready, readyAll };
+  // the TerraFirma ATLAS Cyber Shroud on every yard machine's cab roof (machines.js roofs: 2 excavators, the dozer, 4 dump
+  // trucks, the boom pump, 2 mixers). Lazy: film.js calls this at boot idle on the high tier. The glb comes from kit/shroud.js
+  // (one fetch per page, shared with Solutions), clustered to 5 cm (about 1.3k triangles a machine: the lot is never closer than
+  // ~125 m, where the part is ~15 px long), and merged into each machine's own paint / metal / glass meshes, one machine per idle
+  // slot: no draw call, no program, only a buffer upload. -> { machines, tris }
+  const SHROUD_CELL = 0.05;
+  async function addShrouds({ next = () => Promise.resolve(), alive = () => true } = {}) {
+    const src = await loadShroud();
+    if (!alive()) return null;
+    const kinds = shroudSolid(THREE, lod(src, SHROUD_CELL));
+    let tris = 0, n = 0;
+    try {
+      for (const r of roofs) { await next(); if (!alive()) return null; tris += mountShroud(r, kinds); n++; }
+    } finally { for (const k in kinds) kinds[k].dispose(); }
+    return { machines: n, tris };
+  }
+  return { group, update, follow, uniforms: U, D, ready, readyAll, addShrouds };
 }

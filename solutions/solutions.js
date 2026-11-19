@@ -12,7 +12,7 @@ import { createMachineKit } from './sol-machines.js';
 import { createDig } from './sol-game.js';
 import { createCrew } from './sol-crew.js';
 import { createHud } from './sol-hud.js';
-import { attachShroud } from './sol-shroud.js';
+import { buildShroud } from './sol-shroud.js';
 
 export { hF as hField };
 
@@ -754,15 +754,24 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     if (!shroudQ) { shroudQ = true; idle(loadShroud); }   // the shroud loads once the first frame is out
   }
 
-  // ------------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud on the excavator roof
-  // Lazy (after the first frame, on idle), high tier only (on the low tier it is a few px). Brighter line art than the
-  // machines (HDR, so the bloom lifts it a touch): it is the product. Same programs as the machines: no compile.
-  let shroud = null, shroudP = null, shroudQ = false, dead = false;
+  // ------------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud on every machine's cab roof
+  // Lazy (after the first frame, on idle), high tier only (on the low tier it is a few px). One shared geometry (kit/shroud.js
+  // fetches the glb once per page), one mount per machine: excavator house, dozer canopy, compactor cab. Brighter line art than
+  // the machines (HDR, so the bloom lifts it a touch): it is the product. Same programs as the machines: no compile.
+  let shroud = null, shroudP = null, shroudQ = false, dead = false, shroudKit = null;
   const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 200));
   function loadShroud() {
     if (shroudP || dead || LOW) return shroudP;
-    shroudP = attachShroud({ THREE, exc, url: new URL('./assets/cyber-shroud.glb', import.meta.url).href, color: col(pal.accent).multiplyScalar(1.7), alive: () => !dead })
-      .then(g => { shroud = g; return g; })
+    const color = col(pal.accent).multiplyScalar(1.7);
+    shroudP = buildShroud({ THREE, alive: () => !dead })
+      .then(kit => {
+        if (!kit) return null;
+        if (dead) { kit.dispose(); return null; }
+        shroudKit = kit;
+        const g = [exc, loader, roller].map(m => kit.mount(m, color));
+        shroud = g[0]; shroud.userData.all = g; shroud.userData.size = kit.size;
+        return shroud;
+      })
       .catch(err => { console.warn('TerraFirma solutions: no shroud.', err); return null; });
     return shroudP;
   }
@@ -839,7 +848,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     },
     // QA: camera pose (position + forward), the dig, the crew and the field
     camState() { camera.getWorldDirection(v4); return { p: camera.position.toArray(), d: v4.toArray(), fov: camera.fov }; },
-    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, camera, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); },
+    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, loader, roller, camera, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); },
       get shroud() { return shroud; }, loadShroud: () => { shroudQ = true; return loadShroud(); }, camHold(o) { camOv = o || null; } },
     dispose() {
       dead = true; this.stop(); clearTimeout(freeT); if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
@@ -850,6 +859,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       fillMat.dispose();
       dotMat.dispose(); sky.geometry.dispose(); sky.material.dispose();
       for (const m of [exc, loader, roller]) m.dispose();
+      if (shroudKit) shroudKit.dispose();
       kit.disposeAll();
       renderer.dispose(); canvas.remove();
       if (topoEl) topoEl.style.visibility = topoVis;   // the 2D art shows again (no-3D fallback)

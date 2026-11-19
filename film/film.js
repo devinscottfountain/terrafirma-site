@@ -686,7 +686,12 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     ric(tick, BUILD_WAIT);
   }
   // boot idle: start every download the later beats need (decoded + uploaded on arrival), then the colony build
-  function bootIdle() { if (dead) return; planets.loadDeferred('mars'); colonyW.loadMaps(); scheduleColony(); }
+  // boot idle also hangs the Cyber Shroud on the Austin yard machines (high tier: on the low tier they are a few px), one machine per idle slot
+  function bootIdle() {
+    if (dead) return; planets.loadDeferred('mars'); colonyW.loadMaps(); scheduleColony();
+    if (HIGH) shroudP = site.addShrouds({ next: () => new Promise(r => ric(r, BUILD_WAIT)), alive: () => !dead }).catch(err => { console.warn('TerraFirma film: no shroud.', err); return null; });
+  }
+  let shroudP = null;
   const rtWarm = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }); // the scene pass also draws into a half-float target, so program keys match
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
@@ -764,6 +769,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const loop = now => { raf = requestAnimationFrame(loop); if (drive) { drive(); return; } const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
   const api = {
     ready: readyP, canvas, renderer, post, scene, cam, aircraft, flight, perf: gov,
+    get shrouds() { return shroudP; }, // QA: resolves to { machines, tris } once every yard machine carries its Cyber Shroud
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the film runs its own rAF loop
     start(external = false, fn = null) { if (running) return; running = true; ext = external; drive = fn; snapNext = true; lastT = 0; if (!external) raf = requestAnimationFrame(loop); }, // the clock resumes where it stopped
     stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
