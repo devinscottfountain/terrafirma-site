@@ -3,6 +3,7 @@
 //   -> { earth, moon, mars, clouds, earthAtmo, marsAtmo, ready, loadDeferred, update({ t, intro, camPos }) }
 // ready: Earth maps decoded + uploaded. loadDeferred('moon'|'mars'): idempotent, fetches that body's maps, resolves when swapped in
 import { createMarsAir } from './sky.js';
+import { loadTex } from '../kit/bitmap.js';
 // All shaders output LINEAR HDR (the composer's OutputPass does ACES + sRGB). Colour maps are sRGB textures,
 // so the GPU decodes them to linear on sampling. No per-frame allocations.
 
@@ -312,19 +313,14 @@ void main(){
 export function createPlanets({ THREE, scene, renderer, toSun, EARTH, MOON, MARS, files }) {
   const R_EARTH = 10, R_MOON = 2.7, R_MARS = 6;
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
   const pending = [], deferredJobs = { moon: [], mars: [] }, deferredP = {};
   // 1x1 fallbacks so shaders run before maps land. Swapping a sampler's texture never changes a ShaderMaterial's
   // program key, so the real maps drop in without a recompile.
   const dot1 = (r, g, b, srgb) => { const t = new THREE.DataTexture(new Uint8Array([r, g, b, 255]), 1, 1); t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.needsUpdate = true; return t; };
-  // load -> decode off the main thread -> configure; callers upload before swapping so the first frame that samples it doesn't stall
-  const fetchTex = (url, srgb) => new Promise(res => loader.load(url, t => {
-    const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve(); // decode can stall in a background tab: cap it
-    dec.then(() => {
-      t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true;
-      res(t);
-    });
-  }, undefined, () => res(null)));
+  // load -> decode off the main thread (ImageBitmap) -> configure; callers upload before swapping so the first frame that samples it doesn't stall
+  const fetchTex = (url, srgb) => loadTex(THREE, url, { flipY: true, colorSpace: srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace }).then(t => {
+    t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true; return t;
+  }, () => null);
   const upload = t => { if (t && renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ } };
   const U = (key, srgb, fb, group) => { // returns a uniform whose value is swapped when the file loads
     const u = { value: fb }, name = files[key];

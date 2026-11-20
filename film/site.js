@@ -9,6 +9,7 @@ import { createMachines, shroudSolid, mountShroud } from './machines.js';
 import { loadShroud, lod } from '../kit/shroud.js';
 import { sunAt } from './austin.js';
 import { snapShadow } from './util.js';
+import { loadTex } from '../kit/bitmap.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
 // the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
 export const SITE_ROT = 17 * Math.PI / 180;
@@ -86,22 +87,15 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   { const d = new THREE.DataTexture(new Uint8Array([90, 80, 66, 255]), 1, 1); d.needsUpdate = true; U.tOrtho.value = d; U.tOrthoL.value = d; }
   // nested photos, all north-up on the same centre: lot crop + 800 m (6 in), 8 km (StratMap 2019 resampled ~4 m), 80 km (NAIP 2022 resampled ~40 m)
   { const d = new THREE.DataTexture(new Uint8Array([70, 72, 60, 255]), 1, 1); d.needsUpdate = true; U.tOrthoB.value = d; U.tOrthoC.value = d; }
-  const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
-  // load -> decode off the main thread -> upload -> swap, so the first frame that samples a photo never stalls on it.
+  // load -> decode off the main thread (ImageBitmap) -> upload -> swap, so the first frame that samples a photo never stalls on it.
   // Resolves true once swapped in, false if it failed (CORS, 404): the procedural ground just stays.
   const fadeAt = {}; // uniform name -> performance.now() its photo arrived: the 8 km / 80 km layers fade in over FADE_MS, no pop mid-pull
   const FADE_MS = 500;
-  const loadInto = (url, tex, on, fade = false) => new Promise(res => {
-    if (!url) return res(false);
-    ld.load(url, t => {
-      const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve(); // decode can stall in a background tab: cap it
-      dec.then(() => {
-        t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
-        if (renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ }
-        U[tex].value = t; if (fade) fadeAt[on] = performance.now(); else U[on].value = 1; res(true);
-      });
-    }, undefined, () => res(false));
-  });
+  const loadInto = (url, tex, on, fade = false) => !url ? Promise.resolve(false) : loadTex(THREE, url, { flipY: true, colorSpace: THREE.SRGBColorSpace }).then(t => {
+    t.anisotropy = 8; t.needsUpdate = true;
+    if (renderer && renderer.initTexture) try { renderer.initTexture(t); } catch (e) { /* first draw uploads it instead */ }
+    U[tex].value = t; if (fade) fadeAt[on] = performance.now(); else U[on].value = 1; return true;
+  }, () => false);
   // the opening frame waits on the lot crop and the 800 m photo (requested first); the 8 km and 80 km layers fade in when they land
   const ready = Promise.all([loadInto(ortho.lot, 'tOrthoL', 'uOrthoLOn'), loadInto(ortho.site, 'tOrtho', 'uOrthoOn')]);
   const readyAll = Promise.all([ready, loadInto(ortho.km8, 'tOrthoB', 'uOrthoBOn', true), loadInto(ortho.km80, 'tOrthoC', 'uOrthoCOn', true)]);

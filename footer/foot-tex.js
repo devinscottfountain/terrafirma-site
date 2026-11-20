@@ -17,6 +17,7 @@
 // Roles missing on a tier stay on their placeholders (flat material look).
 
 import { ROOT } from '../root.js';
+import { loadTex } from '../kit/bitmap.js';
 export const TEX_ROLES = ['regolith', 'mars_rock', 'dome_glass', 'dome_frame', 'foliage', 'habitat_panel', 'stainless', 'rover_paint', 'dusk_sky'];
 
 // [texScale, high {c, n, o}, low {c, n, o} | null], paths relative to footer/assets/tex/
@@ -96,14 +97,12 @@ export function loadFooterTextures({ THREE, renderer, quality = 'high', base, ro
   let active = 0; const waiting = [];
   const slot = () => active < 4 ? (active++, Promise.resolve()) : new Promise(r => waiting.push(r));
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
-  const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
 
   async function loadImageTex(file, srgb) {
     await slot();
     let tex;
     try {
-      tex = await new Promise((res, rej) => loader.load(url(file), res, undefined, () => rej(new Error('tex 404 ' + file))));
-      if (tex.image?.decode) await tex.image.decode().catch(() => {});
+      tex = await loadTex(THREE, url(file), { flipY: true }); // off-thread decode; rejects if the file is missing
     } finally { release(); }
     if (disposed) { tex.dispose(); return null; }
     tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;

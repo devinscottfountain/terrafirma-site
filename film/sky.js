@@ -7,6 +7,7 @@
 // converts a direction in the equatorial frame to (l, b). The whole sky is then rotated by
 // `rotation` so the band lands where the shot wants it.
 
+import { loadTex } from '../kit/bitmap.js';
 const R_SKY = 7000;
 
 // Direction of the sun used by the opening shot (must match toSun in d5.current.js).
@@ -178,7 +179,7 @@ export async function createSky({
   // ---- Milky Way ----
   let mw = null;
   if (milkyWay) {
-    const tex = await new Promise((res, rej) => new THREE.TextureLoader().load(milkyUrl, res, undefined, rej)).catch(() => null);
+    const tex = await loadTex(THREE, milkyUrl, { flipY: true }).catch(() => null);
     if (tex) {
       tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4; tex.wrapS = THREE.RepeatWrapping;
       const Ngp = eq(192.85948, 27.12825, V), Gc = eq(266.40499, -28.93617, V), Gy = new V().crossVectors(Ngp, Gc);

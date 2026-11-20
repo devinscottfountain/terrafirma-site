@@ -9,6 +9,7 @@
 // exactly its box. Rendering is gated by an IntersectionObserver; all programs compile before the first visible frame.
 import { PLANET_VERT, EARTH_FRAG, MARS_FRAG, PLUME_VERT, PLUME_FRAG, ENV_VERT, ENV_FRAG } from './mission-glsl.js';
 import { ROOT } from '../root.js';
+import { loadTex } from '../kit/bitmap.js';
 import { buildRocketExcavator } from './mission-rocketex.js';
 
 const MARGIN = 0.12;                       // quad bleed around the disc (radii fraction) for the atmosphere rim
@@ -272,14 +273,10 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   for (const img of section.querySelectorAll('img')) if (!img.complete) img.addEventListener('load', onLoad, { once: true });
 
   // ---------------------------------------------------------------- textures, compile, first frame
-  const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
   const anis = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const fetchTex = (name, srgb) => new Promise((res, rej) => loader.load(new URL(name, baseURL).href, t => {
-    const img = t.image, dec = img && img.decode ? Promise.race([img.decode().catch(() => {}), new Promise(r => setTimeout(r, 400))]) : Promise.resolve();
-    dec.then(() => {
-      t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace; t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true; res(t);
-    });
-  }, undefined, () => rej(new Error('mission texture failed: ' + name))));
+  const fetchTex = (name, srgb) => loadTex(THREE, new URL(name, baseURL).href, { flipY: true, colorSpace: srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace }).then(t => {
+    t.anisotropy = anis; t.wrapS = THREE.RepeatWrapping; t.needsUpdate = true; return t;
+  }, () => { throw new Error('mission texture failed: ' + name); });
   const tier = high ? 'high' : 'low';
   const files = high
     ? [[earthU.tMap, EARTH_TEX.color[tier], true], [marsU.tMap, MARS_TEX.color[tier], true], [earthU.tNorm, EARTH_TEX.normal, false], [marsU.tNorm, MARS_TEX.normal, false], [earthU.tClouds, EARTH_TEX.clouds, false]]

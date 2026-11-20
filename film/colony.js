@@ -6,6 +6,7 @@ import { createMarsEnv, createHabitatAssets, colonyLayout } from './habitat.js';
 import { createColonyLife } from './machines.js';
 import { easeOut, sstep, snapShadow } from './util.js';
 import { JEZ_GROUND_GLSL } from './sky.js';
+import { loadTex } from '../kit/bitmap.js';
 
 export const COL = { x: 0, y: -6000, z: 0 };   // far below the solar system, inside its own sky dome
 export const ARRIVE = 0.1, ROCK_SITES = { land: [[55, -150], [15, -168]], build: [-25, -100] };
@@ -59,9 +60,8 @@ function readHB0(tex) {
 let mapsP = null;
 function loadMaps() {
   if (mapsP) return mapsP;
-  const ld = new THREE.TextureLoader(); ld.setCrossOrigin('anonymous');
   const aniso = renderer.capabilities.getMaxAnisotropy(), up = t => { try { renderer.initTexture(t); } catch (e) { /* first draw uploads it */ } };
-  const get = (url, i, cfg) => new Promise(res => { if (!url) return res(); ld.load(url, t => { cfg(t); up(t); mapAt[i] = performance.now(); res(); }, undefined, () => res()); });
+  const get = (url, i, cfg) => new Promise(res => { if (!url) return res(); loadTex(THREE, url, { flipY: true }).then(t => { cfg(t); up(t); mapAt[i] = performance.now(); res(); }, () => res()); }); // off-thread decode, no premultiply or colour conversion (DTM bytes stay exact)
   return (mapsP = Promise.all([
     get(files.dtm, 0, t => { t.colorSpace = THREE.NoColorSpace; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = true; terrU.tDtm.value = t; terrU.uHB0.value = readHB0(t); }),
     get(files.hiBump, 1, t => { t.colorSpace = THREE.NoColorSpace; t.anisotropy = aniso; terrU.tHi.value = t; }),
