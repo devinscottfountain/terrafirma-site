@@ -77,11 +77,39 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // adaptive quality (perf.js): pixel ratio, post level, trails, shadow size and refresh, launch particles. Applied by uniforms and
   // target sizes only; it holds still through the planet-to-colony flash (E0 .. 0.52) unless frames collapse
   let trailsOK = true, partKeep = 1;
-  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => TOUCH.on, apply: (q, lv) => {
+  // GPU frame timing for the governor (EXT_disjoint_timer_query_webgl2; Safari and Firefox lack it, then the governor runs on intervals alone):
+  // one TIME_ELAPSED query around everything the film draws in a frame, a ring of 4 in flight, results polled next frames, disjoint ones dropped
+  const gt = (() => {
+    const gl = renderer.getContext(), ext = gl && gl.createQuery && gl.getExtension('EXT_disjoint_timer_query_webgl2');
+    const R = new Float32Array(30), S2 = new Float32Array(30), fly = [], pool = []; let cnt = 0, hd = 0, act = null, p90 = null, off = !ext;
+    const drop = () => { cnt = 0; hd = 0; p90 = null; };
+    const kill = q => { try { gl.deleteQuery(q); } catch (e) {} };
+    function poll() {
+      if (off) return;
+      try {
+        while (fly.length && gl.getQueryParameter(fly[0], gl.QUERY_RESULT_AVAILABLE)) {
+          const q = fly.shift();
+          if (gl.getParameter(ext.GPU_DISJOINT_EXT)) { kill(q); for (const o of fly) kill(o); fly.length = 0; drop(); break; } // disjoint (power change, context hiccup): everything pending is invalid
+          const ms = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6; pool.push(q);
+          if (ms >= 0 && ms < 1000) { R[hd] = ms; hd = (hd + 1) % 30; if (cnt < 30) cnt++; p90 = null; }
+        }
+      } catch (e) { off = true; drop(); }
+    }
+    return {
+      poll,
+      begin() { if (off || act || fly.length >= 4) return; try { const q = pool.pop() || gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, q); act = q; } catch (e) { off = true; } },
+      end() { if (!act) return; try { gl.endQuery(ext.TIME_ELAPSED_EXT); fly.push(act); } catch (e) { off = true; } act = null; },
+      // rolling p90 over the last 30 results; null until 20 have landed (or without the extension)
+      get p90() { if (off || cnt < 20) return null; if (p90 == null) { S2.set(R); const a = S2.subarray(0, cnt).sort(); p90 = a[Math.floor(cnt * 0.9)]; } return p90; },
+      reset() { drop(); },
+      dispose() { for (const q of [...fly, ...pool, act]) if (q) kill(q); fly.length = pool.length = 0; act = null; off = true; }
+    };
+  })();
+  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => true, gpu: () => gt.p90, apply: (q, lv) => {
     const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr);
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
     post.setQuality(HIGH ? q.post : Math.min(q.post, 1));
-    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep;
+    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep; gt.reset(); // GPU samples from the old level say nothing about the new one
     const sh = sunLight.shadow, sx = HIGH ? q.shadow : Math.min(q.shadow, 2048);
     if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
     const r = colonyW.api && colonyW.api.rockets; if (r && r.setKeep) r.setKeep(partKeep);
@@ -763,7 +791,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     if (!running || !booted || dead) return;
     dt = Math.max(0, dt || 0); if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
     gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
-    frame(Math.min(0.05, dt));
+    gt.poll(); gt.begin();
+    try { frame(Math.min(0.05, dt)); } finally { gt.end(); }
   }
   let drive = null; // start(false, fn): the own rAF loop calls fn() (the mount's tick) instead of step(dt)
   const loop = now => { raf = requestAnimationFrame(loop); if (drive) { drive(); return; } const dt = lastT ? (now - lastT) / 1000 : 1 / 60; lastT = now; step(dt); };
@@ -786,14 +815,14 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     setClock(v) { tEl = v; }, // QA: set the film clock (grain, machines, strobes) for repeatable frames
     yOf(St) { if (!LAY) measure(); let lo = 0, hi = LAY.yEnd; for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (LAY.S(m) < St) lo = m; else hi = m; } return (lo + hi) / 2; }, // QA: track px where the film clock reaches St
     get state() { return { y: ys, v: ysV, t: tEl, s, S, mode, beat: beatOf(), colonyDone: colonyW.done, programs: renderer.info.programs.length, layout: LAY && { yEnd: LAY.yEnd, vh: LAY.vh }, touch: TOUCH.on, yT: LAY ? -rectOf(section).top : 0,
-      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), end: +endK(S, END_S).toFixed(4), overlap, seam: seamCol && seamCol.map(v => +v.toFixed(3)), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
+      dof: { k: dofK.k, maxblur: dofK.mb, focus: postArg.focus }, g: +gS.toFixed(4), gL: +gL.toFixed(4), over: +over.toFixed(4), edge: +edge.k.toFixed(3), end: +endK(S, END_S).toFixed(4), overlap, seam: seamCol && seamCol.map(v => +v.toFixed(3)), perf: { level: gov.level, ceil: gov.ceil, p90: gov.state.p90, gpu: gov.state.gpu, capped: gov.state.capped, steps: gov.state.steps, pr: renderer.getPixelRatio(), post: post.getQuality(), shadow: sunLight.shadow.mapSize.x, every: shadowEvery, keep: partKeep }, mars: { star: marsStar.visible ? +starU.uI.value.toFixed(3) : 0, disc: planets.mars.visible },
       site: s < 1 ? { hour: +AC.hour.toFixed(2), g: +AC.g.toFixed(3), dist: Math.round(AC.dist), world: AC.world, exp: +renderer.toneMappingExposure.toFixed(3) } : null }; },
     dispose() {
       dead = true; this.stop(); ro && ro.disconnect(); removeEventListener('mousemove', onMove); touchMq.removeEventListener?.('change', onTouchMq); removeEventListener('load', relayout);
       for (const k of ['Ls', 'Rs']) if (tG && tG[k]) tG[k].style.transform = '';
       aircraft.dispose();
       scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });
-      renderer.dispose(); canvas.remove();
+      gt.dispose(); renderer.dispose(); canvas.remove();
     }
   };
   return api;

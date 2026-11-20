@@ -5,12 +5,17 @@
 // Nothing here ever compiles a shader: every post level, the trails and both shadow sizes run on programs warmed at boot
 // (post.warm), and the rest are uniforms, render target sizes or the film's own refresh policy.
 //
-// createGovernor({ high, top, apply, hold, holdUp, capOK }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
+// createGovernor({ high, top, apply, hold, holdUp, capOK, gpu }) -> { frame(dtMs), level, ceil, state, pin(level|null), reset() }
 //   top: the highest level allowed (default: the top on high, 2 on low; phones pass the top, film.js maps the levels to their own pixel ratios)
 //   apply(q, level): push a ladder entry into the film (film.js). hold(): true while stepping must wait (the planet-to-colony flash)
 //   holdUp(): true while stepping up must wait (the footer canvas shares the GPU: frames alternate, so the film's intervals are not its own)
-//   capOK(): true where a steady 30 Hz is likely the browser's cap, not the GPU (touch screens: iOS Low Power Mode and battery savers
-//            run rAF at 30). There a tight 30 Hz cadence costs one step at most, instead of sinking to the floor.
+//   capOK(): true where a steady 30 Hz is likely the browser's cap, not the GPU (iOS Low Power Mode, Safari Low Power Mode on a MacBook,
+//            embedded browser panes, 30 Hz displays: any device). A tight 30 Hz cadence with no GPU timing costs one step at most.
+//   gpu(): the film's rolling GPU ms (p90 of EXT_disjoint_timer_query_webgl2 results, film.js) or null where the extension is missing
+//          (Safari, Firefox) or the window is still filling. With it, throughput is judged on GPU ms, not the frame interval:
+//          step down only when gpu p90 > GPU_DOWN (60 fps budget with main-thread headroom), up when < GPU_UP and the interval is clean
+//          or capped. Emergency and the interval miss rules are skipped then (a capped or main-thread-bound page says nothing about the GPU).
+//          Stall (HITCH) handling, hold(), holdUp(), probation and the ceiling work the same either way. state.gpu / state.capped show it.
 //   Switches: ?perf=off (fixed at the top), ?perf=0..5 pins a level, ?perf=log logs every change.
 export const LADDER = [
   { pr: 0.75, post: 0, trails: false, shadow: 1024, every: 3, keep: 0.4 },
@@ -21,22 +26,23 @@ export const LADDER = [
   { pr: 1.5, post: 3, trails: true, shadow: 4096, every: 1, keep: 1 },
 ];
 const TOP = LADDER.length - 1;
+const GPU_DOWN = 14, GPU_UP = 9;       // ms of GPU time per frame: over GPU_DOWN 60 fps is at risk, under GPU_UP there is room for a level up
 const MISS = 20, HITCH = 250;          // ms: over MISS missed 60 fps; over HITCH it is a one-off (compile, GC, tab switch), not throughput
 const WIN = 40, COOL = 1500, UP_HOLD = 4000, PROBATION = 15000, CEIL_LIFE = 60000, ARRIVE = 600, EMERG = 33;
 
-export function createGovernor({ high = true, top = null, apply, hold = () => false, holdUp = () => false, capOK = () => false } = {}) {
+export function createGovernor({ high = true, top = null, apply, hold = () => false, holdUp = () => false, capOK = () => false, gpu = () => null } = {}) {
   const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
   const P = qs.get('perf'), LOG = P === 'log', OFF = P === 'off', PIN = /^[0-5]$/.test(P || '') ? +P : null;
   const cap = top != null ? Math.max(0, Math.min(TOP, top)) : high ? TOP : 2; // low tier: never above level 2 (film.js keeps its post at FXAA there); phones go higher on pixel ratio only
   let level = PIN ?? cap, ceil = cap, clock = 0, since = 0, cool = 0, upT = 0, lastUp = -1e9, ceilT = 0, applied = -1;
   const dts = new Float32Array(WIN), srt = new Float32Array(WIN); let n = 0, head = 0, misses = 0, recent = 0, stalls = 0;
-  const state = { level, ceil, p90: 0, steps: 0 };
+  const state = { level, ceil, p90: 0, steps: 0, gpu: null, capped: false };
   const log = (...a) => { if (LOG) console.log('[film perf]', ...a); };
   function set(lv, why) {
     lv = Math.max(0, Math.min(ceil, lv)); if (lv === level) return;
     if (lv < level && clock - lastUp < PROBATION) { ceil = level - 1; ceilT = clock; lastUp = -1e9; log('ceiling', ceil); } // dropped soon after a step up: that level is off the table for a minute (one ceiling per failed step up, no cascade)
     if (lv > level) lastUp = clock;
-    level = lv; cool = clock + COOL; upT = 0; n = 0; head = 0; misses = 0; recent = 0; state.steps++; log('level', lv, why);
+    level = lv; cool = clock + COOL; upT = 0; n = 0; head = 0; misses = 0; recent = 0; state.steps++; log('level', lv, why, 'gpu', state.gpu);
     push();
   }
   function push() { if (applied === level) return; applied = level; state.level = level; state.ceil = ceil; apply(LADDER[level], level); }
@@ -54,14 +60,16 @@ export function createGovernor({ high = true, top = null, apply, hold = () => fa
     srt.set(dts); srt.sort(); const p90 = srt[Math.floor(WIN * 0.9)], p10 = srt[Math.floor(WIN * 0.1)]; state.p90 = +p90.toFixed(1);
     // capped: every interval within 3 ms of a steady 30 Hz or slower. One step down is allowed (in case it is the GPU), then it holds
     const capped = capOK() && p10 > 25 && p90 - p10 < 3; state.capped = capped;
-    if (capped && level <= cap - 1) { upT = 0; return; }
-    // emergency: most of the window far over budget, even inside the flash
-    if (recent > WIN * 0.6 && level > 0) { set(level - 1, 'emergency p90 ' + p90.toFixed(1)); return; }
+    const g = gpu(), hasG = g != null && isFinite(g); state.gpu = hasG ? +g.toFixed(1) : null;
+    if (capped && !hasG && level <= cap - 1) { upT = 0; return; }
+    // emergency: most of the window far over budget, even inside the flash (with GPU timing only when the GPU is the one over budget)
+    if (recent > WIN * 0.6 && level > 0 && (!hasG || g > GPU_DOWN)) { set(level - 1, 'emergency p90 ' + p90.toFixed(1)); return; }
     if (ceil < cap && clock - ceilT > CEIL_LIFE) { ceil = cap; state.ceil = ceil; log('ceiling lifted'); }
     if (clock < cool || hold()) return;
-    if (p90 > MISS || misses > WIN * 0.12) { set(level - 1, 'p90 ' + p90.toFixed(1) + ' misses ' + misses); return; }
-    // headroom: clean, vsync-locked frames for UP_HOLD -> try one level up (probation catches a level that cannot hold)
-    if (level < ceil && misses === 0 && p90 < 17.6 && !holdUp()) { if (!upT) upT = clock; else if (clock - upT > UP_HOLD) set(level + 1, 'headroom p90 ' + p90.toFixed(1)); }
+    if (hasG ? g > GPU_DOWN : (p90 > MISS || misses > WIN * 0.12)) { set(level - 1, 'p90 ' + p90.toFixed(1) + ' misses ' + misses + ' gpu ' + state.gpu + ' capped ' + capped); return; }
+    // headroom: clean, vsync-locked frames for UP_HOLD -> try one level up (probation catches a level that cannot hold). With GPU timing:
+    // gpu under GPU_UP and the interval clean or capped (a capped page never shows clean 60 fps, the GPU number is the evidence)
+    if (level < ceil && (hasG ? g < GPU_UP && (capped || (misses === 0 && p90 < 17.6)) : misses === 0 && p90 < 17.6) && !holdUp()) { if (!upT) upT = clock; else if (clock - upT > UP_HOLD) set(level + 1, 'headroom p90 ' + p90.toFixed(1)); }
     else upT = 0;
   }
   return {
