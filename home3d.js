@@ -17,6 +17,8 @@
 // Anything that goes wrong leaves the section as it is (no canvas). Switches: ?sol=0 bails, ?q=low|high forces a tier,
 // ?qa exposes window.TFSolutions.
 
+// Entries are loaded async (possibly before the DOM is parsed), so all top-level work waits for the DOM first.
+function main() {
 const qs = new URLSearchParams(location.search);
 const MODES = { planning: 0, orchestration: 1, execution: 2 };   // -> scene mode index (0 plan, 1 control, 2 exec)
 const FADE_MS = 600;
@@ -163,3 +165,6 @@ if (!bail) {
 // ---------------------------------------------------------------- the scroll film (Austin -> Earth -> Mars -> colony -> launch)
 // Its own page integration lives in film/mount.js (DOM contract, bail rules, lazy trigger). Loaded only when the film section exists.
 if (document.querySelector('section[data-three="film"]')) import('./film/mount.js').catch(err => console.warn('TerraFirma film: not loaded.', err));
+}
+
+if (document.readyState !== 'loading') main(); else document.addEventListener('DOMContentLoaded', main, { once: true });

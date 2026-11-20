@@ -16,6 +16,7 @@
 // Low tier ships a 512 subset: regolith, mars_rock, dome_glass, foliage (c), habitat_panel (c), stainless (n), dusk_sky.
 // Roles missing on a tier stay on their placeholders (flat material look).
 
+import { ROOT } from '../root.js';
 export const TEX_ROLES = ['regolith', 'mars_rock', 'dome_glass', 'dome_frame', 'foliage', 'habitat_panel', 'stainless', 'rover_paint', 'dusk_sky'];
 
 // [texScale, high {c, n, o}, low {c, n, o} | null], paths relative to footer/assets/tex/
@@ -67,7 +68,7 @@ export function loadFooterTextures({ THREE, renderer, quality = 'high', base, ro
   const lo = quality === 'low';
   const want = TEX_ROLES.filter(r => roles.includes(r));
   // base = the footer/ dir (per CONTRACT) or the tex dir itself
-  let root = String(base || new URL('./', import.meta.url)); if (!root.endsWith('/')) root += '/';
+  let root = String(base || new URL('footer/', ROOT).href); if (!root.endsWith('/')) root += '/';
   if (!/assets\/tex\/$/.test(root)) root += 'assets/tex/';
   const url = rel => new URL(rel, root).href;
   const sets = new Map(), listeners = new Set(), owned = [];

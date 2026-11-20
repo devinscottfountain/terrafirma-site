@@ -8,6 +8,7 @@
 // of the mount, y up in world space (world y = height - css y). Planets are analytic quads (mission-glsl.js), so each disc is
 // exactly its box. Rendering is gated by an IntersectionObserver; all programs compile before the first visible frame.
 import { PLANET_VERT, EARTH_FRAG, MARS_FRAG, PLUME_VERT, PLUME_FRAG, ENV_VERT, ENV_FRAG } from './mission-glsl.js';
+import { ROOT } from '../root.js';
 import { buildRocketExcavator } from './mission-rocketex.js';
 
 const MARGIN = 0.12;                       // quad bleed around the disc (radii fraction) for the atmosphere rim
@@ -33,7 +34,7 @@ const nextFrame = () => new Promise(r => (typeof requestAnimationFrame === 'func
 
 export function createMission({ THREE, section, quality = 'high', base } = {}) {
   const high = quality !== 'low';
-  const baseURL = new URL(String(base || new URL('./assets/', import.meta.url).href).replace(/\/?$/, '/'), location.href).href;
+  const baseURL = new URL(String(base || new URL('mission/assets/', ROOT).href).replace(/\/?$/, '/'), location.href).href;
   const host = section.querySelector('[data-mission-canvas]') || section;
   const earthBox = section.querySelector('[data-mission-earth]'), marsBox = section.querySelector('[data-mission-mars]');
   const pathEl = section.querySelector('path[data-mission-path]');

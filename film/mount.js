@@ -14,9 +14,10 @@
 // ?grade (dev look panel, film/dial.js: only then is it fetched; ?grade=lil forces the lil-gui fallback).
 
 import * as stage from '../stage.js';
+import { ROOT } from '../root.js';
 
 const qs = new URLSearchParams(location.search);
-const BASE = new URL('./', import.meta.url).href;       // film/ : modules and assets, pinned with this file's SHA
+const BASE = new URL('film/', ROOT).href;       // film/ : assets, pinned with this file's SHA (from the repo root, so it works from dist/ too)
 const FADE_MS = 700;
 
 const root = document.querySelector('section[data-section="film"][data-three="film"]') || document.querySelector('section[data-three="film"]');

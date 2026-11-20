@@ -6,8 +6,8 @@
 // Boot: environment baked, every program compiled async against the target it draws into, ready = first frame;
 // textures stream in after ready as plain map swaps.
 import { SKY_VERT, SKY_FRAG, EQ_FRAG, FS_VERT, ATMOS_FRAG, PRE_FRAG, BLUR_FRAG, FINAL_FRAG } from './foot-glsl.js';
+import { ROOT } from '../root.js';
 
-const MODEL = './foot-model.js';                     // modeller entry (exports buildFooterScene); placeholder until it loads
 const EYE = [0, 1.7, 0];
 const HORIZON = 0.3;                                 // horizon height in frame, from the top
 const VFOV = 30, HFOV_MIN = 40;                      // landscape lens; narrow screens widen to keep the settlement in frame
@@ -58,7 +58,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
   const HIGH = quality !== 'low';
   const DEBUG = typeof location !== 'undefined' && /[?&]debug(=|&|$)/.test(location.search);
   const V3 = THREE.Vector3;
-  const baseURL = String(base || new URL('./', import.meta.url).href).replace(/\/?$/, '/');
+  const baseURL = String(base || new URL('footer/', ROOT).href).replace(/\/?$/, '/');
   renderer.debug.checkShaderErrors = DEBUG;
   const DPR = Math.min(typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1, 2);
   const prMax = Math.min(DPR, HIGH ? 1.5 : 1.25);
@@ -112,7 +112,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
   }
   async function loadContent() {
     try {
-      const mod = await import(MODEL);
+      const mod = await import('./foot-model.js')   // static string so the bundler follows it;
       if (typeof mod.buildFooterScene === 'function') return mod.buildFooterScene({ THREE, quality: HIGH ? 'high' : 'low' });
     } catch (e) { if (DEBUG) console.warn('d61 footer: model not loaded, placeholder', e); }
     return placeholder();

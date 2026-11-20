@@ -7,8 +7,10 @@
 //   (Devin's call: (x, y, z) -> (-x, z, y), the small vented end to the working end), footprint centred on x = z = 0, base at y = 0.
 //   The promise is kept on window, so Home (Solutions + film) fetches and decodes the glb once even if two module copies run.
 // lod(src, cell) -> the same shape, vertex clustered on a cell (m) grid: a cheap far copy for machines that are a few px tall.
+import { ROOT } from '../root.js';
+
 const KEY = '__tfShroud';
-const URL_GLB = new URL('../solutions/assets/cyber-shroud.glb', import.meta.url).href;
+const URL_GLB = new URL('solutions/assets/cyber-shroud.glb', ROOT).href;
 
 export function loadShroud() {
   if (window[KEY]) return window[KEY];

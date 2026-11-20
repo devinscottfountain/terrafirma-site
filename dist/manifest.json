@@ -1,0 +1,165 @@
+{
+  "home3d.js": {
+    "file": "home3d.js",
+    "bytes": 3756,
+    "static": [],
+    "dynamic": [
+      {
+        "file": "chunks/mount-4JBRPM62.js",
+        "bytes": 4064
+      },
+      {
+        "file": "chunks/chunk-BCFVIYFK.js",
+        "bytes": 858
+      },
+      {
+        "file": "chunks/chunk-FCTCDFK5.js",
+        "bytes": 106
+      },
+      {
+        "file": "chunks/dial-YHPZ246O.js",
+        "bytes": 7429
+      },
+      {
+        "file": "chunks/film-OXME4W4Z.js",
+        "bytes": 317137
+      },
+      {
+        "file": "chunks/chunk-E5WEMQM4.js",
+        "bytes": 3070
+      },
+      {
+        "file": "chunks/chunk-YXDGKJ7S.js",
+        "bytes": 22578
+      },
+      {
+        "file": "chunks/chunk-TAKKMMN3.js",
+        "bytes": 60486
+      },
+      {
+        "file": "chunks/chunk-4C5RVMER.js",
+        "bytes": 6027
+      },
+      {
+        "file": "chunks/chunk-M5U4GD3X.js",
+        "bytes": 2090
+      },
+      {
+        "file": "chunks/chunk-VSEMZT6Q.js",
+        "bytes": 6450
+      },
+      {
+        "file": "chunks/foot-model-kit-2C76GDRH.js",
+        "bytes": 326
+      },
+      {
+        "file": "chunks/foot-model-starship-KKNUMIYN.js",
+        "bytes": 184
+      },
+      {
+        "file": "chunks/chunk-BX3MNU2D.js",
+        "bytes": 4948
+      },
+      {
+        "file": "chunks/rockets-NJ46RRYQ.js",
+        "bytes": 23934
+      },
+      {
+        "file": "chunks/meshopt_decoder.module-W4SD2QBE.js",
+        "bytes": 22421
+      },
+      {
+        "file": "chunks/GLTFLoader-NAYSNYV2.js",
+        "bytes": 44839
+      },
+      {
+        "file": "chunks/foot-tex-3ABLB7UH.js",
+        "bytes": 5052
+      },
+      {
+        "file": "chunks/RGBELoader-HX6HNSAL.js",
+        "bytes": 3511
+      },
+      {
+        "file": "chunks/foot-model-XXPDE2VV.js",
+        "bytes": 31910
+      },
+      {
+        "file": "chunks/solutions-NUSCF2OU.js",
+        "bytes": 124046
+      }
+    ]
+  },
+  "careers.js": {
+    "file": "careers.js",
+    "bytes": 6131,
+    "static": [
+      {
+        "file": "chunks/chunk-BCFVIYFK.js",
+        "bytes": 858
+      },
+      {
+        "file": "chunks/chunk-FCTCDFK5.js",
+        "bytes": 106
+      }
+    ],
+    "dynamic": [
+      {
+        "file": "chunks/mission3d-LJM4NJL3.js",
+        "bytes": 24665
+      },
+      {
+        "file": "chunks/chunk-TAKKMMN3.js",
+        "bytes": 60486
+      },
+      {
+        "file": "chunks/chunk-4C5RVMER.js",
+        "bytes": 6027
+      },
+      {
+        "file": "chunks/chunk-M5U4GD3X.js",
+        "bytes": 2090
+      },
+      {
+        "file": "chunks/meshopt_decoder.module-W4SD2QBE.js",
+        "bytes": 22421
+      },
+      {
+        "file": "chunks/GLTFLoader-NAYSNYV2.js",
+        "bytes": 44839
+      },
+      {
+        "file": "chunks/footer3d-KRZMYUXZ.js",
+        "bytes": 108
+      },
+      {
+        "file": "chunks/chunk-YXDGKJ7S.js",
+        "bytes": 22578
+      },
+      {
+        "file": "chunks/foot-tex-3ABLB7UH.js",
+        "bytes": 5052
+      },
+      {
+        "file": "chunks/RGBELoader-HX6HNSAL.js",
+        "bytes": 3511
+      },
+      {
+        "file": "chunks/foot-model-XXPDE2VV.js",
+        "bytes": 31910
+      },
+      {
+        "file": "chunks/chunk-E5WEMQM4.js",
+        "bytes": 3070
+      },
+      {
+        "file": "chunks/chunk-BX3MNU2D.js",
+        "bytes": 4948
+      },
+      {
+        "file": "chunks/chunk-VSEMZT6Q.js",
+        "bytes": 6450
+      }
+    ]
+  }
+}

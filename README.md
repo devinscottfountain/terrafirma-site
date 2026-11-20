@@ -107,7 +107,7 @@ Switches: `?sol=0` bails, `?q=low|high` forces a tier, `?qa` exposes `window.TFS
 
 Machine slots: each job has one slot (`SLOT` in `solutions/solutions.js`: `dig` = excavator, `haul` = dozer, `grade` = compactor, per Tim's note on the Solutions frame: the new top right vehicle, the dozer, replaces the second excavator of the comp, and the new vehicles are in Execution). To swap a model later, model it in `solutions/sol-machines.js` and change the factory there; `haul` and `grade` need `root`, `setDrive`, `setOpacity`, and the crew also drives `setBlade` / `setRipper` / `setSteer` when a model has them.
 
-Load: same importmap as below, then `<script type="module" src="https://cdn.jsdelivr.net/gh/devinscottfountain/terrafirma-site@SHA/home3d.js"></script>`.
+Load: same importmap as below, then `<script type="module" async src="https://cdn.jsdelivr.net/gh/devinscottfountain/terrafirma-site@SHA/dist/home3d.js"></script>` (the bundle, see Build).
 
 ## Film DOM contract (homepage, `film/mount.js`)
 
@@ -165,11 +165,22 @@ Head (before the module): an importmap for `three@0.160.0` and `three/addons/`, 
 
 ```html
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
-<script type="module" src="https://cdn.jsdelivr.net/gh/devinscottfountain/terrafirma-site@SHA/careers.js"></script>
+<script type="module" async src="https://cdn.jsdelivr.net/gh/devinscottfountain/terrafirma-site@SHA/dist/careers.js"></script>
 ```
 
-Everything is resolved relative to `careers.js`, so the footer and mission modules and textures come from the same pinned SHA.
+Assets are resolved from `ROOT` (see Build), so the footer and mission textures come from the same pinned SHA as the script.
+
+## Build
+
+Production loads a minified esbuild bundle instead of ~55 separate modules (jsDelivr `/gh/` is cold for every new SHA, so each file costs a round trip).
+
+- `npm install && npm run build` runs `build.mjs` (esbuild, ESM, code splitting, minified) and writes `dist/`. Commit `dist/`: jsDelivr serves it from the repo, pinned by SHA like everything else.
+- `dist/home3d.js` and `dist/careers.js` are the entries; shared and lazy chunks sit in `dist/chunks/` (hashed names). Load the entries with `<script type="module" async>`: both wait for `DOMContentLoaded` themselves (`main()`), so `async` is safe.
+- Only the bare `three` import stays external (the page's importmap supplies the one shared instance). `three/addons/*` is bundled from the `three@0.160.0` devDependency and its own `from 'three'` stays bare, so there is a single copy of three. The importmap no longer needs the `three/addons/` entry for the bundle (the test pages still use it for the source files).
+- `dist/manifest.json`: per entry, its static chunk imports and its dynamic chunks with byte sizes. Use it to add `<link rel="modulepreload">` tags for the static chunks (the lazy ones load on demand).
+- `root.js` exports `ROOT`, the repo root URL: the file's own URL cut back to its last `/dist/`, else `./`. Every asset and the film's base are resolved from it with a repo-root path (`new URL('mission/assets/', ROOT)`), so the same code works from source and from `dist/`. Nothing else uses `import.meta.url`.
+- The source files still run unbundled (the `test/` pages load them directly). Rebuild and commit `dist/` after any source change, then pin the new SHA.
 
 ## Pin the SHA, never `@main`
 
-Always replace `SHA` with a commit SHA (short is fine). Never use `@main` or a branch: jsDelivr caches branches for up to 12 hours and the footer modules must match `careers.js`. Pin a new SHA on every deploy.
+Always replace `SHA` with a commit SHA (short is fine). Never use `@main` or a branch: jsDelivr caches branches for up to 12 hours and the bundle chunks must match their entry. Pin a new SHA on every deploy.

@@ -16,8 +16,11 @@
 // Posters fade out once the first real frame is drawn. Switches: ?mission=0 keeps the posters.
 
 import * as stage from './stage.js';
+import { ROOT } from './root.js';
 
-const BASE = new URL('./footer/', import.meta.url).href;   // footer modules and textures, pinned with this file's SHA
+// Entries are loaded async (possibly before the DOM is parsed), so all top-level work waits for the DOM first.
+function main() {
+const BASE = new URL('footer/', ROOT).href;   // footer textures, pinned with this file's SHA
 const FADE_MS = 600;
 const qs = new URLSearchParams(location.search);
 
@@ -203,7 +206,7 @@ const mRoot = document.querySelector('[data-mission]');
 const mBail = !mRoot || qs.get('mission') === '0' || matchMedia('(prefers-reduced-motion: reduce)').matches || !hasWebGL2();
 
 if (!mBail) {
-  const MBASE = new URL('./mission/', import.meta.url).href;
+  const MBASE = new URL('mission/', ROOT).href;
   const posters = [...mRoot.querySelectorAll('[data-mission-earth] img, [data-mission-mars] img, [data-mission-billboard]')];
   let mission = null, mBooted = false, mDead = false;
   const quality = pickQuality();
@@ -248,3 +251,6 @@ if (!mBail) {
   const mNear = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { mNear.disconnect(); mSchedule(); } }, { rootMargin: `${innerHeight * 2}px 0px` });
   mNear.observe(mRoot);
 }
+}
+
+if (document.readyState !== 'loading') main(); else document.addEventListener('DOMContentLoaded', main, { once: true });
