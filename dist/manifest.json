@@ -1,12 +1,12 @@
 {
   "home3d.js": {
     "file": "home3d.js",
-    "bytes": 3756,
+    "bytes": 3883,
     "static": [],
     "dynamic": [
       {
-        "file": "chunks/mount-4JBRPM62.js",
-        "bytes": 4064
+        "file": "chunks/mount-SMLOZPKZ.js",
+        "bytes": 4827
       },
       {
         "file": "chunks/chunk-BCFVIYFK.js",
@@ -21,15 +21,15 @@
         "bytes": 7429
       },
       {
-        "file": "chunks/film-OXME4W4Z.js",
-        "bytes": 317137
+        "file": "chunks/film-7PF4YTJ6.js",
+        "bytes": 316598
       },
       {
         "file": "chunks/chunk-E5WEMQM4.js",
         "bytes": 3070
       },
       {
-        "file": "chunks/chunk-YXDGKJ7S.js",
+        "file": "chunks/chunk-ECMF7PTV.js",
         "bytes": 22578
       },
       {
@@ -39,6 +39,10 @@
       {
         "file": "chunks/chunk-4C5RVMER.js",
         "bytes": 6027
+      },
+      {
+        "file": "chunks/chunk-4CI7YULG.js",
+        "bytes": 819
       },
       {
         "file": "chunks/chunk-M5U4GD3X.js",
@@ -73,8 +77,8 @@
         "bytes": 44839
       },
       {
-        "file": "chunks/foot-tex-3ABLB7UH.js",
-        "bytes": 5052
+        "file": "chunks/foot-tex-PXDMWWA5.js",
+        "bytes": 4936
       },
       {
         "file": "chunks/RGBELoader-HX6HNSAL.js",
@@ -105,8 +109,8 @@
     ],
     "dynamic": [
       {
-        "file": "chunks/mission3d-LJM4NJL3.js",
-        "bytes": 24665
+        "file": "chunks/mission3d-5BN6QUAB.js",
+        "bytes": 24502
       },
       {
         "file": "chunks/chunk-TAKKMMN3.js",
@@ -115,6 +119,10 @@
       {
         "file": "chunks/chunk-4C5RVMER.js",
         "bytes": 6027
+      },
+      {
+        "file": "chunks/chunk-4CI7YULG.js",
+        "bytes": 819
       },
       {
         "file": "chunks/chunk-M5U4GD3X.js",
@@ -129,16 +137,16 @@
         "bytes": 44839
       },
       {
-        "file": "chunks/footer3d-KRZMYUXZ.js",
+        "file": "chunks/footer3d-RZ2RGJV2.js",
         "bytes": 108
       },
       {
-        "file": "chunks/chunk-YXDGKJ7S.js",
+        "file": "chunks/chunk-ECMF7PTV.js",
         "bytes": 22578
       },
       {
-        "file": "chunks/foot-tex-3ABLB7UH.js",
-        "bytes": 5052
+        "file": "chunks/foot-tex-PXDMWWA5.js",
+        "bytes": 4936
       },
       {
         "file": "chunks/RGBELoader-HX6HNSAL.js",
