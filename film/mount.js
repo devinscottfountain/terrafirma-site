@@ -44,6 +44,10 @@ function pickQuality() {
 const missing = scenes && Object.keys(scenes).filter(k => !scenes[k]);
 if (root && missing.length) console.warn('TerraFirma film: missing scenes', missing, '- leaving the 2D scenes.');
 const bail = !root || !mount || missing.length || qs.get('film') === '0' || matchMedia('(prefers-reduced-motion: reduce)').matches || !hasWebGL2();
+// loader gate (see home3d.js): boot at once and report. Progress is real bytes of the boot set (from the manifest's byte table),
+// then 1 once film.ready lands (Austin and space worlds loaded and compiled). The Mars and colony maps load after, at boot idle.
+const gate = window.tfGate || null, report = p => gate && gate.set('film', p);
+if (bail) report(1);
 
 if (!bail) {
   const html = document.documentElement;
@@ -78,6 +82,7 @@ if (!bail) {
     }
   }
   function fail(err) {
+    report(1);
     if (dead) return;
     dead = true; ready = false;
     console.warn('TerraFirma film: leaving the 2D scenes.', err);
@@ -93,7 +98,8 @@ if (!bail) {
   // asset urls for this tier, from the manifest next to them (only files that exist are listed)
   async function resolveFiles() {
     const res = await fetch(new URL('assets/manifest.json', BASE)); if (!res.ok) throw new Error('film manifest ' + res.status);
-    const t = (await res.json()).tiers[quality], u = rel => new URL('assets/' + rel, BASE).href;
+    const man = await res.json(), t = man.tiers[quality], u = rel => new URL('assets/' + rel, BASE).href;
+    if (gate) watchBytes(man, t, u);
     const map = o => { const r = {}; for (const k in o) r[k] = typeof o[k] === 'string' ? u(o[k]) : o[k]; return r; };
     // the terrain and aerial maps ship with the repo too, sized per tier (the old data-film-* Webflow attributes are ignored:
     // the DTM is packed 16-bit data that any lossy pass in the Assets panel would break)
@@ -101,9 +107,23 @@ if (!bail) {
     return { tex: map(t.tex), stars: u(t.stars), milky: u(t.milky), ortho, jezero: map(t.jezero || {}) };
   }
 
+  // gated loads: the boot set is everything in the tier except the Moon, Mars and Jezero maps (Moon on the pull, the rest at boot idle, after the gate).
+  // A resource observer sums the bytes that arrive and maps them onto .3 .. .85 of the film's share; film.ready takes it to 1.
+  function watchBytes(man, t, u) {
+    const later = new Set(['mars', 'marsNorm', 'moon', 'moonNorm']), want = new Map();
+    for (const [k, v] of Object.entries(t.tex || {})) if (!later.has(k)) want.set(u(v), man.bytes?.[v] || 0);
+    for (const v of Object.values(t.ortho || {})) if (typeof v === 'string') want.set(u(v), man.bytes?.[v] || 0);
+    for (const v of [t.stars, t.milky]) if (v) want.set(u(v), man.bytes?.[v] || 0);
+    const total = [...want.values()].reduce((a, b) => a + b, 0); if (!total || typeof PerformanceObserver !== 'function') return;
+    let got = 0; const seen = new Set();
+    const take = es => { for (const e of es) if (want.has(e.name) && !seen.has(e.name)) { seen.add(e.name); got += want.get(e.name); } report(0.3 + 0.55 * Math.min(1, got / total)); if (seen.size >= want.size) po.disconnect(); };
+    const po = new PerformanceObserver(l => take(l.getEntries()));
+    try { po.observe({ type: 'resource', buffered: true }); } catch (_) { /* old browser: the steps alone */ }
+  }
+
   async function boot() {
     if (booted || dead) return;
-    booted = true;
+    booted = true; report(0.05);
     try {
       const [THREE, mod, files] = await Promise.all([import('three'), import('./film.js'), resolveFiles()]);
       if (dead) return;
@@ -116,6 +136,7 @@ if (!bail) {
       const io = new IntersectionObserver(es => { visible = es[es.length - 1].isIntersecting; sync(); });   // render only while the track is on screen
       io.observe(root); cleanups.push(() => io.disconnect());
       await film.ready;
+      report(1);
       if (dead) return;
       ready = true;
       sync();
@@ -131,5 +152,6 @@ if (!bail) {
   const idle = (fn, timeout) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 200));
   const afterLoad = fn => (document.readyState === 'complete' ? fn() : addEventListener('load', () => fn(), { once: true }));
   const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); afterLoad(() => requestAnimationFrame(() => requestAnimationFrame(() => idle(boot, 1000)))); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
-  near.observe(root);
+  if (gate) boot();
+  else near.observe(root);
 }

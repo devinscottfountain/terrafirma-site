@@ -36,6 +36,10 @@ function hasWebGL2() {
   } catch (_) { return false; }
 }
 const bail = !root || !mount || qs.get('sol') === '0' || matchMedia('(prefers-reduced-motion: reduce)').matches || !hasWebGL2();
+// loader gate (Home head sets window.tfGate on capable desktops while the page loader shows): boot at once instead of lazily and
+// report progress, so the scene is built and warmed before the loader lets go. Nothing to wait for when the section bails.
+const gate = window.tfGate || null, report = p => gate && gate.set('solutions', p);
+if (bail) report(1);
 
 // ---------------------------------------------------------------- quality tier (same logic as careers.js)
 function pickQuality() {
@@ -109,6 +113,7 @@ if (!bail) {
 
   // ---------------------------------------------------------------- failure: dispose, leave the section as it was
   function fail(err) {
+    report(1);   // never hold the loader on a scene that failed
     if (dead) return;
     dead = true; ready = false;
     console.warn('TerraFirma solutions: leaving the section without 3D.', err);
@@ -121,7 +126,7 @@ if (!bail) {
   // ---------------------------------------------------------------- boot (lazy)
   async function boot() {
     if (booted || dead) return;
-    booted = true;
+    booted = true; report(0.1);
     try {
       const [THREE, mod] = await Promise.all([import('three'), import('./solutions/solutions.js')]);
       if (dead) return;
@@ -143,7 +148,9 @@ if (!bail) {
       const io = new IntersectionObserver(es => { visible = es[es.length - 1].isIntersecting; sync(); }, { rootMargin: `${Math.round(innerHeight * 0.25)}px 0px` });
       io.observe(root); cleanups.push(() => io.disconnect());
 
+      report(0.5);
       await sol.ready;
+      report(0.8);
       if (dead) return;
       ready = true;
       sol.setMode(wantMode, true);   // a tab click that landed during the import
@@ -152,14 +159,19 @@ if (!bail) {
       cv.style.opacity = '1';
       // compile every program off screen before the section is visible, so no mode compiles mid-scroll
       const idle = typeof requestIdleCallback === 'function' ? requestIdleCallback : fn => setTimeout(fn, 200);
-      idle(() => { if (!dead) Promise.resolve(sol.warm()).catch(() => { /* warm is best effort */ }); }, { timeout: 2000 });
+      // gated: warm now and count it (the loader covers it); else in an idle slot
+      const warm = () => Promise.resolve(dead ? 0 : sol.warm()).catch(() => { /* warm is best effort */ }).then(() => report(1));
+      if (gate) warm(); else idle(warm, { timeout: 2000 });
     } catch (err) { fail(err); }
   }
 
   // lazy trigger: only when the section is within ~1.5 viewports, and never before the page has loaded
   // (on a phone the section can sit inside that margin at load: three and the scene then raced the loader for the hero)
-  const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); afterLoad(boot); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
-  near.observe(root);
+  if (gate) boot();
+  else {
+    const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); afterLoad(boot); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
+    near.observe(root);
+  }
 }
 
 // ---------------------------------------------------------------- the scroll film (Austin -> Earth -> Mars -> colony -> launch)
