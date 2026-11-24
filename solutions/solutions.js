@@ -30,7 +30,7 @@ const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-top
 const WORDS = {
   hint: ['hint-zone', 'Click to draw a dig zone'], hintPoint: ['hint-point', 'Click to add corners'], hintClose: ['hint-close', 'Click the first corner to close'],
   hintCancel: ['hint-cancel', 'Esc to cancel'], zone: ['label-zone', 'Zone'],
-  dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Dozer 02'], grade: ['tag-grade', 'Compactor 03'],
+  dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Dozer 02'], grade: ['tag-grade', 'Roller 03'],
   auto: ['hud-auto', 'Autopilot'], manual: ['hud-manual', 'Manual'], swing: ['hud-swing', 'Swing'], reach: ['hud-reach', 'Reach'],
   depth: ['hud-depth', 'To grade'], load: ['hud-load', 'Load'], grade_: ['hud-grade', 'Grade'],
   cut: ['label-cut', 'Cut'], fill: ['label-fill', 'Fill'],
