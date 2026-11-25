@@ -6,6 +6,85 @@
 
 const EDGE_DEG = 26;
 
+// ------------------------------------------------------------------ excavator arm kinematics (pure math: no three, no DOM, importable in node)
+// Reference: CAT 336, 6.5 m boom, 3.2 m stick, published strokes boom 1440, stick 1738, bucket (DB linkage) 1151 mm. The model is
+// built at EXC_S = 0.88 of it (boom 5.7 / 6.5 = 0.88, stick 2.9 / 3.2 = 0.91, track 3.7 / 4.04 = 0.92), so the strokes scale by 0.88.
+// Everything is in the turret's xy plane (x forward, y up, model metres, origin at the swing centre on top of the bearing). Frames:
+// boom (origin P0, angle a1), stick (origin boom tip, angle a1 + a2), bucket (origin stick tip H, angle a1 + a2 + a3).
+const EXC_S = 0.88, EXC_BL = 5.7, EXC_SL = 2.9;
+export const EXC_PIN = {
+  P0: [0.95, 1.0],     // boom foot pin on the turret
+  BA: [0.75, 0.35],    // boom cylinders, base: low on the front of the upper frame (turret frame)
+  BB: [2.6, -0.4],     // boom cylinders, rod pin: lug under the boom belly, 44% along (boom frame)
+  SA: [2.2, 1.0],      // stick cylinder, base: bracket on the boom top behind the bend (boom frame)
+  SB: [-0.75, 0.35],   // stick cylinder, rod pin: the stick heel, behind the boom/stick pin (stick frame)
+  KC: [0.45, 0.46],    // bucket cylinder, base: bracket on the stick top near the heel (stick frame)
+  G: [2.83, -0.16],    // idler link, stick end: lug under the stick tip (stick frame)
+  F: [0.44, 0.48],     // power link, bucket end: the bucket ear, offset from the hinge pin (bucket frame)
+  LI: 0.55, LP: 0.40,  // idler and power link lengths
+};
+const EXC_STROKE = { boom: 1.44 * EXC_S, stick: 1.738 * EXC_S, bucket: 1.151 * EXC_S };
+const EXC_LMIN = { boom: 2.03, stick: 2.91, bucket: 1.95 };   // pin to pin, retracted (> stroke + dead length, see EXC_HYD)
+const EXC_LMAX = { boom: EXC_LMIN.boom + EXC_STROKE.boom, stick: EXC_LMIN.stick + EXC_STROKE.stick, bucket: EXC_LMIN.bucket + EXC_STROKE.bucket };
+// forward kinematics into o (no allocation): pin positions in the turret plane, the three cylinder lengths and the two link lengths
+export function excFK(a1, a2, a3, o) {
+  const P = EXC_PIN, c1 = Math.cos(a1), s1 = Math.sin(a1), t2 = a1 + a2, c2 = Math.cos(t2), s2 = Math.sin(t2), t3 = t2 + a3, c3 = Math.cos(t3), s3 = Math.sin(t3);
+  const px = P.P0[0], py = P.P0[1];
+  o.bx = px + P.BB[0] * c1 - P.BB[1] * s1; o.by = py + P.BB[0] * s1 + P.BB[1] * c1;
+  o.ax = px + P.SA[0] * c1 - P.SA[1] * s1; o.ay = py + P.SA[0] * s1 + P.SA[1] * c1;
+  o.ex = px + EXC_BL * c1; o.ey = py + EXC_BL * s1;   // boom tip = stick pin
+  o.sx = o.ex + P.SB[0] * c2 - P.SB[1] * s2; o.sy = o.ey + P.SB[0] * s2 + P.SB[1] * c2;
+  o.kx = o.ex + P.KC[0] * c2 - P.KC[1] * s2; o.ky = o.ey + P.KC[0] * s2 + P.KC[1] * c2;
+  o.gx = o.ex + P.G[0] * c2 - P.G[1] * s2; o.gy = o.ey + P.G[0] * s2 + P.G[1] * c2;
+  o.hx = o.ex + EXC_SL * c2; o.hy = o.ey + EXC_SL * s2;   // bucket hinge
+  o.fx = o.hx + P.F[0] * c3 - P.F[1] * s3; o.fy = o.hy + P.F[0] * s3 + P.F[1] * c3;
+  // 4-bar joint J: |J - G| = LI, |J - F| = LP; always the same branch (the one on the cylinder side of the G-F line)
+  const dx = o.fx - o.gx, dy = o.fy - o.gy, d = Math.hypot(dx, dy) || 1e-9, a = (P.LI * P.LI - P.LP * P.LP + d * d) / (2 * d), q = P.LI * P.LI - a * a;
+  o.closed = d <= P.LI + P.LP && d >= Math.abs(P.LI - P.LP);
+  const h = Math.sqrt(q > 0 ? q : 0);
+  o.jx = o.gx + (dx * a - dy * h) / d; o.jy = o.gy + (dy * a + dx * h) / d;
+  o.L1 = Math.hypot(o.bx - P.BA[0], o.by - P.BA[1]); o.L2 = Math.hypot(o.sx - o.ax, o.sy - o.ay); o.L3 = Math.hypot(o.jx - o.kx, o.jy - o.ky);
+  o.li = Math.hypot(o.jx - o.gx, o.jy - o.gy); o.lp = Math.hypot(o.jx - o.fx, o.jy - o.fy);
+  return o;
+}
+const FK0 = {};
+// pure-math view of the arm for tests: cylinder lengths, link lengths and whether everything is inside its limits (lengths in model m)
+export function excKinematics(a1, a2, a3) {
+  const o = excFK(a1, a2, a3, {}), e = 1e-6, L = EXC_LIMITS;
+  const within = (v, k) => v >= L.lmin[k] - e && v <= L.lmax[k] + e;
+  return {
+    boomCyl: o.L1, stickCyl: o.L2, bucketCyl: o.L3,
+    links: { idler: o.li, power: o.lp, nominal: [EXC_PIN.LI, EXC_PIN.LP], joint: [o.jx, o.jy], ear: [o.fx, o.fy], idlerPin: [o.gx, o.gy], hinge: [o.hx, o.hy] },
+    ok: o.closed && within(o.L1, 'boom') && within(o.L2, 'stick') && within(o.L3, 'bucket') && Number.isFinite(o.L1 + o.L2 + o.L3 + o.jx + o.jy),
+  };
+}
+// first angle from a0 in direction dir where f crosses target (bisection); NaN where f is undefined (linkage cannot close)
+function excEdge(f, target, a0, dir) {
+  let a = a0, fa = f(a) - target;
+  for (let i = 0; i < 1200; i++) {
+    const b = a + dir * 0.005, fb = f(b) - target;
+    if (fa * fb <= 0) { let u = a, v = b, fu = fa; for (let k = 0; k < 60; k++) { const m = (u + v) / 2, fm = f(m) - target; if (fu * fm <= 0) v = m; else { u = m; fu = fm; } } return (u + v) / 2; }
+    a = b; fa = fb;
+  }
+  return NaN;
+}
+// limits come from the geometry: the angle where each cylinder is at Lmin and at Lmax. a1: boom cylinder only, a2: stick cylinder only,
+// a3: the bucket cylinder through the 4-bar (it sits on the stick, so it does not depend on a1 or a2)
+export const EXC_LIMITS = (() => {
+  const L1 = a => excFK(a, 0, 0, FK0).L1, L2 = a => excFK(0, a, 0, FK0).L2, L3 = a => { excFK(0, 0, a, FK0); return FK0.closed ? FK0.L3 : NaN; };
+  const lo = EXC_LMIN, hi = EXC_LMAX;
+  return {
+    a1: [excEdge(L1, lo.boom, 0, -1), excEdge(L1, hi.boom, 0, 1)],            // boom up = cylinder out
+    a2: [excEdge(L2, hi.stick, -1.3, -1), excEdge(L2, lo.stick, -1.3, 1)],    // stick curl in (a2 more negative) = cylinder out
+    a3: [excEdge(L3, hi.bucket, 0, -1), excEdge(L3, lo.bucket, 0, 1)],        // bucket curl (a3 more negative) = cylinder out
+    strokes: EXC_STROKE, lmin: EXC_LMIN, lmax: EXC_LMAX,
+  };
+})();
+// cylinder build sizes (model m): barrel and rod are rigid, the rod slides in the barrel. dead: piston stack at Lmin, so the rod end
+// is `dead` from the barrel base; the barrel ends `lip` short of the rod pin at Lmin. Lmin > stroke + dead + lip + guide keeps the rod
+// inside the barrel at Lmax (checked in test/check-arm.mjs).
+export const EXC_HYD = { dead: 0.14, lip: 0.12, guide: 0.06 };
+
 // opts.line: line art colour (any THREE.Color input), opts.solid: the hidden-line occluder colour
 export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = {}) {
   const LINE = new THREE.Color(line), SOLID = new THREE.Color(solid);
@@ -234,6 +313,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
 
   // ================================================================== EXCAVATOR (36 t class)
   const TL = 3.7, TR = 0.46, TW = 0.6, TZ = 1.28, TY = 0.53;
+  const ARMZ = 0.2, ARMZ_CYL = 0.4, ARMZ_EAR = 0.33;   // arm plane z in the turret; boom cylinders' and the bucket ears' z offset from it
   let excT = null;
   function excTemplate() {
     if (excT) return excT;
@@ -280,6 +360,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     t.rod([-1.5, 1.28, 0.9], [-1.5, 2.0, 0.9], 0.02, 6); t.cyl(0.1, 0.05, -1.5, 2.02, 0.9, 12, 'y');
     for (const z of [-0.05, 0.45]) t.ext([[0.2, 0.28], [1.25, 0.28], [1.2, 1.25], [0.75, 1.35]], 0.12, z - 0.06); // boom foot bracket
     t.cyl(0.13, 0.75, 0.95, 1.0, 0.2, 16);
+    for (const z of [0.2 - ARMZ_CYL, 0.2 + ARMZ_CYL]) t.bx(EXC_PIN.BA[0] - 0.2, 0.28, z - 0.05, EXC_PIN.BA[0] + 0.2, EXC_PIN.BA[1] + 0.07, z + 0.05); // frame lugs for the boom cylinder bases
     const upper = t.build();
 
     // boom: banana profile from pin (0,0) to tip (5.7,0)
@@ -289,15 +370,20 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
       const zz = z * (BW / 2 + 0.012), lo = [[0.6, -0.15], [1.6, 0.0], [2.5, 0.25], [3.6, 0.05], [4.7, -0.12]], hi = [[1.1, 0.4], [2.05, 0.7], [3.05, 0.62], [4.15, 0.36], [5.2, 0.1]];
       for (let k = 0; k < lo.length; k++) { b.bar([lo[k][0], lo[k][1], zz], [hi[k][0], hi[k][1], zz], 0.06, 0.02); if (k + 1 < lo.length) b.bar([hi[k][0], hi[k][1], zz], [lo[k + 1][0], lo[k + 1][1], zz], 0.06, 0.02); }
     }
-    for (const z of [-0.32, 0.32]) b.rod([0.9, -0.55, z], [2.4, -0.05, z], 0.09, 10); // boom cylinders
-    b.rod([1.0, 0.55, 0], [BL - 0.1, 0.65, 0], 0.1, 10); b.rod([3.0, 0.75, 0], [BL + 0.25, 0.75, 0], 0.07, 8); // stick cylinder
+    // the cylinders are the moving hydraulics (hydTemplate); the boom carries their lugs: boom cylinder rod pins under the belly (both sides), stick cylinder base on top
+    for (const z of [-1, 1]) { b.ext([[2.15, 0.12], [2.4, -0.5], [2.85, -0.5], [3.1, 0.15]], 0.08, z > 0 ? BW / 2 : -BW / 2 - 0.08); b.cyl(0.06, 0.34, EXC_PIN.BB[0], EXC_PIN.BB[1], z * 0.37, 8); }
+    for (const z of [-0.13, 0.13]) b.ext([[1.9, 0.68], [2.0, 1.06], [2.4, 1.06], [2.5, 0.82]], 0.05, z - 0.025);
+    b.cyl(0.06, 0.3, EXC_PIN.SA[0], EXC_PIN.SA[1], 0, 6);
     b.cyl(0.12, BW + 0.2, 0, 0, 0, 16); b.cyl(0.12, BW + 0.2, BL, 0, 0, 16);
     const boom = b.build();
 
     // stick
     const s = part(); const SL = 2.9, SW = 0.38;
-    s.ext([[-0.55, 0.15], [-0.45, 0.55], [0.3, 0.32], [SL, 0.12], [SL + 0.1, -0.12], [SL - 0.4, -0.22], [0.2, -0.25], [-0.3, -0.12]], SW, -SW / 2);
-    s.rod([0.2, 0.42, 0], [SL - 0.5, 0.3, 0], 0.07, 8); // bucket cylinder
+    s.ext([[-0.95, 0.08], [-0.9, 0.62], [-0.3, 0.6], [0.3, 0.32], [SL, 0.12], [SL + 0.1, -0.12], [SL - 0.4, -0.22], [0.2, -0.25], [-0.4, -0.12]], SW, -SW / 2);   // heel runs 0.95 behind the boom pin: the stick cylinder's lever
+    s.cyl(0.07, SW + 0.14, EXC_PIN.SB[0], EXC_PIN.SB[1], 0, 16); // stick cylinder rod pin (heel)
+    for (const z of [-0.1, 0.1]) s.ext([[0.1, 0.3], [0.2, 0.6], [0.62, 0.6], [0.72, 0.3]], 0.05, z - 0.025); // bucket cylinder bracket on the stick top
+    s.cyl(0.06, 0.3, EXC_PIN.KC[0], EXC_PIN.KC[1], 0, 6);
+    s.cyl(0.06, 0.58, EXC_PIN.G[0], EXC_PIN.G[1], 0, 6); // idler link pin under the stick tip
     s.bar([0.4, -0.25, SW / 2 + 0.01], [SL - 0.4, -0.2, SW / 2 + 0.01], 0.05, 0.02); s.bar([0.4, -0.25, -SW / 2 - 0.01], [SL - 0.4, -0.2, -SW / 2 - 0.01], 0.05, 0.02);
     s.cyl(0.1, SW + 0.15, SL, 0, 0, 16);
     const stick = s.build();
@@ -306,12 +392,72 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     const k = part(); const BKW = 1.15;
     k.ext([[-0.05, 0.12], [0.45, 0.22], [0.95, 0.0], [1.25, -0.45], [1.35, -1.05], [1.0, -1.0], [0.55, -0.68], [0.18, -0.32], [-0.08, -0.08]], BKW, -BKW / 2);
     for (let i = 0; i < 5; i++) { const z = -BKW / 2 + 0.12 + i * ((BKW - 0.24) / 4); k.bar([1.3, -1.02, z], [1.42, -1.38, z], 0.1, 0.09); } // teeth
-    for (const z of [-1, 1]) { k.bar([0.35, 0.18, z * 0.25], [0.15, 0.5, z * 0.25], 0.06, 0.06); k.bar([0.95, 0.02, z * (BKW / 2 + 0.02)], [1.3, -0.95, z * (BKW / 2 + 0.02)], 0.08, 0.03); }
+    for (const z of [-1, 1]) { k.ext([[0.2, 0.16], [0.26, 0.66], [0.64, 0.66], [0.72, 0.24]], 0.04, z * ARMZ_EAR - 0.02); k.bar([0.95, 0.02, z * (BKW / 2 + 0.02)], [1.3, -0.95, z * (BKW / 2 + 0.02)], 0.08, 0.03); }
     for (const [a, c] of [[[0.5, 0.21], [0.95, 0.02]], [[0.95, 0.02], [1.27, -0.48]], [[1.27, -0.48], [1.37, -1.0]]]) for (let i = -1; i <= 1; i++) k.bar([a[0], a[1] + 0.02, i * 0.32], [c[0] + 0.02, c[1] + 0.02, i * 0.32], 0.05, 0.05); // straps
     k.cyl(0.08, BKW + 0.1, 0, 0, 0, 16);
+    k.cyl(0.06, 2 * ARMZ_EAR + 0.1, EXC_PIN.F[0], EXC_PIN.F[1], 0, 6); // ear pin (power link)
     const bucket = k.build();
     excT = { under, upper, boom, stick, bucket, BL, SL };
     return excT;
+  }
+
+
+  // moving hydraulics: the 12 rigid pieces of the 3 cylinders and the bucket linkage, ONE dynamic geometry pair (like makeTrack's shoes).
+  // Each piece is local vertex soup + edge segments, x along the piece, posed by a 2D rigid transform in the arm plane (x, y, angle)
+  // plus a z offset; setArm re-poses all of them from excFK in plain numbers.
+  let hydT = null;
+  function hydTemplate() {
+    if (hydT) return hydT;
+    const H = EXC_HYD, mk = fn => { const p = part(); fn(p); const { geo, edges } = p.build(), r = { s: geo.attributes.position.array.slice(), e: edges.attributes.position.array.slice() }; geo.dispose(); edges.dispose(); return r; };
+    // barrel: origin at the base pin, along +x to its mouth; rod: origin at the rod pin, along +x toward the base (rigid length, slides in the barrel)
+    const barrel = (rb, lmin, eye) => mk(p => { const lb = lmin - H.lip; p.cyl(rb, lb - 0.03, 0.03 + (lb - 0.03) / 2, 0, 0, 8, 'x'); p.cyl(eye, 2 * rb + 0.08, 0, 0, 0, 6, 'z'); });
+    const rod = (rr, lmin, eye, pin = 2 * rr + 0.1) => mk(p => { const lr = lmin - H.dead; p.cyl(rr, lr - 0.04, 0.04 + (lr - 0.04) / 2, 0, 0, 6, 'x'); p.cyl(eye, pin, 0, 0, 0, 6, 'z'); });
+    const link = len => mk(p => p.bx(-0.06, -0.05, -0.02, len + 0.06, 0.05, 0.02));   // plate; its end pins are the stick, ear and rod-end pins
+    const L = EXC_LMIN;
+    hydT = {
+      boomBarrel: barrel(0.1, L.boom, 0.075), boomRod: rod(0.06, L.boom, 0.075), stickBarrel: barrel(0.11, L.stick, 0.08), stickRod: rod(0.065, L.stick, 0.08),
+      bucketBarrel: barrel(0.09, L.bucket, 0.07), bucketRod: rod(0.055, L.bucket, 0.06, 2 * ARMZ_EAR - 0.05), idler: link(EXC_PIN.LI), power: link(EXC_PIN.LP),
+    };
+    return hydT;
+  }
+  // one instance: [template piece, z offset from the arm plane] per slot; kind drives how excFK's pins pose it
+  function makeHyd() {
+    const T = hydTemplate(), Z = 0.235, Z2 = 0.285;
+    // slot kinds: 0 barrel / 1 rod of a cylinder (cyl = 0 boom, 1 stick, 2 bucket), 2 idler, 3 power
+    const slots = [
+      [T.boomBarrel, ARMZ_CYL, 0, 0], [T.boomBarrel, -ARMZ_CYL, 0, 0], [T.boomRod, ARMZ_CYL, 1, 0], [T.boomRod, -ARMZ_CYL, 1, 0],
+      [T.stickBarrel, 0, 0, 1], [T.stickRod, 0, 1, 1], [T.bucketBarrel, 0, 0, 2], [T.bucketRod, 0, 1, 2],
+      [T.idler, Z, 2, 3], [T.idler, -Z, 2, 3], [T.power, Z2, 3, 3], [T.power, -Z2, 3, 3],
+    ];
+    let sn = 0, en = 0; const so = [], eo = [];
+    for (const [p] of slots) { so.push(sn); eo.push(en); sn += p.s.length; en += p.e.length; }
+    const sPos = new Float32Array(sn), ePos = new Float32Array(en);
+    const sGeo = new THREE.BufferGeometry(), eGeo = new THREE.BufferGeometry();
+    sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3).setUsage(THREE.DynamicDrawUsage));
+    eGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3).setUsage(THREE.DynamicDrawUsage));
+    const B = new THREE.Sphere(new THREE.Vector3(3, 1, ARMZ), 12); sGeo.boundingSphere = B.clone(); eGeo.boundingSphere = B.clone();   // covers the whole arm reach: never culled
+    const pose = (out, local, o, x, y, ang, dz) => {
+      const c = Math.cos(ang), s = Math.sin(ang);
+      for (let i = 0; i < local.length; i += 3, o += 3) { const lx = local[i], ly = local[i + 1]; out[o] = x + lx * c - ly * s; out[o + 1] = y + lx * s + ly * c; out[o + 2] = ARMZ + dz + local[i + 2]; }
+    };
+    const K = {}; let l1 = NaN, l2 = NaN, l3 = NaN;
+    const update = (a1, a2, a3) => {
+      if (a1 === l1 && a2 === l2 && a3 === l3) return; l1 = a1; l2 = a2; l3 = a3;
+      excFK(a1, a2, a3, K); const P = EXC_PIN;
+      // [base pin, rod pin] per cylinder; links: idler G -> J, power F -> J
+      const ends = [[P.BA[0], P.BA[1], K.bx, K.by], [K.ax, K.ay, K.sx, K.sy], [K.kx, K.ky, K.jx, K.jy]];
+      for (let k = 0; k < slots.length; k++) {
+        const [p, dz, kind, cyl] = slots[k]; let x, y, ang;
+        if (kind === 0) { const e = ends[cyl]; x = e[0]; y = e[1]; ang = Math.atan2(e[3] - e[1], e[2] - e[0]); }
+        else if (kind === 1) { const e = ends[cyl]; x = e[2]; y = e[3]; ang = Math.atan2(e[1] - e[3], e[0] - e[2]); }
+        else if (kind === 2) { x = K.gx; y = K.gy; ang = Math.atan2(K.jy - K.gy, K.jx - K.gx); }
+        else { x = K.fx; y = K.fy; ang = Math.atan2(K.jy - K.fy, K.jx - K.fx); }
+        pose(sPos, p.s, so[k], x, y, ang, dz); pose(ePos, p.e, eo[k], x, y, ang, dz);
+      }
+      sGeo.attributes.position.needsUpdate = true; eGeo.attributes.position.needsUpdate = true;
+    };
+    update(0, 0, 0);
+    return { geo: sGeo, edges: eGeo, update, dispose() { sGeo.dispose(); eGeo.dispose(); } };
   }
 
   function excavator() {
@@ -321,7 +467,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     const track = makeTrack(belt([[-TL / 2, 0, TR + 0.02], [TL / 2, 0, TR + 0.02]]), TW + 0.06, [-TZ, TZ], TY);
     const tm = new THREE.Mesh(track.geo, m.solid), tl = new THREE.LineSegments(track.edges, m.line); tm.renderOrder = 1; tl.renderOrder = 2; body.add(tm, tl);
     const turret = node(T.upper, m); turret.position.y = TY + 0.58; body.add(turret);
-    const boom = node(T.boom, m); boom.position.set(0.95, 1.0, 0.2); turret.add(boom);
+    const hyd = makeHyd(), hm = new THREE.Mesh(hyd.geo, m.solid), hl = new THREE.LineSegments(hyd.edges, m.line); hm.renderOrder = 1; hl.renderOrder = 2; turret.add(hm, hl);   // +2 draw calls: every cylinder and link
+    const boom = node(T.boom, m); boom.position.set(EXC_PIN.P0[0], EXC_PIN.P0[1], ARMZ); turret.add(boom);
     const stick = node(T.stick, m); stick.position.set(T.BL, 0, 0); boom.add(stick);
     const bucket = node(T.bucket, m); bucket.position.set(T.SL, 0, 0); stick.add(bucket);
     const tip = new THREE.Object3D(); tip.position.set(1.38, -1.25, 0); bucket.add(tip);
@@ -331,11 +478,11 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
       root, body, turret, boom, stick, bucket, tip, kind: 'excavator',
       // cab roof in the upper structure's space (model metres): top of the roof slab and its centre
       ROOF: { y: 2.15, x: 0.66, z: -0.975, len: 1.58, wid: 1.01 },
-      setArm(a1, a2, a3, sw) { turret.rotation.y = sw; boom.rotation.z = a1; stick.rotation.z = a2; bucket.rotation.z = a3; },
+      setArm(a1, a2, a3, sw) { turret.rotation.y = sw; boom.rotation.z = a1; stick.rotation.z = a2; bucket.rotation.z = a3; hyd.update(a1, a2, a3); },
       drive(dist) { trackOff += dist; track.update(trackOff); },
       setDrive(d) { trackOff = d; track.update(d); },
       setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
-      dispose() { mt.clear(); track.dispose(); m.solid.dispose(); m.line.dispose(); },
+      dispose() { mt.clear(); track.dispose(); hyd.dispose(); m.solid.dispose(); m.line.dispose(); },
     };
   }
 

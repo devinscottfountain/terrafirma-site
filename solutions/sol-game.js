@@ -15,6 +15,7 @@
 // while the dig view is showing (corners at a human pace, live edge, snap ring), digs each one out like a visitor's zone,
 // then fades it, heals the ground back and picks a new spot in the pit (see demoTick).
 import { SITE, hF, hD } from './sol-terrain.js';
+import { EXC_LIMITS } from './sol-machines.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
@@ -41,12 +42,31 @@ const ZDEPTH = 0.8;     // m, a zone is dug this far below the existing ground (
 const ZK = 2.4;         // a zone bite fills the bucket to ZK x CAP (game pace)
 const ZR = 1.4, ZPEN = 0.75;    // m, carve radius and depth of one pass in a zone
 const ZNEAR = RMIN + 1.4, ZFAR = 8.4;   // m, a zone bite's distance from the turret: room for the drag, and low reach
+export const ARMK = { PH, PIN_X, PIN_Y, BL, SL, TX, TY, RMIN, RMAX, ZFAR };   // for test/check-arm.mjs
 const SMAX = 600;       // sample points that track what is left to dig
 // the phone demo
 const DEMO = { first: 1.4, corner: [0.6, 0.9], snap: 0.45, cap: 45, hold: 1.2, heal: 2.4, rest: 0.8, depth: 0.5 };
 // spots in the pit (pit-local x, z, m) the demo cycles through, each with a little jitter: the south half, between the
 // machine and the dig camera, so the zone reads in front of the arm instead of under it
 const DSPOT = [[-2.2, -2.6], [0.8, -2.2], [-0.6, -3.0], [1.6, -1.4], [-2.6, -1.2]];
+
+// the arm solver (pure, no THREE): tip target (xr, yr) in the root's xy plane (model m) with absolute bucket angle ph -> a1, a2, a3 and the
+// absolute bucket angle actually reached (ph: pe). Joint limits are the hydraulic ones (EXC_LIMITS): a2 is clamped through the law of
+// cosines (the wrist stays on the stick's reachable annulus, on its bearing), a1 is clamped, and the bucket angle is clamped to what the
+// linkage allows on top of the stick angle; the wrist is then solved again for the angle the bucket really has, so the teeth land on the
+// target even when the bucket cannot reach the asked angle.
+export function solveArm(xr, yr, ph, o, L = EXC_LIMITS) {
+  let pe = ph, a1 = 0, a2 = 0;
+  const k0 = Math.cos(L.a2[0]), k1 = Math.cos(L.a2[1]);
+  for (let i = 0; i < 4; i++) {
+    const c = Math.cos(pe), s = Math.sin(pe), px = xr - (TX * c - TY * s) - PIN_X, py = yr - (TX * s + TY * c) - PIN_Y;
+    const c2 = clamp((px * px + py * py - BL * BL - SL * SL) / (2 * BL * SL), k0, k1);
+    a2 = -Math.acos(c2); a1 = clamp(Math.atan2(py, px) - Math.atan2(SL * Math.sin(a2), BL + SL * Math.cos(a2)), L.a1[0], L.a1[1]);
+    pe = clamp(ph, a1 + a2 + L.a3[0], a1 + a2 + L.a3[1]);
+  }
+  o.a1 = a1; o.a2 = a2; o.a3 = pe - a1 - a2; o.pe = pe;
+  return o;
+}
 
 export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock }) {
   const E = SITE.E, Z = SITE.digZone, home = { x: E.x, z: E.z, yaw: E.yaw };
@@ -391,14 +411,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   }
   function ik() {
     // tip target in the turret plane, model units, relative to the root
-    const xr = cur.r / MSCALE, yr = (cur.y - rootY) / MSCALE;
-    const c = Math.cos(cur.ph), s = Math.sin(cur.ph);
-    const px = xr - (TX * c - TY * s) - PIN_X, py = yr - (TX * s + TY * c) - PIN_Y;
-    const d = clamp(Math.hypot(px, py), BL - SL + 0.4, BL + SL - 0.05);
-    const c2 = clamp((d * d - BL * BL - SL * SL) / (2 * BL * SL), -1, 1);
-    let a2 = -Math.acos(c2), a1 = Math.atan2(py, px) - Math.atan2(SL * Math.sin(a2), BL + SL * Math.cos(a2));
-    a1 = clamp(a1, -0.95, 1.25); a2 = clamp(a2, -2.8, -0.3);
-    ARM.a1 = a1; ARM.a2 = a2; ARM.a3 = clamp(cur.ph - a1 - a2, -2.7, 1.3);
+    solveArm(cur.r / MSCALE, (cur.y - rootY) / MSCALE, cur.ph, ARM);
     exc.setArm(ARM.a1, ARM.a2, ARM.a3, cur.sw);
   }
 
