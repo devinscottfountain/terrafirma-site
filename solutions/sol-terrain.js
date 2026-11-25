@@ -36,7 +36,7 @@ export function hF(x, z) {
 // from their routes (sol-crew.js). FOOT: footprint half sizes (m, world) and the offset of the rectangle centre ahead of the
 // machine origin; the plan view draws these and the QA gap check measures them.
 // The dozer pushes in a straight line from the pile onto the pad. That line is tangent to a circle of radius push.r round
-// E at its blade start point B, so the dozer never comes closer than push.r - its blade half width (15 - 3.5 m) to the
+// E at its blade start point B, so the dozer never comes closer than push.r - its blade half width (13.2 - 3.5 m) to the
 // excavator; the pile sits on the same bearing at pileR, under the inner end of the blade. pileSw follows from that.
 const E = { x: 2, z: 6, yaw: Math.PI };
 export const SITE = {
@@ -45,8 +45,8 @@ export const SITE = {
   pad: { x: 32.3, z: -21.7, hx: 14, hz: 5.5, rot: 0.5, ws: 3.2, fill: 1.3 },
   plat: { x: -22, z: -15, hx: 10, hz: 7, rot: -0.2, ws: 3.2 },
   road: { ax: 8, az: -8.5, bx: 17.5, bz: -13.5, hw: 2.6, ws: 2.6 },
-  pileR: 11,                   // dump radius (m) from E; the swing (pileSw) is set below from the push line
-  push: { r: 15, lx: -14.3, lz: 2 },   // blade start radius from E; where the push ends (pad local x, z of the blade edge)
+  pileR: 9.2,                  // dump radius (m) from E; the swing (pileSw) is set below from the push line
+  push: { r: 13.2, lx: -14.3, lz: 2 },   // blade start radius from E; where the push ends (pad local x, z of the blade edge)
   digZone: { x: -4, z: 10, hx: 8, hz: 4, rot: 0 },   // where the excavator's centre may drive (contains E)
   FOOT: { dig: { hx: 2.6, hz: 1.95, off: 0 }, house: { hx: 2.1, hz: 2.1 }, haul: { hx: 6.37, hz: 3.46, off: -1.05 }, grade: { hx: 4.1, hz: 1.77, off: -0.74 } },
   dots: { x: -1.5, z: 3 },     // centre of the densest dots (the dig)
