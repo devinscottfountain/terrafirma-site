@@ -202,8 +202,9 @@ export function createField(THREE) {
     dirty = true;
   }
   // upload at most ~30 times a second, only when something changed
-  function upload(dt) { upT += dt; if (dirty && upT > 1 / 30) { tex.needsUpdate = true; dirty = false; upT = 0; } }
-  return { tex, data, N, cell, ox, oz, at, ground, lower, raise, relax, take, flatten, mark, upload, keep, kept, heal, get dirty() { return dirty; },
+  let hz = 30;   // phones set 20: the 320 x 320 RG32F texture (800 KB) goes up that often while the work changes it
+  function upload(dt) { upT += dt; if (dirty && upT > 1 / hz) { tex.needsUpdate = true; dirty = false; upT = 0; } }
+  return { setRate(v) { hz = v; }, tex, data, N, cell, ox, oz, at, ground, lower, raise, relax, take, flatten, mark, upload, keep, kept, heal, get dirty() { return dirty; },
     uniform: new THREE.Vector4(ox, oz, cell, N), dispose() { tex.dispose(); } };
 }
 

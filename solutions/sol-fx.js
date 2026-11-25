@@ -31,9 +31,9 @@ export const FS_VERT = /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_P
 // ------------------------------------------------------------------ dot cloud
 // Mode weights are vec3(plan, dig, exec) (same order as the scene's mode index). uWA is the look ahead of a transition
 // pulse, uWB behind it; at rest both are equal.
-export function dotMaterial(THREE, U) {
+export function dotMaterial(THREE, U, { cull = false } = {}) {
   return new THREE.ShaderMaterial({
-    uniforms: U, transparent: true, depthWrite: false,
+    uniforms: U, transparent: true, depthWrite: false, defines: cull ? { PHONE_CULL: 1 } : {},
     vertexShader: /* glsl */ `
       attribute vec4 aD;
       uniform sampler2D uField; uniform vec4 uFieldT;
@@ -61,6 +61,12 @@ export function dotMaterial(THREE, U) {
       void main(){
         vec2 p = position.xz; float rank = aD.y;
         if (rank > uDensity) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; }
+#ifdef PHONE_CULL
+        // phones: a far dot (w > 20 m: the height error of the edit field and the morph, about 4 m, moves it under .55 NDC) well outside the
+        // view skips the shadow march and the lighting (the tight phone framing leaves most of the cloud off screen)
+        { vec4 cc = projectionMatrix*modelViewMatrix*vec4(p.x, hF(p), p.y, 1.);
+          if (cc.w > 20. && (abs(cc.x) > cc.w*1.75 || abs(cc.y) > cc.w*1.75)) { gl_Position = vec4(2., 2., 2., 1.); gl_PointSize = 0.; return; } }
+#endif
         vec2 fg; vec4 fd = fieldAt(p, fg);
         float h0 = hF(p), hE = h0 + fd.x - fd.y*.05, hDs = hD(p, h0), cf = hE - hDs;
         // slope of the existing ground, and its long soft shadows (march toward the low sun)

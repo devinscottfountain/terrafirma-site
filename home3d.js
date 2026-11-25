@@ -117,7 +117,7 @@ if (!bail) {
   }
   function sync() {
     if (!sol || !ready) return;
-    if (visible) {
+    if (visible && !document.hidden) {   // a hidden tab renders and simulates nothing (rAF stops there anyway; this also stops the gsap-driven path)
       frame();   // layout may have moved while the section was off screen
       const ext = !!window.gsap?.ticker;
       sol.start(ext);
@@ -127,6 +127,8 @@ if (!bail) {
       if (gsapTick) { window.gsap.ticker.remove(gsapTick); gsapTick = null; }
     }
   }
+
+  document.addEventListener('visibilitychange', sync); cleanups.push(() => document.removeEventListener('visibilitychange', sync));
 
   // ---------------------------------------------------------------- failure: dispose, leave the section as it was
   function fail(err) {
@@ -147,7 +149,7 @@ if (!bail) {
     try {
       const [THREE, mod] = await Promise.all([import('three'), import('./solutions/solutions.js')]);
       if (dead) return;
-      sol = mod.createSolutions({ THREE, host: mount, root, quality: phone && !qs.get('q') ? 'low' : quality, interactive: !phone, safe: safeInsets() });   // adds its canvases to the mount
+      sol = mod.createSolutions({ THREE, host: mount, root, quality: phone && !qs.get('q') ? 'low' : quality, interactive: !phone, safe: safeInsets(), phone: phone && !qs.get('q') });   // adds its canvases to the mount
       const cv = sol.canvas;
       Object.assign(cv.style, { opacity: '0', transition: `opacity ${FADE_MS}ms ease` });   // pointer-events stay owned by the dig game
       cv.addEventListener('webglcontextlost', e => { e.preventDefault(); fail(new Error('webgl context lost')); });
