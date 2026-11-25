@@ -66,7 +66,19 @@ function safeInsets() {
     if (!Number.isFinite(v)) v = parseFloat(root.getAttribute('data-sol-safe-' + n) ?? mount.getAttribute('data-sol-safe-' + n));
     return Number.isFinite(v) ? v : SAFE_DEF[n];
   };
-  return { top: read('top'), bottom: read('bottom') };
+  let bottom = read('bottom');
+  // tab cards overlaid on the stage (desktop): where their top edge reaches higher than the CSS inset, it wins (+8 px air), so a
+  // copy change in Webflow that makes the open card taller never hides the readout and the hint behind the cards
+  const mr = mount.getBoundingClientRect();
+  if (mr.height > 0) {
+    let top = Infinity;
+    for (const c of root.querySelectorAll('[data-tab-card]')) {
+      const r = c.getBoundingClientRect();
+      if (r.height && r.left < mr.right && r.right > mr.left && r.top < mr.bottom && r.top > mr.top + mr.height * 0.4) top = Math.min(top, r.top);
+    }
+    if (top < Infinity) bottom = Math.max(bottom, (mr.bottom - top + 8) / mr.height);
+  }
+  return { top: read('top'), bottom };
 }
 
 if (!bail) {
@@ -91,7 +103,12 @@ if (!bail) {
   cleanups.push(() => window.removeEventListener('tf:solutions', onMode));
 
   // ---------------------------------------------------------------- frame: safe insets (read again on every layout change)
-  function frame() { if (sol) sol.setSafe(safeInsets()); }
+  let lastT = -1, lastB = -1;   // only refit when an inset really moved (the cards resize every frame while a tab opens)
+  function frame() {
+    if (!sol) return;
+    const s = safeInsets(); if (Math.abs(s.top - lastT) < 0.002 && Math.abs(s.bottom - lastB) < 0.002) return;
+    lastT = s.top; lastB = s.bottom; sol.setSafe(s);
+  }
 
   // ---------------------------------------------------------------- tick (gsap.ticker when present, else the scene's own rAF)
   function tick() {
