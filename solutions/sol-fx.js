@@ -192,6 +192,13 @@ export function lineMaterial(THREE, RES, PRU, T, color, { width = 1, depthTest =
       }`,
   });
 }
+// mark [start, start + count) of a dynamic attribute for upload. One merged range: before the buffer exists (the first draw creates it whole) ranges pile up
+// unsent, so they are folded into one instead of growing; three sends the range with bufferSubData and clears it
+export function markRange(attr, start, count) {
+  const R = attr.updateRanges;
+  if (R.length) { const r = R[0], e = Math.max(r.start + r.count, start + count); r.start = Math.min(r.start, start); r.count = e - r.start; R.length = 1; } else attr.addUpdateRange(start, count);
+  attr.needsUpdate = true;
+}
 // a set of segments with preallocated buffers: set(i, ax, ay, az, bx, by, bz, ta, tb, k), then commit(count)
 export function lineSet(THREE, mat, maxSeg) {
   const pos = new Float32Array(maxSeg * 12), oth = new Float32Array(maxSeg * 12), se = new Float32Array(maxSeg * 8);
@@ -214,7 +221,7 @@ export function lineSet(THREE, mat, maxSeg) {
         tt[i * 4 + c] = e ? tb : ta; kk[i * 4 + c] = k;
       }
     },
-    commit(n) { geo.setDrawRange(0, n * 6); for (const k of ['position', 'aOther', 'aT', 'aK']) geo.attributes[k].needsUpdate = true; },
+    commit(n) { geo.setDrawRange(0, n * 6); const A = geo.attributes; markRange(A.position, 0, n * 12); markRange(A.aOther, 0, n * 12); markRange(A.aT, 0, n * 4); markRange(A.aK, 0, n * 4); },   // only the n segments in use go up, not the whole maxSeg buffer
   };
 }
 
@@ -278,16 +285,16 @@ export function particles(THREE, n, U) {
       void main(){ float d = length(gl_PointCoord - .5), a = vC.a*smoothstep(.5, .15, d); if (a < .003) discard; gl_FragColor = vec4(vC.rgb, a); }`,
   });
   const pts = new THREE.Points(geo, mat); pts.frustumCulled = false;
-  let head = 0, dirty = false;
+  let head = 0, lo = n, hi = -1;   // lo..hi: the slots written since the last flush
   return {
     pts,
     // gravity 1 = a clod, 0 = a dust puff; ground = the y it lands on
     emit(t, x, y, z, vx, vy, vz, life, ground, gravity = 1) {
       const i = head; head = (head + 1) % n;
       p0[i * 3] = x; p0[i * 3 + 1] = y; p0[i * 3 + 2] = z; v0[i * 3] = vx; v0[i * 3 + 1] = vy; v0[i * 3 + 2] = vz;
-      tl[i * 4] = t; tl[i * 4 + 1] = life; tl[i * 4 + 2] = ground; tl[i * 4 + 3] = gravity; dirty = true;
+      tl[i * 4] = t; tl[i * 4 + 1] = life; tl[i * 4 + 2] = ground; tl[i * 4 + 3] = gravity; if (i < lo) lo = i; if (i > hi) hi = i;
     },
-    flush() { if (!dirty) return; dirty = false; for (const k of ['position', 'aV', 'aTL']) geo.attributes[k].needsUpdate = true; },
+    flush() { if (hi < 0) return; const A = geo.attributes, c = hi - lo + 1; markRange(A.position, lo * 3, c * 3); markRange(A.aV, lo * 3, c * 3); markRange(A.aTL, lo * 4, c * 4); lo = n; hi = -1; },   // a ring: a flush is one run of slots (a wrap inside one flush just spans the lot)
   };
 }
 
