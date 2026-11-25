@@ -635,7 +635,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     dig.setArmed(mode === 1 && !fl, viewOK);
     dig.update(dt, clockT);
     crew.update(dt, clockT);
-    field.upload(dt);
+    field.upload(dt, renderer);
     parts.flush();
 
     // machines right in front of the lens fade out (the chase cam looks across the haul road)
@@ -869,7 +869,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       for (let i = 0; i < 225; i++) { clockT += 1 / 15; dig.update(1 / 15, clockT); crew.update(1 / 15, clockT); }
       await new Promise(r => setTimeout(r, 0));
     }
-    field.tex.needsUpdate = true;
+    field.flushAll();   // the pre-aged ground goes up whole
   })();
 
   return {
@@ -909,7 +909,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       clearTimeout(freeT); freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, 2500);
     },
     // test hook: n fixed steps of dt, then draw once (headless screenshots, no frame timing involved)
-    renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); draw(); },
+    renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); field.upload(1, renderer); draw(); },   // upload: the ground the last steps wrote goes up before the one draw (a live frame uploads and draws in the same step)
     // compile every program now: all three looks, plan + exec lines, particles, motes, the sky and the post chain.
     // Hidden objects are made visible for one off-screen draw, then restored.
     warm() {

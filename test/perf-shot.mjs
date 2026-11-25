@@ -9,9 +9,10 @@ const dir = new URL(`./out/shot-${label}/`, import.meta.url).pathname; fs.mkdirS
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: UA } : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
-await serve(ctx);
+await serve(ctx, { det: true });
 const page = await ctx.newPage(); const errs = []; page.on('pageerror', e => errs.push(e.message));
-await page.addInitScript(() => { let a = 0x9e3779b9; Math.random = () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; });
+await page.addInitScript(() => { { const r = window.requestAnimationFrame.bind(window); window.requestAnimationFrame = f => (f.name === 'loop' ? 0 : r(f)); }   // the scene's own rAF loop never runs: the sim only advances through renderNow
+  let a = 0x9e3779b9; Math.random = () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; });
 await page.goto(`${ORIGIN}/test/home.html?qa&demo=0${phone ? '&layout=phone' : ''}${extra}`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.TFSolutions && window.TFSolutions.sol, null, { timeout: 180000 });
 await page.evaluate(() => { const g = window.TFSolutions.sol.qa.gov; Object.defineProperty(g, 'real', { get: () => false, set() {} }); const s = window.TFSolutions.sol; s.stop(); return s.ready; });
