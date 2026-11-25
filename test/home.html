@@ -33,11 +33,20 @@ html.lay-tablet .stage{position:relative;width:713px;height:560px;margin:0 auto 
 html.lay-tablet .container{max-width:713px;padding:0}
 html.lay-tablet .container h2{font-size:28px;position:absolute;top:-9999px}
 html.lay-tablet .spacer{display:none}
+/* ?layout=phone: what Webflow ships on phones: a full-width stage box (400 px tall, ?h=N overrides) with the heading above it and the tabs
+   stacked below (nothing overlays the canvas, so the cards' backdrop-filter never samples it), insets .06 / .1 */
+html.lay-phone .sol{display:flex;flex-direction:column;padding:24px 16px 32px;--sol-safe-top:.06;--sol-safe-bottom:.1}
+html.lay-phone .container{display:contents}
+html.lay-phone .container h2{order:0;font-size:28px;margin:0 0 24px}
+html.lay-phone .stage{order:1;position:relative;inset:auto;width:calc(100% + 32px);margin:0 -16px 24px;height:var(--stage-h,400px)}
+html.lay-phone .spacer{display:none}
+html.lay-phone .tabs{order:2;flex-direction:column;gap:8px}
+html.lay-phone .tabs button{padding:16px;backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2)}
 /* small hosts: the heading takes half the stage, so the subject sits lower (per breakpoint safe insets) */
 @media (max-height:520px){html.lay-stage .sol{--sol-safe-top:.5;--sol-safe-bottom:.3}}
 @media (max-width:991px){html.lay-stage .container{padding:32px 20px 20px}html.lay-stage .container h2{font-size:28px}html.lay-stage .tabs{flex-direction:row;gap:8px}html.lay-stage .tabs button{padding:12px;font-size:12px}}
 </style>
-<script>{ const l = new URLSearchParams(location.search).get('layout'); if (l === 'stage' || l === 'tablet') document.documentElement.classList.add('lay-' + l); }</script></head><body>
+<script>{ const l = new URLSearchParams(location.search).get('layout'); if (l === 'stage' || l === 'tablet' || l === 'phone') document.documentElement.classList.add('lay-' + l); const h = new URLSearchParams(location.search).get('h'); if (h) document.documentElement.style.setProperty('--stage-h', h + 'px'); }</script></head><body>
 <div class="pre"></div>
 <section class="sol" id="solutions" data-three="solutions" data-sol-hint-zone="Click the ground to mark a dig" data-sol-hint-point="Keep clicking to outline it" data-sol-hint-close="Click the first point to start digging" data-sol-hint-cancel="Esc to cancel" data-sol-label-zone="Zone" data-sol-tag-dig="Excavator 01" data-sol-tag-haul="Dozer 02" data-sol-tag-grade="Roller 03">
   <div class="stage" id="solutions-stage" data-three-mount="solutions" aria-hidden="true"></div>
