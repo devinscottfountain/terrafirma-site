@@ -172,9 +172,11 @@ Open issues: the Austin site ortho outputs are provisional (built from a downsca
 | `?ff=1` / `?ff=0` | force the Firefox path on or off (default: Gecko user agent, Firefox for iOS excluded). The Firefox path: film governor starts at level 3 and treats a tight 30 Hz as slow, not as a cap (`capOK` off, no GPU timer there). |
 | `?gov=0` | both governors off, fixed at their start tier. `?perf=off` and `?perf=0..5` still work on the film. |
 | `?gov=log` | logs every film and Solutions tier change with the measured interval (median, p90, coarse-timer flag), and how long each blocking shader compile took where `KHR_parallel_shader_compile` is missing. `?perf=log` is the film-only older spelling. |
-| `?msaa=0\|2\|4` | MSAA samples on the Solutions and footer scene targets (default 4 high, 0 Solutions low, 2 footer low). |
+| `?msaa=0\|2\|4` | MSAA samples on the Solutions and footer scene targets (default 4 high, 0 Solutions low, 2 footer low). On the Careers Mission canvas `?msaa=0` turns the context's antialias off (default on for high). |
 | `?post=0..3` | film post level ceiling (0 FXAA, 3 TAA). On Solutions `?post=0` turns the bloom off. |
-| `?dpr=N` | pixel ratio ceiling for the film, Solutions and footer (e.g. `?dpr=1` on a Windows 150% display). |
+| `?dpr=N` | pixel ratio ceiling for the film, Solutions, footer and Mission (e.g. `?dpr=1` on a Windows 150% display). |
+| `?hz=N` | frame rate ceiling (15 to 240) for the footer and the Mission scene, default the display rate. `?hz=60` on a 120 / 144 / 160 Hz display halves their GPU work; at rest both move well under a pixel per frame. `pacer(HZ)` in `env.js` is the helper for any other loop. |
+| `?stage=off\|area` | how the film and the footer share frames while both are on screen. Default: strict alternation. `off`: both draw every frame (A/B on 120 Hz+ displays). `area`: the canvas covering more of the viewport gets more of the frames (a quarter at least each). |
 | `?film=0` `?sol=0` `?foot=0` | scene off. `?sol=0&foot=0` leaves one live WebGL context (the film), `?film=0&foot=0` only Solutions. |
 
 The film governor tolerates quantised timers (`privacy.resistFingerprinting` rounds `performance.now()` to 16.67 or 100 ms): a zero interval switches it to the mean of 8 intervals, and a 100 ms quantum holds the tier. `node test/check-gov.mjs [older perf.js]` feeds it synthetic Firefox timestamps.

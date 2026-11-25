@@ -9,6 +9,7 @@
 // exactly its box. Rendering is gated by an IntersectionObserver; all programs compile before the first visible frame.
 import { PLANET_VERT, EARTH_FRAG, MARS_FRAG, PLUME_VERT, PLUME_FRAG, ENV_VERT, ENV_FRAG } from './mission-glsl.js';
 import { ROOT } from '../root.js';
+import { MSAA, DPR_MAX, HZ, pacer } from '../env.js';
 import { loadTex } from '../kit/bitmap.js';
 import { buildRocketExcavator } from './mission-rocketex.js';
 
@@ -41,14 +42,14 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   const pathEl = section.querySelector('path[data-mission-path]');
 
   // ---------------------------------------------------------------- renderer, camera
-  const renderer = new THREE.WebGLRenderer({ alpha: true, premultipliedAlpha: true, antialias: high, powerPreference: 'high-performance', stencil: false });
+  const renderer = new THREE.WebGLRenderer({ alpha: true, premultipliedAlpha: true, antialias: high && MSAA !== 0, powerPreference: 'high-performance', stencil: false });   // ?msaa=0 for an A/B
   renderer.setClearColor(0x000000, 0);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;   // ship only; the planet shaders tone map themselves
   renderer.toneMappingExposure = 1;
   const canvas = renderer.domElement;
   Object.assign(canvas.style, { position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', display: 'block', pointerEvents: 'none' });
   host.appendChild(canvas);
-  const dprCap = high ? 1.5 : 1;
+  const dprCap = Math.min(high ? 1.5 : 1, DPR_MAX);
   const camera = new THREE.OrthographicCamera(0, 1, 1, 0, -1000, 1000);
   camera.position.z = 500;
   const scene = new THREE.Scene();
@@ -245,6 +246,7 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
 
   // ---------------------------------------------------------------- loop
   let enabled = false, visible = false, isReady = false, dead = false, raf = 0, gsapTick = null;
+  const pace = HZ ? pacer(HZ) : null;
   function draw(dt) {
     time += dt;
     updatePlanets(); updateRocket(dt);
@@ -254,7 +256,9 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   }
   function tick() {
     if (dead || !isReady) return;
-    const now = performance.now(), dt = lastNow ? Math.min(0.1, (now - lastNow) / 1000) : 1 / 60; lastNow = now;
+    const now = performance.now();
+    if (pace && !pace(now)) return;   // ?hz=N: a frame ceiling (off by default); dt below spans the skipped frames
+    const dt = lastNow ? Math.min(0.1, (now - lastNow) / 1000) : 1 / 60; lastNow = now;
     draw(dt);
   }
   function loop() { raf = requestAnimationFrame(loop); tick(); }

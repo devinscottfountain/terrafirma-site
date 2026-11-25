@@ -7,7 +7,7 @@
 // textures stream in after ready as plain map swaps.
 import { SKY_VERT, SKY_FRAG, EQ_FRAG, FS_VERT, ATMOS_FRAG, PRE_FRAG, BLUR_FRAG, FINAL_FRAG } from './foot-glsl.js';
 import { ROOT } from '../root.js';
-import { MSAA, DPR_MAX } from '../env.js';
+import { MSAA, DPR_MAX, HZ, pacer } from '../env.js';
 
 const EYE = [0, 1.7, 0];
 const HORIZON = 0.3;                                 // horizon height in frame, from the top
@@ -352,11 +352,13 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
 
   // ---------------------------------------------------------------- loop + api
   let running = false, raf = 0, dead = false, visHidden = false, turnK = 1, gated = false;
+  const pace = HZ ? pacer(HZ) : null;
   // nothing draws before ready: an early start() would compile every program synchronously on the main thread
   // gate: another canvas may own this animation frame (stage.js); frame() then covers both frames' time on the next one
   const loop = now => {
     if (!running) return; raf = requestAnimationFrame(loop); if (!stage) return;
     if (gate && !gate()) { gated = true; return; }
+    if (pace && !pace(now)) return;   // ?hz=N: a frame ceiling (off by default)
     turnK = gated ? 2 : 1; gated = false; frame(now);
   };
   const onVis = () => { visHidden = document.hidden; if (visHidden) cancelAnimationFrame(raf); else if (running) { lastT = 0; raf = requestAnimationFrame(loop); } };

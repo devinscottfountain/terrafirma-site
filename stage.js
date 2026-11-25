@@ -17,6 +17,9 @@ const STALE = 10000;                 // ms: a safety net only (every stop path r
 const S = (typeof window !== 'undefined' && (window.__tfStage || (window.__tfStage = { c: {}, n: 0, f: -1, k: 0, seen: 0, seam: null }))) || { c: {}, n: 0, f: -1, k: 0, seen: 0, seam: null };
 
 const now = () => performance.now();
+// ?stage=off  no alternation: every canvas draws every frame (A/B on 120 Hz+ displays, where each still gets 60+ with alternation)
+// ?stage=area the canvas that covers more of the viewport gets more of the frames (a quarter at least), instead of strict halves
+const POLICY = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('stage') : null;
 
 function live(name) { const e = S.c[name]; return e && e.v > 0 && now() - e.t < STALE ? e.v : 0; }
 function onScreen() { const o = []; for (const k of ORDER) if (live(k) > 0) o.push(k); return o; }
@@ -30,14 +33,25 @@ export function overlap() { return onScreen().length > 1; }
 // S.seen is a bit set of the names that asked in the current frame, S.k the frame counter (its own key: an older copy of this file
 // sharing window.__tfStage keeps using n and f, so two copies never double-step one counter).
 export function turn(name) {
+  if (POLICY === 'off') return true;
   const on = onScreen();
   if (on.length < 2) return true;
   const i = on.indexOf(name);
   if (i < 0) return true;
   const bit = 1 << ORDER.indexOf(name);
-  if (S.seen & bit) { S.k++; S.seen = 0; }
+  const fresh = (S.seen & bit) !== 0;
+  if (fresh) { S.k++; S.seen = 0; }
   S.seen |= bit;
-  return S.k % on.length === i;
+  if (POLICY !== 'area') return S.k % on.length === i;
+  if (fresh || S.w == null || !on.includes(S.w)) pick(on);
+  return S.w === name;
+}
+// area policy: error diffusion on each canvas's coverage share (clamped to a quarter .. three quarters), one winner per frame
+function pick(on) {
+  let sum = 0; for (const k of on) sum += live(k);
+  const acc = S.acc || (S.acc = {}); let best = null;
+  for (const k of on) { acc[k] = (acc[k] || 0) + Math.min(0.75, Math.max(0.25, live(k) / sum)); if (best === null || acc[k] > acc[best]) best = k; }
+  acc[best] -= 1; S.w = best;
 }
 export function seam(src) {
   if (src !== undefined) { S.seam = typeof src === 'function' ? src : null; return; }

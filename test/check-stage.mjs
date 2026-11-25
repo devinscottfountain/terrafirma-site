@@ -32,5 +32,15 @@ for (const [name, file] of [['old', path.join(tmp, 'old-stage.mjs')], ['new', pa
     rows.push(`${name} q=${q.toFixed(1).padStart(6)} ms order=${order.join('>').padEnd(9)} film ${count.film} foot ${count.foot} of ${n} frames; both-in-one-frame ${both.n}, neither ${none.n}, longest run ${longest}${name === 'new' ? (ok ? ' ok' : ' FAIL') : ''}`);
   }
 }
+// the opt-in policies: ?stage=area (coverage-weighted, a quarter at least) and ?stage=off (everyone draws)
+for (const [pol, vf, vo, want] of [['area', 0.9, 0.1, (c, n) => c.film > n * 0.65 && c.foot >= n * 0.2 && c.both === 0 && c.none === 0], ['area', 0.5, 0.5, (c, n) => Math.abs(c.film - c.foot) <= 2 && c.both === 0], ['off', 0.5, 0.5, (c, n) => c.film === n && c.foot === n]]) {
+  globalThis.location = { search: '?stage=' + pol };
+  const st = await mk(path.join(ROOT, 'stage.js'), 'pol-' + pol + vf); Q = 1; T = 0; st.report('film', vf); st.report('foot', vo);
+  const n = 600, c = { film: 0, foot: 0, both: 0, none: 0 };
+  for (let f = 0; f < n; f++) { T = 1000 + f * 1000 / 60; const a = st.turn('film'), b = st.turn('foot'); c.film += a; c.foot += b; if (a && b) c.both++; if (!a && !b) c.none++; }
+  const ok = want(c, n); if (!ok) bad++;
+  rows.push(`policy ${pol} film ${vf} foot ${vo}: film ${c.film} foot ${c.foot} of ${n}, both ${c.both}, neither ${c.none} ${ok ? 'ok' : 'FAIL'}`);
+}
+delete globalThis.location;
 console.log(rows.join('\n')); console.log(bad ? 'check-stage FAIL' : 'check-stage ok');
 fs.rmSync(tmp, { recursive: true, force: true }); process.exit(bad ? 1 : 0);
