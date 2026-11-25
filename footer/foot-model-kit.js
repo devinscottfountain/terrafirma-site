@@ -27,13 +27,16 @@ export const SITE = { z0: -200, z1: -440, x0: -260, x1: 260 };
 export function height(x, z) { return rawHeight(x, z) - EYE_GROUND; }
 function rawHeight(x, z) {
   const d = -z;
+  // Each fbm term sits inside a window that clamps to exactly 0 (the ss() ramps), so outside it the term is skipped: the sum is the
+  // same number, minus ~2/3 of the fbm calls of the 44k-vertex ground grid (the boot's biggest long task). Expressions keep their order.
   const rise = 6.8 * (1 - ss(12, 150, d)) * (1 - 0.25 * ss(30, 90, Math.abs(x)));                        // the rise we stand on
-  const mid = 1.6 * fbm(x / 70 + 3.1, z / 55) * ss(20, 60, d) * (1 - ss(260, 600, d))                      // gentle swales
-            + 2.2 * Math.max(0, fbm(x / 140, z / 90 + 7) + 0.1) * ss(60, 120, d) * (1 - ss(170, 210, d));    // low dark bank before the pad
+  const mid = (d > 20 && d < 600 ? 1.6 * fbm(x / 70 + 3.1, z / 55) * ss(20, 60, d) * (1 - ss(260, 600, d)) : 0)   // gentle swales
+            + (d > 60 && d < 210 ? 2.2 * Math.max(0, fbm(x / 140, z / 90 + 7) + 0.1) * ss(60, 120, d) * (1 - ss(170, 210, d)) : 0);   // low dark bank before the pad
   const pad = ss(150, 210, d) * (1 - ss(470, 600, d)) * (1 - ss(260, 360, Math.abs(x)));                  // flatten the settlement pad
-  const fine = (0.5 * fbm(x / 9, z / 9, 3) + 0.14 * fbm(x / 2.6 + 5, z / 2.6, 2)) * (1 - ss(150, 400, d));
-  const far = 3.5 * fbm(x / 260 + 11, z / 260) * ss(400, 900, d);
-  const rx = x / 520, ridge = ss(1250, 2100, d) * (40 + 26 * fbm(rx + 2.3, 0.5) + 11 * fbm(rx * 4.1 + 9, 1.7) + 4 * fbm(rx * 13, d / 300));
+  const fine = d < 400 ? (0.5 * fbm(x / 9, z / 9, 3) + 0.14 * fbm(x / 2.6 + 5, z / 2.6, 2)) * (1 - ss(150, 400, d)) : 0;
+  const far = d > 400 ? 3.5 * fbm(x / 260 + 11, z / 260) * ss(400, 900, d) : 0;
+  let ridge = 0;
+  if (d > 1250) { const rx = x / 520; ridge = ss(1250, 2100, d) * (40 + 26 * fbm(rx + 2.3, 0.5) + 11 * fbm(rx * 4.1 + 9, 1.7) + 4 * fbm(rx * 13, d / 300)); }
   return rise + (mid + fine) * (1 - 0.85 * pad) + far + ridge;
 }
 const EYE_GROUND = rawHeight(0, 0);   // ground under the compositor's eye (0, 1.7, 0) is y = 0
