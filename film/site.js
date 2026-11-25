@@ -10,13 +10,14 @@ import { loadShroud, lod } from '../kit/shroud.js';
 import { sunAt } from './austin.js';
 import { snapShadow } from './util.js';
 import { loadTex } from '../kit/bitmap.js';
+import { createYard, NW } from './yard.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
 // the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
 export const SITE_ROT = 17 * Math.PI / 180;
 const OHALF = 400; // the orthophoto covers 800 x 800 m around the lot
 
 // integer hash that gives the same answer in JS doubles and GLSL floats (all intermediates stay under 2^24)
-const H = n => { const a = ((n % 1009) + 1009) % 1009; return ((a * a * 7 + a * 31 + 13) % 1009) / 1009; };
+// the hash H lives in yard.js (it drives the crew), the GLSL one above mirrors it
 const CX = 180, CZ = 140, SLOT = 164 / 11, D = 4; // block grid, house slot width, pit depth
 const hwX = k => (((k % 4) + 4) % 4 === 0 ? 11 : 6.5), hwZ = m => (((m % 5) + 5) % 5 === 0 ? 11 : 6.5); // street half widths; every 4th/5th is an arterial
 
@@ -401,7 +402,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
 
   // ---------------------------------------------------------------- machines, crew, light towers, site furniture (machines.js: CAT 336s, tri-axle dumps, D6, boom pump, mixers, flat-top crane)
   const { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, roofs } = createMachines({ THREE, group, D });
-  const NW = 44;
+  const Y = createYard(), YM = Y.M; // machine paths, keep-out zones and crew as plain numbers (yard.js); the meshes below just copy them
   // building: 40 columns, two cores, then the first deck's forms
   const COLS = []; for (let x = -28; x <= 28; x += 8) for (let z = -16; z <= 16; z += 8) COLS.push([x, z]);
   const colMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.75, 1, 0.75).translate(0, 0.5, 0), mats.conc, COLS.length); colMesh.castShadow = colMesh.receiveShadow = true; group.add(colMesh);
@@ -411,23 +412,11 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   // ---------------------------------------------------------------- clocks: scroll gives build progress g and the hour, t (film clock, s) runs the machines
   const sunO = {}, sunL = new THREE.Vector3(), skyC = new THREE.Color(), gndC = new THREE.Color(), lampBase = towers[0].material.color.clone();
   const SUN_Q = THREE.MathUtils.degToRad(0.1), SUN_MIN = THREE.MathUtils.degToRad(2.5); // light direction quantum, lowest elevation the light takes
-  // machine rates (real time): excavator dig-swing-dump cycle, dozer pass, haul loop, boom pump sweep, crane slew
-  const EX_CYCLE = 7, DOZE_P = 80, PIT_P = 40, PUMP_W = 0.45, SLEW_W = 0.09;
-  // path helpers: haul loop by arc length, slow on the lot and fast on the street
-  const LOOP = [[86, -420], [86, -30], [74, -24], [40, -25.5], [-20, -25.5], [-44, -25.5], [-50, 0], [-44, 25.5], [-10, 25.5], [40, 25.5], [74, 30], [86, 36], [86, 420]];
-  const LSEG = LOOP.slice(1).map((p, i) => { const L = Math.hypot(p[0] - LOOP[i][0], p[1] - LOOP[i][1]); return { L, T: L / (L > 200 ? 12 : 4.5) }; });
-  const LOOP_T = LSEG.reduce((a, s) => a + s.T, 0);
-  const loopAt = (u, out) => { // u 0..1 of the loop's time -> position, returns yaw
-    let k = u * LOOP_T, i = 0; while (i < LSEG.length - 1 && k > LSEG[i].T) { k -= LSEG[i].T; i++; }
-    const f = Math.min(1, k / LSEG[i].T), a = LOOP[i], b = LOOP[i + 1];
-    out.set(a[0] + (b[0] - a[0]) * f, 0, a[1] + (b[1] - a[1]) * f); return Math.atan2(-(b[1] - a[1]), b[0] - a[0]);
-  };
+  // machine rates (real time): boom pump sweep, crane slew (the yard's own rates live in yard.js)
+  const PUMP_W = 0.45, SLEW_W = 0.09;
   const sd = new THREE.Vector3(), X1 = new THREE.Vector3(1, 0, 0);
   const seg = (m, a, b) => { sd.subVectors(b, a); const L = sd.length(); m.position.copy(a).add(b).multiplyScalar(0.5); m.scale.set(L, 1, 1); m.quaternion.setFromUnitVectors(X1, sd.normalize()); };
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
-  // crew: each worker holds a spot for 6 to 12 s, then walks to the next one (spots follow the active work zone)
-  const crewS = Array.from({ length: NW }, () => ({ x: 0, y: 0, z: 0, yaw: 0 }));
-  let crewT = -1, crewG = -1;
   // shadow box anchored on the lot, its centre snapped to whole shadow texels in light space (a grid that never slides under the lot)
   const xb = new THREE.Vector3(), yb = new THREE.Vector3(), Y1 = new THREE.Vector3(0, 1, 0);
   const placeSun = dir => snapShadow(sunLight, ORIGIN, dir, 400, xb, yb); // util.js, shared with the colony
@@ -456,34 +445,25 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
     // oaks come down in the first hours
     oaks.forEach(([x, z, r], i) => { const k = 1 - sstep(prog, 0.005 + i * 0.004, 0.02 + i * 0.004); tmpM.compose(tv.set(x, r * 0.55 + 1.6, z), tq.setFromAxisAngle(YA, i), k > 0.01 ? ts.set(r * k, r * 0.55 * k, r * k) : HIDE); oak.setMatrixAt(i, tmpM); });
     oak.instanceMatrix.needsUpdate = true;
+    // machine paths and keep-out zones for (t, prog): yard.js (pure numbers); here they only move the meshes
+    Y.machines(t, prog);
     // excavators: dig, swing, dump, swing back (EX_CYCLE s); they ride the dig face, which scroll moves
-    const digOn = prog > 0.06 && prog < 0.42, xf = -32 + U.uDig.value * 76;
-    [[exA, -13, -1], [exB, 13, 1]].forEach(([e, z, s], i) => {
-      e.g.visible = digOn || (i === 1 && prog > 0.8 && prog < 0.95);
-      const ph = (t / EX_CYCLE + i * 0.37) % 1, sw = sstep(ph, 0.35, 0.55) * (1 - sstep(ph, 0.7, 0.95));
+    [[exA, -1], [exB, 1]].forEach(([e, s], i) => {
+      const m = YM.ex[i], ph = m.ph, sw = m.sw; e.g.visible = m.on;
       e.up.rotation.y = sw * s * 1.9;
       e.boom.rotation.z = THREE.MathUtils.lerp(0.35 - sstep(ph, 0, 0.3) * 0.55, 0.62, sw);
       e.stick.rotation.z = -THREE.MathUtils.lerp(1.05 + sstep(ph, 0.05, 0.33) * 0.9, 0.9 - sstep(ph, 0.55, 0.68) * 0.5, sw);
-      const ex = i === 1 && prog > 0.8 ? 40 : Math.min(26, Math.max(-28, xf - 6));
-      e.g.position.set(ex, i === 1 && prog > 0.8 ? -1 : -D * sstep(prog, 0.07, 0.12), z); e.g.rotation.y = 0;
+      e.g.position.set(m.x, m.y, m.z); e.g.rotation.y = 0;
     });
     // haul trucks loop through the gates; loaded on the way out
-    trucks.forEach((tr, i) => {
-      const u = (t / LOOP_T + i / trucks.length) % 1; tr.g.visible = prog > 0.07 && prog < 0.46;
-      tr.g.rotation.y = loopAt(u, tr.g.position); tr.load.visible = u > 0.5;
-    });
+    trucks.forEach((tr, i) => { const m = YM.tr[i]; tr.g.visible = m.on; tr.g.position.set(m.x, 0, m.z); tr.g.rotation.y = m.yaw; tr.load.visible = m.load; });
     // dozer: strips the lot, grades the pit floor, then fine grades the yard (one pass per period, next lane each pass)
-    { let x, z, y = 0, on = true, n;
-      if (prog < 0.1) { n = t / DOZE_P; x = -60 + Math.abs((n % 1) * 2 - 1) * 110; z = -40 + (Math.floor(n) % 4) * 20; }
-      else if (prog > 0.3 && prog < 0.44) { n = t / PIT_P; x = -26 + Math.abs((n % 1) * 2 - 1) * 52; z = -12 + (Math.floor(n) % 3) * 12; y = -D; }
-      else if (prog > 0.86) { n = t / PIT_P; x = -60 + Math.abs((n % 1) * 2 - 1) * 40; z = 40; }
-      else on = false;
-      dozer.visible = on; if (on) { dozer.position.set(x, y, z); dozer.rotation.y = n % 1 < 0.5 ? 0 : Math.PI; } }
+    { const m = YM.dz; dozer.visible = m.on; if (m.on) { dozer.position.set(m.x, m.y, m.z); dozer.rotation.y = m.yaw; } }
     // pours: pump parks on the north edge opposite the active bay, two mixers queue behind it
-    const bay = Math.min(7, Math.max(0, Math.floor((prog - 0.47) / 0.028 + 0.5))), pouring = prog > 0.455 && prog < 0.69;
+    const bay = YM.bay, pouring = YM.pouring;
     pump.g.visible = pouring; mixers.forEach(m => (m.g.visible = pouring));
     if (pouring) {
-      const bx = -32 + Math.floor(bay / 2) * 16 + 8, bz = bay % 2 ? 9.5 : -9.5;
+      const bx = YM.pump.bx, bz = bay % 2 ? 9.5 : -9.5;
       pump.g.position.set(bx, 0, -29); A.set(bx, 3.2, -29); C.set(bx + Math.sin(t * PUMP_W) * 3, -D + 3.5, bz + Math.cos(t * PUMP_W * 0.8) * 2); B.copy(A).lerp(C, 0.45); B.y = 16;
       seg(pump.s1, A, B); seg(pump.s2, B, C); seg(pump.hose, C, tv.copy(C).setY(-D + 0.2));
       [pump.s1, pump.s2, pump.hose].forEach(m => (m.visible = true));
@@ -502,25 +482,10 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
     DECK.forEach(([x, z], i) => { const k = sstep(prog, 0.8 + (x + 28) / 56 * 0.15 + (i % 4) * 0.01, 0.84 + (x + 28) / 56 * 0.15 + (i % 4) * 0.01);
       tmpM.compose(tv.set(x, -0.25, z), tq.identity(), k > 0.5 ? ts.set(1, 1, 1) : HIDE); deck.setMatrixAt(i, tmpM); });
     deck.instanceMatrix.needsUpdate = true;
-    // crew: clusters on the active bay, spotters by the excavators, a few by the trailer. Each walks (1.3 to 5 m/s, faster when far)
-    // to a new spot every 6 to 12 s; a scroll jump (g moves > 0.08 in a frame) or the first frame places everyone at once
-    const dtc = crewT < 0 ? 0 : Math.min(0.1, Math.max(0, t - crewT)), jump = crewT < 0 || Math.abs(g - crewG) > 0.08; crewT = t; crewG = g;
-    for (let i = 0; i < NW; i++) {
-      const k = Math.floor(t / (6 + 6 * H(i * 13 + 3)) + H(i * 7 + 1)), r1 = H(i * 31 + k * 7), r2 = H(i * 17 + k * 3 + 5);
-      let x, z, y = 0;
-      if (i < 26 && prog > 0.38 && prog < 0.72) { const b = Math.min(7, bay + (i % 3 === 0 ? 1 : 0)); x = -32 + Math.floor(b / 2) * 16 + 2 + r1 * 12; z = (b % 2 ? 2 : -17) + r2 * 15; y = -D; }
-      else if (i < 26 && prog >= 0.72) { const c = COLS[(i * 7 + k) % COLS.length]; x = c[0] + (r1 - 0.5) * 3; z = c[1] + (r2 - 0.5) * 3; y = -D + (prog > 0.85 && x < 0 ? 3.75 : 0); }
-      else if (i < 34 && digOn) { x = xf - 2 + r1 * 8; z = (i % 2 ? -1 : 1) * (20 + r2 * 4); }
-      else { x = 40 + r1 * 25; z = -40 + r2 * 10; }
-      const w = crewS[i], dx = x - w.x, dy = y - w.y, dz = z - w.z, d = Math.hypot(dx, dy, dz);
-      if (jump || d > 90) { w.x = x; w.y = y; w.z = z; w.yaw = r1 * 6; }
-      else if (d > 0.02) {
-        const st = Math.min(d, dtc * Math.min(5, Math.max(1.3, d * 0.5)));
-        w.x += dx / d * st; w.y += dy / d * st; w.z += dz / d * st;
-        const yaw = Math.atan2(-dz, dx); let dyaw = yaw - w.yaw; dyaw -= Math.round(dyaw / (2 * Math.PI)) * 2 * Math.PI; w.yaw += dyaw * Math.min(1, dtc * 6); // face the walk (+x is the front)
-      }
-      tmpM.compose(tv.set(w.x, w.y, w.z), tq.setFromAxisAngle(YA, w.yaw), ts.set(1, 1, 1)); crew.setMatrixAt(i, tmpM);
-    }
+    // crew (yard.js): spotters on the swing circle of the excavators, bay crews, columns, the trailer; every spot and walk stays out of the
+    // machines' keep-out zones, and the positions are a closed form of (t, prog), so a scrub or a jump needs no re-seed
+    Y.crewStep(t, prog); const cw = Y.crew;
+    for (let i = 0; i < NW; i++) { const o = i * 5, k = cw[o + 4]; tmpM.compose(tv.set(cw[o], cw[o + 1], cw[o + 2]), tq.setFromAxisAngle(YA, cw[o + 3]), k > 0.01 ? ts.set(k, k, k) : HIDE); crew.setMatrixAt(i, tmpM); }
     crew.instanceMatrix.needsUpdate = true;
     return { hour, prog, sinE, sunL, night: U.uNight.value };
   }
