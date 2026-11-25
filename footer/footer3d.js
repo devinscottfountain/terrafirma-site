@@ -7,6 +7,7 @@
 // textures stream in after ready as plain map swaps.
 import { SKY_VERT, SKY_FRAG, EQ_FRAG, FS_VERT, ATMOS_FRAG, PRE_FRAG, BLUR_FRAG, FINAL_FRAG } from './foot-glsl.js';
 import { ROOT } from '../root.js';
+import { MSAA, DPR_MAX } from '../env.js';
 
 const EYE = [0, 1.7, 0];
 const HORIZON = 0.3;                                 // horizon height in frame, from the top
@@ -61,7 +62,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
   const baseURL = String(base || new URL('footer/', ROOT).href).replace(/\/?$/, '/');
   renderer.debug.checkShaderErrors = DEBUG;
   const DPR = Math.min(typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1, 2);
-  const prMax = Math.min(DPR, HIGH ? 1.5 : 1.25);
+  const prMax = Math.min(DPR, HIGH ? 1.5 : 1.25, DPR_MAX);
   // pixel ratio: the adaptive / governor value (prGov) under an optional cap (prCap, the homepage overlap), never above prMax
   let prGov = prMax, prLim = prCap > 0 ? prCap : Infinity;
   const prWant = () => Math.max(0.5, Math.min(prMax, prGov, prLim));
@@ -134,7 +135,7 @@ function build({ THREE, host, quality, base, canvas, cvIn, renderer, gate, prCap
   const HF = THREE.HalfFloatType;
   const rtOpts = { type: HF, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false };
   const depthTex = new THREE.DepthTexture(1, 1); depthTex.type = THREE.UnsignedIntType;
-  const rtScene = new THREE.WebGLRenderTarget(1, 1, { type: HF, samples: HIGH ? 4 : 2, depthBuffer: true, depthTexture: depthTex });
+  const rtScene = new THREE.WebGLRenderTarget(1, 1, { type: HF, samples: MSAA ?? (HIGH ? 4 : 2), depthBuffer: true, depthTexture: depthTex });
   const rtA = new THREE.WebGLRenderTarget(1, 1, rtOpts);
   const LV = HIGH ? 5 : 4;
   const rtPre = new THREE.WebGLRenderTarget(1, 1, rtOpts);

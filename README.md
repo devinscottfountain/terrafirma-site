@@ -163,6 +163,22 @@ Performance (`film/perf.js`): the governor measures the film's own frame times w
 
 Open issues: the Austin site ortho outputs are provisional (built from a downscaled 2576 px copy) until `build-maps.py` is rerun with the 4096 px original; `manifest.json` lists them under `provisional`. Phone pacing is tuned in the sims and swiftshader only: check it on a real iPhone (GPU, touch feel). The governor is only verified with synthetic frame times (swiftshader); measure it on an M1/M2 Air.
 
+## Diagnostic switches (Firefox bisect)
+
+`env.js` reads these once at module load, so they cost nothing when absent. Combine them in the URL; `docs/firefox-profile.md` has the order to flip them.
+
+| Flag | Effect |
+| --- | --- |
+| `?ff=1` / `?ff=0` | force the Firefox path on or off (default: Gecko user agent, Firefox for iOS excluded). The Firefox path: film governor starts at level 3 and treats a tight 30 Hz as slow, not as a cap (`capOK` off, no GPU timer there). |
+| `?gov=0` | both governors off, fixed at their start tier. `?perf=off` and `?perf=0..5` still work on the film. |
+| `?gov=log` | logs every film and Solutions tier change with the measured interval (median, p90, coarse-timer flag), and how long each blocking shader compile took where `KHR_parallel_shader_compile` is missing. `?perf=log` is the film-only older spelling. |
+| `?msaa=0\|2\|4` | MSAA samples on the Solutions and footer scene targets (default 4 high, 0 Solutions low, 2 footer low). |
+| `?post=0..3` | film post level ceiling (0 FXAA, 3 TAA). On Solutions `?post=0` turns the bloom off. |
+| `?dpr=N` | pixel ratio ceiling for the film, Solutions and footer (e.g. `?dpr=1` on a Windows 150% display). |
+| `?film=0` `?sol=0` `?foot=0` | scene off. `?sol=0&foot=0` leaves one live WebGL context (the film), `?film=0&foot=0` only Solutions. |
+
+The film governor tolerates quantised timers (`privacy.resistFingerprinting` rounds `performance.now()` to 16.67 or 100 ms): a zero interval switches it to the mean of 8 intervals, and a 100 ms quantum holds the tier. `node test/check-gov.mjs [older perf.js]` feeds it synthetic Firefox timestamps.
+
 ## Loading on Webflow
 
 Head (before the module): an importmap for `three@0.160.0` and `three/addons/`, plus preloads. Footer: the module script.

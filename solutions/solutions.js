@@ -13,6 +13,7 @@ import { createDig } from './sol-game.js';
 import { createCrew } from './sol-crew.js';
 import { createHud } from './sol-hud.js';
 import { buildShroud } from './sol-shroud.js';
+import { GOV_OFF, GOV_LOG, DPR_MAX } from '../env.js';   // diagnostic switches (env.js): ?gov=0|log, ?dpr=N
 
 export { hF as hField };
 
@@ -23,7 +24,7 @@ const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
 const DEG = Math.PI / 180;
 const MSCALE = 1.4;      // machine scale (model metres -> world)
 const FLIGHT = 1.4;      // s, camera flight between the three shots
-const PR_MAX = 1.5;
+const PR_MAX = Math.min(1.5, DPR_MAX);
 const INTRO_KEY = 'tf:sol-dig-intro';   // sessionStorage: the dig intro has played in this tab session
 const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-topo] element (was .42 before #41)
 
@@ -732,11 +733,11 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     if (pr !== prCap) { prCap = pr; renderer.setPixelRatio(pr); setBuf(); }
   }
   function governor(dt) {
-    if (!gov.real || dt <= 0 || dt > 0.25) return;
+    if (!gov.real || dt <= 0 || dt > 0.25 || GOV_OFF) return;
     gov.ema += (dt - gov.ema) * 0.08;
     if (gov.ema > 1 / 45) { gov.slow += dt; gov.fast = 0; } else if (gov.ema < 1 / 57) { gov.fast += dt; gov.slow = 0; } else { gov.slow = gov.fast = 0; }
-    if (gov.slow > 1.5 && gov.level > 0) { gov.level--; gov.slow = 0; gov.ema = 1 / 60; applyLevel(); }
-    else if (gov.fast > 6 && gov.level < gov.max) { gov.level++; gov.fast = 0; applyLevel(); }
+    if (gov.slow > 1.5 && gov.level > 0) { gov.level--; gov.slow = 0; if (GOV_LOG) console.log('[sol perf] level', gov.level, 'ema ms', (gov.ema * 1000).toFixed(1)); gov.ema = 1 / 60; applyLevel(); }
+    else if (gov.fast > 6 && gov.level < gov.max) { gov.level++; gov.fast = 0; if (GOV_LOG) console.log('[sol perf] level', gov.level, 'ema ms', (gov.ema * 1000).toFixed(1)); applyLevel(); }
   }
 
   // ------------------------------------------------------------------ size / visibility

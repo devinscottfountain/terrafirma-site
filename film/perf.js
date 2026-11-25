@@ -16,7 +16,10 @@
 //          step down only when gpu p90 > GPU_DOWN (60 fps budget with main-thread headroom), up when < GPU_UP and the interval is clean
 //          or capped. Emergency and the interval miss rules are skipped then (a capped or main-thread-bound page says nothing about the GPU).
 //          Stall (HITCH) handling, hold(), holdUp(), probation and the ceiling work the same either way. state.gpu / state.capped show it.
-//   Switches: ?perf=off (fixed at the top), ?perf=0..5 pins a level, ?perf=log logs every change.
+//   Switches: ?perf=off or ?gov=0 (fixed at the start tier), ?perf=0..5 pins a level, ?perf=log or ?gov=log logs every change and the measured interval.
+//   start: first level (default the top). Firefox starts at 3: no GPU timer, so the first seconds would otherwise run at the top before any evidence.
+//   Quantised timers (privacy.resistFingerprinting rounds performance.now() to 16.67 or 100 ms): intervals then arrive as 0 / 33 / 100 for a steady 60 fps.
+//   A zero interval (never a real vsync frame) switches the window to the mean of the last 8 intervals; a quantum of 50 ms or more makes the page unjudgeable: the tier holds.
 export const LADDER = [
   { pr: 0.75, post: 0, trails: false, shadow: 1024, every: 3, keep: 0.4 },
   { pr: 1.0, post: 1, trails: false, shadow: 2048, every: 2, keep: 0.6 },
@@ -30,19 +33,30 @@ const GPU_DOWN = 14, GPU_UP = 9;       // ms of GPU time per frame: over GPU_DOW
 const MISS = 20, HITCH = 250;          // ms: over MISS missed 60 fps; over HITCH it is a one-off (compile, GC, tab switch), not throughput
 const WIN = 40, COOL = 1500, UP_HOLD = 4000, PROBATION = 15000, CEIL_LIFE = 60000, ARRIVE = 600, EMERG = 33;
 
-export function createGovernor({ high = true, top = null, apply, hold = () => false, holdUp = () => false, capOK = () => false, gpu = () => null } = {}) {
+import { GOV_OFF, GOV_LOG } from '../env.js';
+export function createGovernor({ high = true, top = null, start = null, apply, hold = () => false, holdUp = () => false, capOK = () => false, gpu = () => null } = {}) {
   const qs = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
-  const P = qs.get('perf'), LOG = P === 'log', OFF = P === 'off', PIN = /^[0-5]$/.test(P || '') ? +P : null;
+  const P = qs.get('perf'), LOG = P === 'log' || GOV_LOG, OFF = P === 'off' || GOV_OFF, PIN = /^[0-5]$/.test(P || '') ? +P : null;
   const cap = top != null ? Math.max(0, Math.min(TOP, top)) : high ? TOP : 2; // low tier: never above level 2 (film.js keeps its post at FXAA there); phones go higher on pixel ratio only
-  let level = PIN ?? cap, ceil = cap, clock = 0, since = 0, cool = 0, upT = 0, lastUp = -1e9, ceilT = 0, applied = -1;
+  let level = PIN ?? (start != null ? Math.max(0, Math.min(cap, start)) : cap), ceil = cap, clock = 0, since = 0, cool = 0, upT = 0, lastUp = -1e9, ceilT = 0, applied = -1;
   const dts = new Float32Array(WIN), srt = new Float32Array(WIN); let n = 0, head = 0, misses = 0, recent = 0, stalls = 0;
-  const state = { level, ceil, p90: 0, steps: 0, gpu: null, capped: false };
+  const state = { level, ceil, p90: 0, med: 0, steps: 0, gpu: null, capped: false, coarse: false };
   const log = (...a) => { if (LOG) console.log('[film perf]', ...a); };
+  // coarse-timer estimator: a zero interval proves the clock is quantised (a real vsync frame is never under 2 ms), then the last 8 intervals are averaged
+  // (the quantum cancels over the span); until 120 frames pass without a zero it keeps averaging. null = unjudgeable (quantum >= 50 ms) or still filling
+  const r8 = new Float32Array(8); let r8n = 0, r8h = 0, fc = 0, zeroAt = -1e9, coarse = false;
+  function est(dtMs) {
+    fc++; if (dtMs < 2) zeroAt = fc;
+    coarse = fc - zeroAt < 120; if (!coarse) { r8n = 0; return dtMs; }
+    r8[r8h] = dtMs; r8h = (r8h + 1) & 7; if (r8n < 8) r8n++; if (r8n < 8) return null;
+    let s = 0, q = 1e9; for (let i = 0; i < 8; i++) { s += r8[i]; if (r8[i] >= 2 && r8[i] < q) q = r8[i]; }
+    return q >= 50 ? null : s / 8;
+  }
   function set(lv, why) {
     lv = Math.max(0, Math.min(ceil, lv)); if (lv === level) return;
     if (lv < level && clock - lastUp < PROBATION) { ceil = level - 1; ceilT = clock; lastUp = -1e9; log('ceiling', ceil); } // dropped soon after a step up: that level is off the table for a minute (one ceiling per failed step up, no cascade)
     if (lv > level) lastUp = clock;
-    level = lv; cool = clock + COOL; upT = 0; n = 0; head = 0; misses = 0; recent = 0; state.steps++; log('level', lv, why, 'gpu', state.gpu);
+    level = lv; cool = clock + COOL; upT = 0; n = 0; head = 0; misses = 0; recent = 0; state.steps++; log('level', lv, why, 'gpu', state.gpu, 'med', state.med, 'coarse', state.coarse);
     push();
   }
   function push() { if (applied === level) return; applied = level; state.level = level; state.ceil = ceil; apply(LADDER[level], level); }
@@ -54,10 +68,11 @@ export function createGovernor({ high = true, top = null, apply, hold = () => fa
     if (dtMs > HITCH) { since = clock; if (++stalls >= 8 && level > 0) { stalls = 0; set(level - 1, 'sustained stalls'); } return; } // one stall is a hitch; eight in a row is throughput
     stalls = 0;
     if (clock - since < ARRIVE) return;                               // arrival frames say nothing about throughput
+    dtMs = est(dtMs); if (dtMs == null) return;
     if (n === WIN) { const o = dts[head]; if (o > MISS) misses--; if (o > EMERG) recent--; } else n++;
     dts[head] = dtMs; head = (head + 1) % WIN; if (dtMs > MISS) misses++; if (dtMs > EMERG) recent++;
     if (n < WIN) return;
-    srt.set(dts); srt.sort(); const p90 = srt[Math.floor(WIN * 0.9)], p10 = srt[Math.floor(WIN * 0.1)]; state.p90 = +p90.toFixed(1);
+    srt.set(dts); srt.sort(); const p90 = srt[Math.floor(WIN * 0.9)], p10 = srt[Math.floor(WIN * 0.1)]; state.p90 = +p90.toFixed(1); state.med = +srt[WIN >> 1].toFixed(1); state.coarse = coarse;
     // capped: every interval within 3 ms of a steady 30 Hz or slower. One step down is allowed (in case it is the GPU), then it holds
     const capped = capOK() && p10 > 25 && p90 - p10 < 3; state.capped = capped;
     const g = gpu(), hasG = g != null && isFinite(g); state.gpu = hasG ? +g.toFixed(1) : null;

@@ -2,6 +2,7 @@
 // particles, the sky haze behind everything, and a small post chain (bloom, the film's warm grade, vignette, grain, soft
 // canvas edges). Every program here is compiled by warm() in solutions.js.
 import { H_GLSL, D_GLSL, SITE } from './sol-terrain.js';
+import { MSAA, POST_MAX } from '../env.js';   // diagnostic switches: ?msaa=0|2|4, ?post=0 (no bloom)
 
 // Palette (display sRGB hex). The host can override any of these with CSS custom properties of the same name
 // (--sol-dot, --sol-cut, --sol-fill, --sol-haze, --sol-accent). Warm site palette, no red/green.
@@ -304,7 +305,7 @@ export function skyMaterial(THREE, U) {
 
 // ------------------------------------------------------------------ post: scene RT -> bloom (1/4 res) -> grade + edges
 export function createPost(THREE, renderer, { low = false } = {}) {
-  const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: low ? 0 : 4 });
+  const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA ?? (low ? 0 : 4) });
   const bA = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }), bB = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), tri = new THREE.BufferGeometry();
   tri.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3)); tri.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 2, 0, 0, 2], 2));
@@ -349,7 +350,7 @@ export function createPost(THREE, renderer, { low = false } = {}) {
   return {
     rt, P,
     setSize,
-    set bloomOn(v) { bloomOn = v; }, get bloomOn() { return bloomOn; },
+    set bloomOn(v) { bloomOn = v && POST_MAX !== 0; }, get bloomOn() { return bloomOn; },
     // render the scene in, then out to the canvas
     begin() { renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear(true, true, true); },
     end(t) {

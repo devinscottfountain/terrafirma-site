@@ -20,6 +20,7 @@ import { createColony, COL, ARRIVE, ROCK_SITES } from './colony.js';
 import { clamp01, sstep, smoother, pchip, pmap, arcClock, lerp } from './util.js';
 import LOOK from './look.json.js';
 import { createGovernor } from './perf.js';
+import { FF, GOV_LOG, POST_MAX, DPR_MAX } from '../env.js';
 import { footerView } from '../footer/footer3d.js';
 import { toFooter } from '../footer/foot-model-plan.js';
 import { height as footHeight } from '../footer/foot-model-kit.js';
@@ -43,7 +44,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   // the rest of the low tier; the governor's levels map to PHONE_PR there and it steps down from 2 when frames run long
   const tq0 = new URLSearchParams(location.search).get('touch');
   const PHONE = !HIGH && (tq0 ? tq0 === '1' : matchMedia('(pointer: coarse)').matches);
-  const PHONE_PR = [0.75, 1, 1.25, 1.5, 1.75, 2], PR_MAX = HIGH ? 1.5 : PHONE ? 2 : 1;
+  const PHONE_PR = [0.75, 1, 1.25, 1.5, 1.75, 2], PR_MAX = Math.min(HIGH ? 1.5 : PHONE ? 2 : 1, DPR_MAX);
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, PR_MAX));
   let W = Math.max(1, host.clientWidth), H = Math.max(1, host.clientHeight);
@@ -105,10 +106,11 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       dispose() { for (const q of [...fly, ...pool, act]) if (q) kill(q); fly.length = pool.length = 0; act = null; off = true; }
     };
   })();
-  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => true, gpu: () => gt.p90, apply: (q, lv) => {
+  // Firefox (no GPU timer queries): a GPU-bound page vsync-locks to a tight 30 Hz that looks exactly like a 30 Hz cap, so capOK is off there (it would stop the governor after one step), and it starts at level 3 (pr 1, TAA) and climbs when clean
+  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, start: FF && HIGH ? 3 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => !FF, gpu: () => gt.p90, apply: (q, lv) => {
     const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr);
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
-    post.setQuality(HIGH ? q.post : Math.min(q.post, 1));
+    post.setQuality(Math.min(HIGH ? q.post : Math.min(q.post, 1), POST_MAX ?? 3));
     trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep; gt.reset(); // GPU samples from the old level say nothing about the new one
     const sh = sunLight.shadow, sx = HIGH ? q.shadow : Math.min(q.shadow, 2048);
     if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
@@ -723,7 +725,8 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const rtWarm = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }); // the scene pass also draws into a half-float target, so program keys match
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
-  const compileIn = root => PARALLEL ? renderer.compileAsync(root, cam, scene) : (renderer.compile(root, cam, scene), Promise.resolve());
+  // no KHR_parallel_shader_compile (Firefox): compile() blocks the main thread until the programs link; ?gov=log prints how long each root took
+  const compileIn = root => { if (PARALLEL) return renderer.compileAsync(root, cam, scene); const t0 = performance.now(); renderer.compile(root, cam, scene); if (GOV_LOG) console.log('[film warm] blocking compile', (root.name || root.type), (performance.now() - t0).toFixed(0) + ' ms'); return Promise.resolve(); };
   const spaceRoots = () => [...spaceMeshes, sunCore, ...(sky ? [sky.group] : []), ...planets.entryRoots()];
   // run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights, so its visibility sets the light count in the program keys.
   function inWorld(w, fn) {
