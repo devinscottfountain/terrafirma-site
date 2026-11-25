@@ -175,6 +175,9 @@ Open issues: the Austin site ortho outputs are provisional (built from a downsca
 | `?msaa=0\|2\|4` | MSAA samples on the Solutions and footer scene targets (default 4 high, 0 Solutions low, 2 footer low). |
 | `?post=0..3` | film post level ceiling (0 FXAA, 3 TAA). On Solutions `?post=0` turns the bloom off. |
 | `?dpr=N` | pixel ratio ceiling for the film, Solutions and footer (e.g. `?dpr=1` on a Windows 150% display). |
+| `?postpr=1` | film post targets (scene RT, TAA history, DOF, bloom, lens) follow the governor's pixel ratio. Without it the composer keeps the ratio it was built with, so on a hi-DPI Firefox start (level 3, pr 1.0) the post chain still runs at 1.5. Changes the look at lower tiers on hi-DPI. Off by default; see `docs/perf-review-film.md` F1. |
+| `?fps=N` | film pacing cap, off by default. Renders every Nth display callback with N = round(1 / (display interval x N)), so the cadence stays even (160 Hz: `?fps=80` is every 2nd, `?fps=60` snaps to every 3rd = 53 fps). The clock gets the full elapsed time, so motion speed is unchanged. |
+| `?idle=N` | same, but only while the scroll has been still for 400 ms (160 Hz: `?idle=30` renders every 5th). Combine with `?fps`; the lower cap wins at rest. TAA and grain keep running at the lower rate. |
 | `?film=0` `?sol=0` `?foot=0` | scene off. `?sol=0&foot=0` leaves one live WebGL context (the film), `?film=0&foot=0` only Solutions. |
 
 The film governor tolerates quantised timers (`privacy.resistFingerprinting` rounds `performance.now()` to 16.67 or 100 ms): a zero interval switches it to the mean of 8 intervals, and a 100 ms quantum holds the tier. `node test/check-gov.mjs [older perf.js]` feeds it synthetic Firefox timestamps.

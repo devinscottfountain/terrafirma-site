@@ -400,11 +400,13 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
+  const POSTPR = new URLSearchParams(location.search).get('postpr') === '1'; // opt-in: post targets follow renderer.getPixelRatio() (look changes on hi-DPI at lower tiers)
   let have = false, lastDt = 1 / 60, resetNext = false, bufW = W;
 
   function setSize(w, h) {
     renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
     const p = renderer.getPixelRatio(); bufW = Math.max(1, Math.floor(w * p));
+    if (POSTPR) composer.setPixelRatio(p); // the composer keeps the ratio it was built with; without this the governor's pr steps never reach the post targets
     composer.setSize(w, h); lens.uniforms.res.value.set(w, h); resetNext = true;
     if (C) C.setSize();
   }

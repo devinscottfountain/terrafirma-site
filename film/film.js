@@ -799,10 +799,26 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   document.fonts?.ready.then(() => { LAY = null; });
   const relayout = () => { LAY = null; };
   addEventListener('load', relayout);
+  // opt-in pacing (off unless ?fps=N and/or ?idle=N): render every Nth callback, N from the measured display interval so the cadence stays even
+  // (160 Hz, ?fps=80 -> every 2nd). ?idle=N is the cap while the scroll has not moved for 400 ms. The clock gets the whole accumulated dt, so
+  // grain, machines and spin run at the same speed; the governor sees the display interval, not the paced one
+  const PQ = new URLSearchParams(location.search), FPS_CAP = Math.max(0, +PQ.get('fps') || 0), IDLE_CAP = Math.max(0, +PQ.get('idle') || 0);
+  let pAcc = 0, pN = 0, pEma = 0, pY = -1, pYT = 0, pSkip = 0;
   function step(dt) {
     if (!running || !booted || dead) return;
-    dt = Math.max(0, dt || 0); if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
-    gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
+    dt = Math.max(0, dt || 0);
+    if ((FPS_CAP || IDLE_CAP) && !snapNext) {
+      const now = performance.now(), sy = scrollY; if (sy !== pY) { pY = sy; pYT = now; }
+      pEma = pEma ? pEma + (Math.min(dt, 0.1) - pEma) * 0.05 : dt; pAcc += dt; pN++;
+      const cap = IDLE_CAP && now - pYT > 400 ? (FPS_CAP ? Math.min(FPS_CAP, IDLE_CAP) : IDLE_CAP) : FPS_CAP;
+      if (cap && pEma > 0 && ++pSkip < Math.round(1 / (pEma * cap))) return;
+      pSkip = 0; const n = pN; dt = pAcc; pAcc = 0; pN = 0; // dt: everything since the last render
+      if (!freeze) tEl += Math.min(dt, 1 / 15);
+      gov.frame(dt * 1000 / n / (overlap ? 2 : 1));
+    } else {
+      if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
+      gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
+    }
     gt.poll(); gt.begin();
     try { frame(Math.min(0.05, dt)); } finally { gt.end(); }
   }
