@@ -26,7 +26,7 @@ await page.addInitScript(() => {
     P[k] = function (...a) {
       if (c.on) {
         c.n[k] = (c.n[k] || 0) + 1;
-        if (k === 'bufferData' || k === 'bufferSubData') { const d = k === 'bufferData' ? a[1] : a[2]; c.bytes += (d && d.byteLength) || (typeof d === 'number' ? d : 0); }
+        if (k === 'bufferData' || k === 'bufferSubData') { const d = k === 'bufferData' ? a[1] : a[2]; c.bytes += k === 'bufferSubData' && a.length >= 5 ? a[4] * (d.BYTES_PER_ELEMENT || 1) : (d && d.byteLength) || (typeof d === 'number' ? d : 0); }   // ranged uploads count only their range
         else if (k === 'texImage2D' || k === 'texSubImage2D') { const w = a.length > 8 ? a[3] : 0, h = a.length > 8 ? a[4] : 0; c.bytes += w * h * 4; }
       }
       return f.apply(this, a);
