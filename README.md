@@ -69,10 +69,12 @@ Words: nothing client-facing is hardcoded. Add these attributes to the section (
 
 | Attribute | Where it shows | Fallback |
 | --- | --- | --- |
-| `data-sol-hint-zone` | Orchestration hint, desktop only, while a click would start a dig zone (also while the machine digs one) | Click to draw a dig zone |
-| `data-sol-hint-point` | Orchestration hint while a zone has 1 or 2 corners | Click to add corners |
-| `data-sol-hint-close` | Orchestration hint once a zone has 3 or more corners | Click the first corner to close |
-| `data-sol-hint-cancel` | small note left of the hint while a zone is being drawn | Esc to cancel |
+| `data-sol-hint-zone` | Orchestration hint, desktop only, while a click would start a dig zone (also while the machine digs one) | Click the ground to mark a dig |
+| `data-sol-hint-point` | Orchestration hint while a zone has 1 or 2 corners | Keep clicking to outline it |
+| `data-sol-hint-close` | Orchestration hint once a zone has 3 or more corners | Click the first point to start digging |
+| `data-sol-hint-cancel` | small note beside the hint (right of it) while a zone is being drawn | Esc to cancel |
+| `data-sol-hint-drag` | hint for the `?dig=drag` flag only (not approved, not in the default path) | Press and drag to mark a dig |
+| `data-sol-hint-click` | hint for the `?dig=click` flag only (not approved, not in the default path) | Click the ground to dig a patch there |
 | `data-sol-label-zone` | label on the closed zone (with the m³ dug and the share done) | Zone |
 | `data-sol-tag-dig` | Execution tag on the excavator | Excavator 01 |
 | `data-sol-tag-haul` | Execution tag on the dozer | Dozer 02 |
@@ -82,6 +84,8 @@ Words: nothing client-facing is hardcoded. Add these attributes to the section (
 | `data-sol-hud-swing`, `-reach`, `-depth`, `-load` | HUD telemetry labels (autopilot readout) | Swing, Reach, To grade, Load |
 | `data-sol-hud-grade` | label on the grade ladder | Grade |
 | `data-sol-label-cut` / `data-sol-label-fill` | Planning zone labels | Cut / Fill |
+
+Dig intro (desktop, fine pointer): the first time the dig view is in view, once per tab session (`sessionStorage` key `tf:sol-dig-intro`), the dig plays itself once with a cursor sprite, then hands over. `?demo=1` forces it, `?demo=0` skips it. Not under reduced motion, not on phones (they loop the demo as before). `?dig=click` / `?dig=drag` are unapproved one-gesture digs behind a flag.
 
 `data-sol-hint` and `data-sol-hint-drop` (the old click to dig / click to drop hints) are no longer read.
 

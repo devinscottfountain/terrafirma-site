@@ -10,6 +10,12 @@
 // in progress stops the dig. A press that moves more than a few px is a drag or a scroll and never places a corner.
 // Nobody drawing: an autopilot dig loop from home. It runs on arrival, and takes back over IDLE s after the last input
 // once the zone is dug (or the dig was stopped).
+// Desktop intro: the first time the dig view is showing and in view (once per tab session, never under reduced motion, never
+// during the tab flight) the phone demo's draw runs ONCE by itself with a cream cursor sprite that glides corner to corner, clicks
+// each one (press ring) and clicks the first to close; the machine then digs that demo zone (a demo job, healed back afterwards, so
+// the visitor's ground is not pre-dug) and the visitor has the controls at once (the hint shows). The first pointerdown (or Esc)
+// on the stage cancels it: a half-drawn demo zone is cleared, a demo dig stops, curls its bite and the cut heals back while the
+// visitor draws; that same click then starts their own zone. Pointer movement alone never cancels it, wheel and scroll never do.
 // Wheel and vertical touch pan are never captured (no wheel listener, touch-action: pan-y, nothing is ever prevented; a
 // corner drag only takes the pointer for a mouse or a pen). Phones: no listeners at all; a demo draws zones by itself
 // while the dig view is showing (corners at a human pace, live edge, snap ring), digs each one out like a visitor's zone,
@@ -46,6 +52,9 @@ export const ARMK = { PH, PIN_X, PIN_Y, BL, SL, TX, TY, RMIN, RMAX, ZFAR };   //
 const SMAX = 600;       // sample points that track what is left to dig
 // the phone demo
 const DEMO = { first: 1.4, corner: [0.6, 0.9], snap: 0.45, cap: 45, hold: 1.2, heal: 2.4, rest: 0.8, depth: 0.5 };
+// the desktop intro: the same run at a pace a person can follow (wait: s in view first; first: cursor glide to corner one)
+const INTRO = { wait: 0.9, first: 1.1, corner: [0.95, 1.3], snap: 0.7, grace: 1.5 };
+const PATCH = 2.2;      // ?dig=click: half size of the patch a click digs, m
 // spots in the pit (pit-local x, z, m) the demo cycles through, each with a little jitter: the south half, between the
 // machine and the dig camera, so the zone reads in front of the arm instead of under it
 const DSPOT = [[-2.2, -2.6], [0.8, -2.2], [-0.6, -3.0], [1.6, -1.4], [-2.6, -1.2]];
@@ -68,7 +77,7 @@ export function solveArm(xr, yr, ph, o, L = EXC_LIMITS) {
   return o;
 }
 
-export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock }) {
+export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock, intro: introCfg = null, gesture: gestureCfg = '' }) {
   const E = SITE.E, Z = SITE.digZone, home = { x: E.x, z: E.z, yaw: E.yaw };
   const body = { x: E.x, z: E.z, yaw: E.yaw, speed: 0, dist: 0 };
   const cur = { sw: 0, r: 7, y: 2, ph: PH.carry }, tg = { ...cur };
@@ -292,7 +301,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     }
     A = Math.abs(A) / 2; draw.snap = false; draw.drag = -1;
     if (A < ZAREA) { cancelDraw(); return false; }   // a sliver: nothing to dig
-    job.n = n; job.x.set(draw.x.subarray(0, n)); job.z.set(draw.z.subarray(0, n)); job.cx = cx; job.cz = cz; job.area = A; job.demo = !interactive;
+    job.n = n; job.x.set(draw.x.subarray(0, n)); job.z.set(draw.z.subarray(0, n)); job.cx = cx; job.cz = cz; job.area = A; job.demo = !interactive || (intro.on && intro.ctl);   // the phone demo's zone, and the intro's (the visitor's first press ends the intro before any real close)
     // samples on a grid, inset from the edges (the bucket's radius keeps the cut inside anyway)
     const cell = Math.max(0.7, Math.sqrt(A / SMAX) * 1.05); job.cell = cell; job.ns = 0; job.dead.fill(0);
     for (let pass = 0; pass < 2 && !job.ns; pass++)
@@ -461,21 +470,36 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   // to how it was, spoil beside the zone too) -> wait. A new zone only starts while the dig view is showing.
   let shown = false;
   const demo = { phase: 'wait', t: -DEMO.first + DEMO.rest, n: 0, k: 0, x: new Float32Array(6), z: new Float32Array(6), T: 0.75, spot: Math.floor(Math.random() * DSPOT.length), cycles: 0,
-    sp: new Float32Array(24), ns: 0, bx0: 0, bz0: 0, bx1: 0, bz1: 0 };
+    sp: new Float32Array(24), ns: 0, bx0: 0, bz0: 0, bx1: 0, bz1: 0, cx: 0, cz: 0 };
+  // the desktop intro: on while it may still run, ctl while it holds the controls (hint hidden), view: the section is in view,
+  // a/x/z/press: the cursor sprite (alpha, world point, clock time of the last press) for the HUD
+  const gesture = interactive && (gestureCfg === 'drag' || gestureCfg === 'click') ? gestureCfg : '';   // ?dig=drag | click (flag only)
+  const intro = { on: !!(interactive && introCfg && introCfg.on && !gesture), ctl: false, view: true, a: 0, x: 0, z: 0, press: -9, out: 3.5 };
+  intro.ctl = intro.on;
+  const introEnd = () => { if (intro.ctl) { intro.ctl = false; if (introCfg.done) introCfg.done(); } };   // handed over (or cancelled): once
+  // the intro's spot: the farthest one from the machine that is still in comfortable reach (never a corner behind the tracks)
+  function farSpot() {
+    const P = SITE.pit, c = Math.cos(P.rot), s = Math.sin(P.rot); let bi = 0, bd = -1;
+    for (let i = 0; i < DSPOT.length; i++) { const d = Math.hypot(P.x + DSPOT[i][0] * c + DSPOT[i][1] * s - body.x, P.z - DSPOT[i][0] * s + DSPOT[i][1] * c - body.z); if (d <= 9.6 && d > bd) { bd = d; bi = i; } }
+    return bi;
+  }
   // a quad near a pit spot, jittered, every corner clamped into reach (the same clamp as a visitor's click)
   function demoPlan() {
-    const P = SITE.pit, c = Math.cos(P.rot), s = Math.sin(P.rot), S = DSPOT[demo.spot = (demo.spot + 1 + (Math.random() < 0.3 ? 1 : 0)) % DSPOT.length];
+    const P = SITE.pit, c = Math.cos(P.rot), s = Math.sin(P.rot), S = DSPOT[demo.spot = intro.on ? farSpot() : (demo.spot + 1 + (Math.random() < 0.3 ? 1 : 0)) % DSPOT.length];
     const lx = S[0] + (Math.random() - 0.5) * 1.2, lz = S[1] + (Math.random() - 0.5) * 1.2, cx = P.x + lx * c + lz * s, cz = P.z - lx * s + lz * c;
-    const hx = 1.9 + Math.random() * 0.6, hz = 1.4 + Math.random() * 0.5, r = (Math.random() - 0.5) * 1.0, rc = Math.cos(r), rs = Math.sin(r);
+    // the desktop stage is wide: a bigger patch reads
+    const jit = intro.on ? 0.3 : 0.7, sz = intro.on ? 1.35 : 1, hx = (1.9 + Math.random() * 0.6) * sz, hz = (1.4 + Math.random() * 0.5) * sz, r = (Math.random() - 0.5) * 1.0, rc = Math.cos(r), rs = Math.sin(r);
     const n = 4, rot = Math.floor(Math.random() * 4);   // start on any corner, always the same way round
     for (let i = 0; i < n; i++) {
       const q = (i + rot) % 4, a = q === 0 || q === 3 ? -1 : 1, b = q < 2 ? -1 : 1;
-      const ax = a * hx + (Math.random() - 0.5) * 0.7, az = b * hz + (Math.random() - 0.5) * 0.7;
-      const p = { x: cx + ax * rc + az * rs, z: cz - ax * rs + az * rc }; reachable(p);
+      const ax = a * hx + (Math.random() - 0.5) * jit, az = b * hz + (Math.random() - 0.5) * jit;
+      const p = { x: cx + ax * rc + az * rs, z: cz - ax * rs + az * rc };
+      if (intro.on) { const bx = p.x - body.x, bz = p.z - body.z, bd = Math.hypot(bx, bz); if (bd < 4.8) { p.x = body.x + bx / bd * 4.8; p.z = body.z + bz / bd * 4.8; } }   // the intro keeps clear of the tracks
+      reachable(p);
       if (i) { const dx = p.x - demo.x[0], dz = p.z - demo.z[0], d = Math.hypot(dx, dz); if (d > ZEXT) { p.x = demo.x[0] + dx / d * ZEXT; p.z = demo.z[0] + dz / d * ZEXT; } }
       demo.x[i] = p.x; demo.z[i] = p.z;
     }
-    demo.n = n; demo.k = 0;
+    demo.n = n; demo.k = 0; demo.cx = cx; demo.cz = cz;
   }
   function demoSpoil(x, z) {   // where a demo load landed (beside the zone when the pile is out of reach): healed afterwards
     if (Math.hypot(x - SITE.pile.x, z - SITE.pile.z) < 4.5) return;   // the pile is the dozer's: it takes it away
@@ -483,23 +507,31 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     if (demo.ns < 12) { demo.sp[demo.ns * 2] = x; demo.sp[demo.ns * 2 + 1] = z; demo.ns++; }
   }
   const ease = k => k * k * (3 - 2 * k);
+  function demoBox() {   // the demo zone's bounds (what heals back)
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (let i = 0; i < job.n; i++) { x0 = Math.min(x0, job.x[i]); x1 = Math.max(x1, job.x[i]); z0 = Math.min(z0, job.z[i]); z1 = Math.max(z1, job.z[i]); }
+    demo.bx0 = x0; demo.bx1 = x1; demo.bz0 = z0; demo.bz1 = z1;
+  }
   function demoTick(dt, t) {
-    const D = demo; D.t += dt;
+    const D = demo, I = intro, P = I.on ? INTRO : DEMO; D.t += dt;
     switch (D.phase) {
-      case 'wait':
-        if (shown && D.t > DEMO.rest) { demoPlan(); D.phase = 'draw'; D.t = 0; D.T = DEMO.corner[0] + Math.random() * (DEMO.corner[1] - DEMO.corner[0]); }
+      case 'wait': {
+        const ready = shown && (!I.on || I.view);
+        if (I.on && !ready) D.t = 0;   // the intro waits until the dig view is showing and in view
+        if (ready && D.t > (I.on ? INTRO.wait : DEMO.rest)) { demoPlan(); D.phase = 'draw'; D.t = 0; D.T = I.on ? INTRO.first : DEMO.corner[0] + Math.random() * (DEMO.corner[1] - DEMO.corner[0]); }
         break;
+      }
       case 'draw': {
-        if (!shown) { cancelDraw(); D.phase = 'wait'; D.t = 0; break; }   // the tab changed mid-draw: start over when it is back
+        if (!shown || (I.on && !I.view)) { cancelDraw(); draw.hov = false; D.phase = 'wait'; D.t = 0; break; }   // the tab changed / scrolled away mid-draw: start over when it is back
         const last = D.k >= D.n, nx = last ? D.x[0] : D.x[D.k], nz = last ? D.z[0] : D.z[D.k];
         if (D.k > 0) { // the cursor glides from the last corner to the next (to the first one to close), the live edge with it
-          const px = D.x[D.k - 1], pz = D.z[D.k - 1], g = ease(Math.min(1, D.t / ((last ? DEMO.snap + 0.3 : D.T) * 0.8)));
+          const px = D.x[D.k - 1], pz = D.z[D.k - 1], g = ease(Math.min(1, D.t / ((last ? P.snap + 0.3 : D.T) * 0.8)));
           draw.hx = px + (nx - px) * g; draw.hz = pz + (nz - pz) * g; draw.hov = true; draw.snap = last && g > 0.98; draw.ver++;
-        }
-        if (last) { if (D.t > DEMO.snap + 0.3 + 0.35) { draw.hov = false; field.keep(); D.ns = 0; if (closeZone()) { D.phase = 'dig'; D.t = 0; } else { D.phase = 'wait'; D.t = 0; } } }
+          I.x = draw.hx; I.z = draw.hz;   // the sprite rides the live edge's own path
+        } else { const g = ease(Math.min(1, D.t / (D.T * 0.85))); I.x = D.cx + (nx - D.cx) * g; I.z = D.cz + (nz - D.cz) * g; }   // to the first corner from the middle of the patch
+        if (last) { if (D.t > P.snap + 0.65) { draw.hov = false; field.keep(); D.ns = 0; I.press = t; if (closeZone()) { D.phase = 'dig'; D.t = 0; introEnd(); } else { D.phase = 'wait'; D.t = 0; } } }
         else if (D.t > D.T) { // the next corner goes down
-          const n0 = draw.n; addCorner(nx, nz); D.k++; D.t = 0; D.T = DEMO.corner[0] + Math.random() * (DEMO.corner[1] - DEMO.corner[0]);
-          if (job.on && !job.done && !draw.n) { D.phase = 'dig'; D.t = 0; }   // it closed on the first corner by itself
+          const n0 = draw.n; I.press = t; addCorner(nx, nz); D.k++; D.t = 0; D.T = P.corner[0] + Math.random() * (P.corner[1] - P.corner[0]);
+          if (job.on && !job.done && !draw.n) { D.phase = 'dig'; D.t = 0; introEnd(); }   // it closed on the first corner by itself
           else if (draw.n === n0) { cancelDraw(); D.phase = 'wait'; }   // a corner refused (too close): try another zone
         }
         break;
@@ -509,17 +541,28 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
         if (job.done && !op.on) { D.phase = 'hold'; D.t = 0; }
         break;
       case 'hold':
-        if (D.t > DEMO.hold) { D.phase = 'heal'; D.t = 0; job.on = false; job.ver++; marks[0].out = Math.min(marks[0].out, t);
-          let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (let i = 0; i < job.n; i++) { x0 = Math.min(x0, job.x[i]); x1 = Math.max(x1, job.x[i]); z0 = Math.min(z0, job.z[i]); z1 = Math.max(z1, job.z[i]); }
-          D.bx0 = x0; D.bx1 = x1; D.bz0 = z0; D.bz1 = z1; }
+        if (D.t > DEMO.hold) { D.phase = 'heal'; D.t = 0; job.on = false; job.ver++; marks[0].out = Math.min(marks[0].out, t); demoBox(); }
         break;
-      case 'heal': { // the outline fades while the cut and the spoil ease back (same pace for both)
+      case 'heal': { // the outline fades while the cut and the spoil ease back (same pace for both); t < 0: a bite still landing
+        if (D.t < 0) break;
         const a = 1 - Math.exp(-dt * 2.6);
         field.heal(D.bx0, D.bz0, D.bx1, D.bz1, 2.4, a);
         for (let i = 0; i < D.ns; i++) field.heal(D.sp[i * 2], D.sp[i * 2 + 1], D.sp[i * 2], D.sp[i * 2 + 1], 4.2, a);
-        if (D.t > DEMO.heal) { D.phase = 'wait'; D.t = 0; D.cycles++; job.demo = false; }
+        if (D.t > DEMO.heal) { D.phase = I.on ? 'off' : 'wait'; D.t = 0; D.cycles++; job.demo = false; if (I.on) I.on = false; }
         break;
       }
+    }
+  }
+  // the visitor took over (first pointerdown or Esc on the stage) while the intro runs. Still drawing: the half-drawn zone is
+  // cleared, nothing else was touched. Already digging (handed over): the dig stops where it is (the bite in the bucket curls
+  // and dumps), the outline fades and the cut heals back on its own clock, so their own zone starts on clean ground.
+  function introCancel() {
+    const D = demo, I = intro;
+    if (!I.on) return;
+    if (I.ctl) { if (D.phase === 'draw') { cancelDraw(); draw.hov = false; } D.phase = 'off'; I.on = false; I.out = 14; introEnd(); return; }   // a cancel drops the sprite at once
+    if (D.phase === 'dig' || D.phase === 'hold') {
+      demoBox(); stopJob(); job.on = false; job.ver++; marks[0].out = Math.min(marks[0].out, clock());
+      D.phase = 'heal'; D.t = -INTRO.grace;
     }
   }
 
@@ -542,21 +585,31 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   }
   // the cursor while drawing: where a click would put the next corner (clamped), and whether it would close the zone
   function hover(e) {
+    if (gesture || intro.ctl) return;   // a one-gesture mode has no cursor to show; the intro owns the live edge until it hands over
     if (!armed || !draw.n) { if (draw.hov || draw.snap) { draw.hov = draw.snap = false; draw.ver++; } return; }
     const p = draw.drag < 0 && pick(e);
     draw.snap = draw.drag < 0 && draw.n > 2 && screenD(draw.x[0], draw.z[0], e) < SNAP_PX;
     if (p) { P0.x = p.x; P0.z = p.z; clampCorner(P0); draw.hx = P0.x; draw.hz = P0.z; }
     draw.hov = !!p; draw.ver++;
   }
+  // ?dig=click / ?dig=drag (flag only): one gesture instead of the polygon. A rectangle between two ground points, corners clamped like a click's.
+  const setC = (i, x, z) => { P0.x = x; P0.z = z; clampCorner(P0, i); draw.x[i] = P0.x; draw.z[i] = P0.z; };
+  function rect(ax, az, bx, bz) { draw.n = 0; setC(0, ax, az); draw.n = 1; setC(1, bx, az); draw.n = 2; setC(2, bx, bz); draw.n = 3; setC(3, ax, bz); draw.n = 4; draw.ver++; }
+  const dragA = { on: false, x: 0, z: 0 };
   const onDown = e => {
-    if (!armed || e.button !== 0 || !e.isPrimary) return;
+    if (!armed || !e.isPrimary) return;
+    if (intro.on) introCancel();   // any press on the stage takes the controls from the intro, and the same click then goes on as the visitor's
+    if (e.button !== 0) return;
+    if (gesture === 'drag' && e.pointerType !== 'touch') { const p = pick(e); if (p) { dragA.on = true; dragA.x = p.x; dragA.z = p.z; try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* fine */ } } }
     downId = e.pointerId; downX = e.clientX; downY = e.clientY; moved = 0; downScroll = window.scrollY;
     if (draw.n && e.pointerType !== 'touch') { // a corner under a mouse or a pen: grab it (touch never grabs, it scrolls)
       for (let i = 0; i < draw.n; i++) if (screenD(draw.x[i], draw.z[i], e) < HANDLE_PX) { draw.drag = i; try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* fine */ } break; }
     }
   };
   const onMove = e => {
+    if (intro.ctl) return;   // moving the mouse never cancels the intro (only a press does), and never fights its live edge
     if (e.pointerId === downId) moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
+    if (dragA.on && e.pointerId === downId && moved > CLICK_PX) { const p = pick(e); if (p) { rect(dragA.x, dragA.z, p.x, p.z); lastInput = clock(); } return; }
     if (draw.drag >= 0 && e.pointerId === downId && moved > CLICK_PX) {
       const p = pick(e);
       if (p) { const i = draw.drag; P0.x = p.x; P0.z = p.z; clampCorner(P0, i); draw.x[i] = P0.x; draw.z[i] = P0.z; draw.ver++; lastInput = clock(); }
@@ -566,19 +619,23 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   const onUp = e => {
     if (e.pointerId !== downId) return; downId = -1;
     moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
+    if (dragA.on) { dragA.on = false; try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* fine */ } if (draw.n === 4 && moved > CLICK_PX) closeZone(); else cancelDraw(); return; }
     const dragged = draw.drag >= 0 && moved > CLICK_PX; draw.drag = -1;
     if (!armed || dragged || moved > CLICK_PX || Math.abs(window.scrollY - downScroll) > 2) { hover(e); return; }   // a drag or a scroll
     // a click: on the first corner closes the zone; anywhere else on the ground places a corner
+    if (gesture === 'click') { const p = pick(e); if (p) { rect(p.x - PATCH, p.z - PATCH, p.x + PATCH, p.z + PATCH); lastInput = clock(); closeZone(); } return; }
+    if (gesture === 'drag' && e.pointerType !== 'touch') return;   // a press without a drag does nothing
     if (draw.n > 2 && screenD(draw.x[0], draw.z[0], e) < SNAP_PX) closeZone();
     else { const p = pick(e); if (p) { P0.x = p.x; P0.z = p.z; clampCorner(P0); addCorner(P0.x, P0.z); } }
     hover(e);
   };
-  const onCancel = () => { downId = -1; draw.drag = -1; };
+  const onCancel = () => { downId = -1; draw.drag = -1; if (dragA.on) { dragA.on = false; cancelDraw(); } };
   const onLeave = () => { if (draw.hov || draw.snap) { draw.hov = draw.snap = false; draw.ver++; } };
   const onDbl = () => { if (armed && draw.n > 2) closeZone(); };
   // Escape cancels the zone being drawn, or (with none) stops the dig; Enter closes it. Never prevented, never in a field.
   const onKey = e => {
     if (!armed || e.defaultPrevented || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '') || e.target?.isContentEditable) return;
+    if (intro.ctl && (e.key === 'Escape' || e.key === 'Enter')) { introCancel(); return; }   // the intro is only ever cancelled, never closed by a key
     if (e.key === 'Escape') { if (draw.n) cancelDraw(); else stopJob(); }
     else if (e.key === 'Enter' && draw.n > 2) closeZone();
   };
@@ -600,24 +657,26 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   const api = {
     get tip() { return tip; }, get load() { return load / capNow(); }, get user() { return user; }, get touched() { return everClicked; },
     get step() { return user ? 'user:' + step : step; }, home, body, op, queued, marks, drv, IDLE, RMAX,
-    draw, job, zoneStats, MAXV, demo,
+    draw, job, zoneStats, MAXV, demo, intro, gesture,
     // what the next click does: 'zone' (start a zone) | 'point' (add a corner) | 'close' (a corner, or close on the first)
     // ('' without a pointer)
-    get hint() { if (!interactive) return ''; return draw.n ? (draw.n > 2 ? 'close' : 'point') : 'zone'; },
+    get hint() { if (!interactive || intro.ctl) return ''; if (gesture) return 'zone'; return draw.n ? (draw.n > 2 ? 'close' : 'point') : 'zone'; },
     get drawing() { return draw.n > 0; },
     get driving() { return step === 'drive' || step === 'home'; },
     // armed: the dig view has landed and this is a desktop pointer; the canvas only takes pointer events then.
     // Leaving the dig view drops a zone that was still being drawn (the one being dug carries on).
-    setArmed(a) {
-      shown = !!a;
+    setArmed(a, inView = true) {
+      shown = !!a; intro.view = inView;
       a = !!(a && interactive); if (a === armed) return; armed = a;
       canvas.style.pointerEvents = a ? 'auto' : 'none'; canvas.style.cursor = a ? 'crosshair' : '';
       if (!a) { downId = -1; cancelDraw(); onLeave(); }
     },
     update(dt, t) {
+      if (!interactive || intro.on) demoTick(dt, t);   // the phone demo, or the desktop intro (once)
+      // the cursor sprite: in while the intro draws, out at the handover (or a cancel)
+      if (intro.a > 0 || intro.ctl) { const on = intro.ctl && demo.phase === 'draw'; intro.a += ((on ? 1 : 0) - intro.a) * (1 - Math.exp(-dt * (on ? 6 : intro.out))); if (!on && intro.a < 0.004) intro.a = 0; }   // out: a slow fade after the closing click (the press ring plays), a quick one on a cancel
       // back to the autopilot once the zone is dug (or stopped) and nothing has happened for IDLE s
-      if (!interactive) demoTick(dt, t);
-      else if (user && !op.on && !(job.on && !job.done) && t - Math.max(lastInput, doneT) > IDLE) {
+      if (interactive && user && !op.on && !(job.on && !job.done) && t - Math.max(lastInput, doneT) > IDLE) {
         user = false; marks[0].out = Math.min(marks[0].out, t); if (job.on) { job.on = false; job.ver++; }
       }
       if (!user && !op.on && (step === 'idle')) autopilot();
@@ -634,6 +693,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     // test hooks: corner(x, z) runs the same path as a click on the ground there (clamp included); close() / cancel() /
     // stop() as the snap click, Escape (drawing) and Escape (digging)
     qa: { cur, tg, get load() { return load; }, set load(v) { load = v; }, get stepName() { return step; }, zfloor,
+      introCancel: () => introCancel(),
       corner(x, z) { const p = { x, z }, c = clampCorner(p); addCorner(p.x, p.z); return [p.x, p.z, c]; },
       close: () => closeZone(), cancel: () => cancelDraw(), stop: () => stopJob(),
       forceUser(v) { user = !!v; lastInput = clock(); } },

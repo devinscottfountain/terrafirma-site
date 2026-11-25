@@ -24,12 +24,14 @@ const DEG = Math.PI / 180;
 const MSCALE = 1.4;      // machine scale (model metres -> world)
 const FLIGHT = 1.4;      // s, camera flight between the three shots
 const PR_MAX = 1.5;
+const INTRO_KEY = 'tf:sol-dig-intro';   // sessionStorage: the dig intro has played in this tab session
 const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-topo] element (was .42 before #41)
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
 const WORDS = {
-  hint: ['hint-zone', 'Click to draw a dig zone'], hintPoint: ['hint-point', 'Click to add corners'], hintClose: ['hint-close', 'Click the first corner to close'],
+  hint: ['hint-zone', 'Click the ground to mark a dig'], hintPoint: ['hint-point', 'Keep clicking to outline it'], hintClose: ['hint-close', 'Click the first point to start digging'],
   hintCancel: ['hint-cancel', 'Esc to cancel'], zone: ['label-zone', 'Zone'],
+  hintDrag: ['hint-drag', 'Press and drag to mark a dig'], hintClick: ['hint-click', 'Click the ground to dig a patch there'],   // ?dig=drag / ?dig=click only
   dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Dozer 02'], grade: ['tag-grade', 'Roller 03'],
   auto: ['hud-auto', 'Autopilot'], manual: ['hud-manual', 'Manual'], swing: ['hud-swing', 'Swing'], reach: ['hud-reach', 'Reach'],
   depth: ['hud-depth', 'To grade'], load: ['hud-load', 'Load'], grade_: ['hud-grade', 'Grade'],
@@ -176,7 +178,13 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   // ------------------------------------------------------------------ the dig and the crew
   let clockT = 0; const clock = () => clockT;
-  const dig = createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock });
+  // desktop intro (sol-game.js): once per tab session, never under reduced motion, a fine pointer only. ?demo=1 forces it (QA),
+  // ?demo=0 skips it. ?dig=click | drag swaps the polygon for a one-gesture dig (flag only; no intro then).
+  const qs = new URLSearchParams(typeof location !== 'undefined' ? location.search : ''), mq = q => typeof matchMedia === 'function' && matchMedia(q).matches;
+  let introSeen = false; try { introSeen = sessionStorage.getItem(INTRO_KEY) === '1'; } catch (_) { /* private mode: it plays every visit */ }
+  const introOn = interactive && qs.get('demo') !== '0' && (qs.get('demo') === '1' || (!introSeen && mq('(pointer: fine)'))) && !mq('(prefers-reduced-motion: reduce)');
+  const dig = createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock, gesture: qs.get('dig') || '',
+    intro: { on: introOn, done() { try { sessionStorage.setItem(INTRO_KEY, '1'); } catch (_) { /* fine */ } } } });
   const crew = createCrew({ field, slot: { haul: loader, grade: roller }, parts, MSCALE });
 
   // ------------------------------------------------------------------ plan graphics (lines)
@@ -483,7 +491,8 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // ------------------------------------------------------------------ per frame
   const tel = { swing: 0, reach: 0, grade: 0, load: 0, auto: true, ground: 0 };
   const v3 = new THREE.Vector3(), v4 = new THREE.Vector3(), pin = new THREE.Vector3(), bend = new THREE.Vector3();
-  let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0;
+  let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0, hintP = -1, viewT = 0, viewOK = true;
+  const HINT_PULSE = 1.2, HINT_PULSES = 3;   // the first hint breathes 3 times (1.2 s each), then holds steady
   const tipXY = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PH = [0, 0, 0];
   const LAB = [tagWords.dig, tagWords.haul, tagWords.grade], TCOL = [pal.cut, pal.accent, pal.fill];
   const MRK = 28, GHOST = 18;   // points per marker ring, per ghost path
@@ -493,8 +502,9 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     ghost: { a: 0, n: 0, pts: new Float32Array(GHOST * 2), foot: new Float32Array(8), footOn: false },
     mbox: [new Float32Array(4), new Float32Array(4), new Float32Array(4)],
     // the zone being drawn (corners on screen, snap, cursor) and the closed zone's tag (what it has dug)
-    zone: { n: 0, pts: new Float32Array(dig.MAXV * 2), ok: new Uint8Array(dig.MAXV), snap: false, hov: false, h: [0, 0] },
-    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '' };
+    zone: { n: 0, pts: new Float32Array(dig.MAXV * 2), ok: new Uint8Array(dig.MAXV), snap: false, hov: false, h: [0, 0], pulse: 0 },
+    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '', hintPulse: 0,
+    cur: { a: 0, ok: false, p: [0, 0], pa: 99 } };   // the intro's cursor sprite (screen point, alpha, seconds since a press)
   const MRK_R = 1.6, pp = [0, 0], EXC_BOX = { hx: 3, hz: 3, off: 0 };
   // project the click markers and the ghost path (no allocation: straight into the preallocated arrays)
   function digMarks(dt) {
@@ -531,6 +541,9 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // the zone being drawn, on screen: corners, snap ring, cursor (no allocation)
   function zoneHud() {
     const D = dig.draw, Z = hudState.zone; Z.n = D.n; Z.snap = D.snap; Z.hov = false;
+    Z.pulse = D.n > 0 && !dig.gesture ? (D.n > 2 ? 2 : 1) : 0;   // the first corner is the target: it pulses, hardest once a click there closes the zone
+    const C = hudState.cur, I = dig.intro; C.a = I.a; C.pa = I.press > -1 ? clockT - I.press : 99;
+    C.ok = I.a > 0.004 || C.pa < 0.6 ? project(I.x, field.ground(I.x, I.z) + 0.1, I.z, C.p) : false;
     for (let i = 0; i < D.n; i++) { Z.ok[i] = project(D.x[i], field.ground(D.x[i], D.z[i]) + 0.1, D.z[i], pp) ? 1 : 0; Z.pts[i * 2] = pp[0]; Z.pts[i * 2 + 1] = pp[1]; }
     if (D.n && D.hov && !D.snap && project(D.hx, field.ground(D.hx, D.hz) + 0.1, D.hz, pp)) { Z.hov = true; Z.h[0] = pp[0]; Z.h[1] = pp[1]; }
   }
@@ -581,7 +594,9 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     aim(camera, cam);
 
     // the world runs in every view
-    dig.setArmed(mode === 1 && !fl);
+    // the intro waits for the section to be properly in view (half of the stage on screen), checked at 4 Hz while it waits
+    if (dig.intro.on && dig.intro.ctl) { viewT -= dt; if (viewT <= 0) { viewT = 0.25; const r = host.getBoundingClientRect(), vh = innerHeight || 1; viewOK = Math.min(r.bottom, vh) - Math.max(r.top, 0) > 0.5 * Math.min(r.height, vh); } }
+    dig.setArmed(mode === 1 && !fl, viewOK);
     dig.update(dt, clockT);
     crew.update(dt, clockT);
     field.upload(dt);
@@ -660,8 +675,11 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     // hint: what a click does next (start a zone / add corners / close it on the first corner). It stays up the whole time
     // the dig view is on (busy or not, #43); a change of text swaps in place. It only fades with the tab change.
     const want = interactive && mode === 1 && !fl ? dig.hint : '';
-    if (want) { hudState.hintText = want === 'close' ? words.hintClose : want === 'point' ? words.hintPoint : words.hint; hudState.hintSub = want === 'zone' ? '' : words.hintCancel; }
+    if (want) { hudState.hintText = want === 'close' ? words.hintClose : want === 'point' ? words.hintPoint : dig.gesture === 'drag' ? words.hintDrag : dig.gesture === 'click' ? words.hintClick : words.hint; hudState.hintSub = want === 'zone' ? '' : words.hintCancel; }
     hintA += ((want ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (want ? 3 : 8))); hudState.hint = hintA;
+    // the first hint of the page (after the intro hands over, or at once without one) pulses 3 times, once
+    if (hintP < 0 && want === 'zone' && hintA > 0.3) hintP = 0;
+    if (hintP >= 0 && hintP < HINT_PULSE * HINT_PULSES) { hintP += dt; const ph = (hintP % HINT_PULSE) / HINT_PULSE, sn = Math.sin(Math.PI * ph); hudState.hintPulse = hintP < HINT_PULSE * HINT_PULSES ? sn * sn : 0; } else hudState.hintPulse = 0;
     // the readout (Autopilot / Manual + telemetry) is always on in the dig view too; only its values change (sol-hud.js)
     if (hudState.wDig > 0.01) { digMarks(dt); zoneHud(); }
     else hudState.zone.n = 0;
