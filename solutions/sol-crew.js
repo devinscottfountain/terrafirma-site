@@ -1,5 +1,5 @@
 // sol-crew.js: the rest of the jobsite crew, running whatever the camera shows. The dozer pushes spoil from the excavator's
-// pile onto the near end of the fill pad (approach, blade down, push, blade up, reverse); the compactor works the far end of
+// pile onto the near end of the fill pad (approach, blade down, push, blade up, reverse); the smooth drum roller works the far end of
 // the pad in lanes, pulling it to the design level, steering on its articulation at each lane change. Both read the ground
 // from the edit field and write back to it (the blade's bite and spill, track and drum marks).
 // Machine slots: `slot.haul` and `slot.grade` are filled by solutions.js from the machine kit (see the TODO there). Rig calls
@@ -43,10 +43,10 @@ export function createCrew({ field, slot, parts, MSCALE }) {
   const L = { m: slot.haul, x: S[0], z: S[1], yaw: yawD, s: 0, phase: 'approach', wait: 0.6, carry: 0, t: 0, speed: 0, lift: LIFT.carry, tilt: 0, dist: 0, spill: 0, drive: 0 };
   const pileHit = [K.bx - (K.bx - SITE.E.x) / 15 * 1.6, K.bz - (K.bz - SITE.E.z) / 15 * 1.6];   // inner half of the blade, over the pile's outer flank
 
-  // ------------------------------------------------------------------ compactor lanes on the pad (pad local frame)
+  // ------------------------------------------------------------------ smooth drum roller lanes on the pad (pad local frame)
   // forward along +x, reverse back stepping over to the next lane. The drum is DRUM ahead of the hitch (the
   // model's origin), the rear axle AXLE behind it.
-  const DRUM = 1.55 * MSCALE, AXLE = 1.45 * MSCALE;
+  const DRUM = 1.5 * MSCALE, AXLE = 1.4 * MSCALE;
   const lanes = [-3.8, -1.9, 0, 1.9, 3.8], D0 = 7.4, D1 = 12.4;   // D0..D1: drum travel (pad local x), far end only
   const R = { m: slot.grade, lane: 0, dirL: 1, pass: 0, d: D0, x: 0, z: 0, yaw: SITE.pad.rot, speed: 0, t: 0, art: 0, drive: 0,
   };
@@ -102,7 +102,7 @@ export function createCrew({ field, slot, parts, MSCALE }) {
     L.t = L.s / lenST;   // path head: where the blade is along the line (out and back)
   }
 
-  // compactor: the hitch runs the lane (straight forward; an S curve onto the next lane while backing, level at both ends so
+  // smooth drum roller: the hitch runs the lane (straight forward; an S curve onto the next lane while backing, level at both ends so
   // the passes join smoothly). Heading follows the path; the articulation is the path's curvature over the wheelbase,
   // clamped to the machine's +/- 34 degrees and eased, split about the hitch (front one way, rear the other).
   const ART = 0.6, WB = DRUM + AXLE;
@@ -122,7 +122,7 @@ export function createCrew({ field, slot, parts, MSCALE }) {
     const dlx = hx + Math.cos(pf) * DRUM, dlz = lz + Math.sin(pf) * DRUM, alx = hx - Math.cos(pr) * AXLE, alz = lz - Math.sin(pr) * AXLE;
     const dx = P.x + dlx * c + dlz * s, dz = P.z - dlx * s + dlz * c, axw = P.x + alx * c + alz * s, azw = P.z - alx * s + alz * c;   // drum, rear axle (world)
     field.flatten(dx, dz, 1.7, hD, 0.35 * dt, 0.025 * dt);   // knocks mounds down, barely raises
-    if (R.speed > 0.2) { marks(dx, dz, P.rot - pf, 0.9, dt * 0.25); marks(axw, azw, R.yaw, 1.34, dt * 0.2, 0.35); }
+    if (R.speed > 0.2) { marks(dx, dz, P.rot - pf, 0.9, dt * 0.25); marks(axw, azw, R.yaw, 1.17, dt * 0.2, 0.35); }
     if ((fwd && R.d >= D1) || (!fwd && R.d <= D0)) {
       R.speed = 0;
       if (!fwd) { R.lane += R.dirL; if (R.lane <= 0 || R.lane >= lanes.length - 1) { R.lane = clamp(R.lane, 0, lanes.length - 1); R.dirL *= -1; } }

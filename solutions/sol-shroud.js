@@ -1,4 +1,4 @@
-// sol-shroud.js: the TerraFirma ATLAS Cyber Shroud on the cab roof of every Solutions machine (excavator, dozer, compactor). Real
+// sol-shroud.js: the TerraFirma ATLAS Cyber Shroud on the cab roof of every Solutions machine (excavator, dozer, smooth drum roller). Real
 // part (kit/shroud.js loads assets/cyber-shroud.glb once per page), drawn in the scene's own look: the shared black occluder plus
 // edge line art, a little brighter than the machine lines so it reads as the product. One solid geometry and one edge geometry,
 // built once and shared by every machine; each machine mounts it on its own roof (machine.ROOF, model metres, in the part that

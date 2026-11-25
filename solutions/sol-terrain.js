@@ -31,7 +31,7 @@ export function hF(x, z) {
 // it dumps (swing angle and radius from home). Pad: the fill pad; the dozer pushes spoil from the pile onto its near end, the
 // compactor works the far end. Plat: a building platform (part cut, part fill). Road: pile to pad.
 // Working zones: every machine keeps its body inside its own zone, and the zones sit at least 1.5 lengths of the shorter
-// machine of each pair apart (footprints: excavator 5.2 m, dozer 12.7 m, compactor 8.5 m), so the three never crowd each
+// machine of each pair apart (footprints: excavator 5.2 m, dozer 12.7 m, compactor 8.2 m), so the three never crowd each
 // other in any view. digZone bounds the excavator's centre when a visitor drives it; the dozer and compactor zones follow
 // from their routes (sol-crew.js). FOOT: footprint half sizes (m, world) and the offset of the rectangle centre ahead of the
 // machine origin; the plan view draws these and the QA gap check measures them.
@@ -48,7 +48,7 @@ export const SITE = {
   pileR: 11,                   // dump radius (m) from E; the swing (pileSw) is set below from the push line
   push: { r: 15, lx: -14.3, lz: 2 },   // blade start radius from E; where the push ends (pad local x, z of the blade edge)
   digZone: { x: -4, z: 10, hx: 8, hz: 4, rot: 0 },   // where the excavator's centre may drive (contains E)
-  FOOT: { dig: { hx: 2.6, hz: 1.95, off: 0 }, house: { hx: 2.1, hz: 2.1 }, haul: { hx: 6.37, hz: 3.46, off: -1.05 }, grade: { hx: 4.27, hz: 1.85, off: -0.77 } },
+  FOOT: { dig: { hx: 2.6, hz: 1.95, off: 0 }, house: { hx: 2.1, hz: 2.1 }, haul: { hx: 6.37, hz: 3.46, off: -1.05 }, grade: { hx: 4.1, hz: 1.77, off: -0.74 } },
   dots: { x: -1.5, z: 3 },     // centre of the densest dots (the dig)
   centre: { x: 8, z: -8 },     // middle of the site (plan fade, contours)
   field: { x: 8, z: -8, size: 80, n: 320 },

@@ -1,5 +1,5 @@
 // sol-machines.js: procedural wireframe construction machines for the Solutions section: excavator, crawler dozer and
-// padfoot compactor (the designer's vehicles), plus the earlier backhoe loader and roller stand-ins kept as spare slots. Hidden-line look: a black solid with polygonOffset hides back edges, an
+// smooth drum compactor (the designer's vehicles), plus the earlier backhoe loader and roller stand-ins kept as spare slots. Hidden-line look: a black solid with polygonOffset hides back edges, an
 // EdgesGeometry overlay draws the white line art. Geometry is built once per machine type and shared by
 // every instance; only track shoes are per instance (they move along the track loop when driving).
 // Units are metres; forward is +x, up is +y, right is +z.
@@ -672,114 +672,157 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     return api;
   }
 
-  // ================================================================== PADFOOT SOIL COMPACTOR (CP74 class, articulated, single drum)
-  // Published class figures used: overall length about 6.1, width 2.42, height to the cab roof 3.1, wheelbase 3.0, drum
-  // 2.13 wide, 1.36 shell + 0.1 pads (1.56 over the pads), rear tyres 23.1-26 (1.6 dia, 0.59 wide) with chevron tread.
+  // ================================================================== SMOOTH DRUM SOIL COMPACTOR (CS56B class, articulated, single drum)
+  // Published CS56B figures used: overall length 5.86, width 2.30, height to the cab / ROPS roof 3.11, wheelbase 2.90, ground clearance
+  // 0.44, drum 2.134 wide x 1.534 dia (30 mm shell, smooth: no pads), rear tyres 23.1-26 (about 1.6 dia, 0.59 wide) with a traction chevron.
   // Origin: the articulation hitch on the ground. The front frame (drum) steers about it; the rear frame carries cab and engine.
-  const CP = { lf: 1.55, lr: 1.45, dr: 0.68, pad: 0.1, dw: 2.13, tr: 0.63, ty: 0.82, tw: 0.59, tz: 0.955 };   // tr: tyre carcass, ty: over the lugs
+  // A plain cylinder reads as nothing in hidden-line art, so the drum carries honest detail: chamfered shell rims, recessed end plates
+  // with the hub, a bolt circle, lightening holes, a filler plug and a balance weight (the last two are what show the roll). The rolling face stays clean.
+  const CP = { lf: 1.5, lr: 1.4, dr: 0.767, dw: 2.134, tr: 0.765, ty: 0.8, tw: 0.59, tz: 0.835 };   // tr: tyre carcass, ty: rolling radius over the tread lugs
   let cpT = null;
   function cpTemplate() {
     if (cpT) return cpT;
-    const R = CP.dr + CP.pad, HW = CP.dw / 2;
-    // drum: shell, end rings, staggered rows of oblong pads
-    const d = part();
-    d.cyl(CP.dr, CP.dw, 0, 0, 0, 36);
-    for (const z of [-1, 1]) { d.cyl(CP.dr * 0.5, 0.06, 0, 0, z * (HW + 0.03), 20); d.cyl(CP.dr + 0.03, 0.05, 0, 0, z * (HW - 0.03), 36); }
-    const rows = 9, ring = 20;
-    for (let r = 0; r < rows; r++) {
-      const z = -HW + 0.14 + r * ((CP.dw - 0.28) / (rows - 1)), sh = (r % 2) * 0.5;
-      for (let k = 0; k < ring; k++) {
-        const a = ((k + sh) / ring) * Math.PI * 2, g = new THREE.BoxGeometry(0.17, CP.pad + 0.02, 0.12);
-        g.translate(0, CP.dr + CP.pad / 2 - 0.01, 0); g.rotateZ(a); g.translate(0, 0, z); d.add(g);
+    const R = CP.dr, HW = CP.dw / 2, PL = HW - 0.09;   // PL: end plate face, recessed 90 mm inside the shell rim
+    // drum: one lathe profile (r, z) round the z axis, counter-clockwise so the faces point out. Shell 30 mm with a 30 mm chamfer at each
+    // rim, the end plate recessed inside it, a hub boss on the plate. Only the profile corners draw (rim rings), never the rolling face.
+    const half = [[0.27, HW - 0.015], [0.27, PL], [R - 0.05, PL], [R - 0.05, HW], [R - 0.03, HW], [R, HW - 0.03]];   // +z end, centre out to the shell
+    const prof = [[0, -(HW - 0.015)]];
+    for (const [r, z] of half) prof.push([r, -z]);
+    for (const [r, z] of half.slice().reverse()) prof.push([r, z]);
+    prof.push([0, HW - 0.015]);
+    const lg = new THREE.LatheGeometry(prof.map(p => new THREE.Vector2(p[0], p[1])), 48); lg.rotateX(Math.PI / 2);
+    const d = part(); d.add(lg);
+    for (const s of [-1, 1]) {
+      const zp = s * PL, sp = 0.4;   // sp: the unique angular offset of this end
+      for (let k = 0; k < 11; k++) { const a = sp + k / 11 * Math.PI * 2; d.cyl(0.024, 0.026, Math.cos(a) * 0.46, Math.sin(a) * 0.46, zp + s * 0.013, 6); }   // bolt circle
+      for (let k = 0; k < 7; k++) {   // lightening holes (drawn): seven, so the pattern never repeats at the bolt pitch
+        const a = sp + 0.25 + k / 7 * Math.PI * 2, cx = Math.cos(a) * 0.6, cy = Math.sin(a) * 0.6, ring = [];
+        for (let j = 0; j <= 14; j++) { const b = j / 14 * Math.PI * 2; ring.push([cx + Math.cos(b) * 0.085, cy + Math.sin(b) * 0.085, zp + s * 0.004]); }
+        d.line(ring);
       }
+      for (const rr of [0.36, 0.67]) { const ring = []; for (let j = 0; j <= 40; j++) { const b = j / 40 * Math.PI * 2; ring.push([Math.cos(b) * rr, Math.sin(b) * rr, zp + s * 0.004]); } d.line(ring); }   // stiffener rings
+      const pa = sp + 0.25 + Math.PI / 7;   // filler plug between two holes, with its slot
+      d.cyl(0.05, 0.035, Math.cos(pa) * 0.6, Math.sin(pa) * 0.6, zp + s * 0.018, 10);
+      d.line([[Math.cos(pa) * 0.6 - 0.035, Math.sin(pa) * 0.6, zp + s * 0.0365], [Math.cos(pa) * 0.6 + 0.035, Math.sin(pa) * 0.6, zp + s * 0.0365]]);
+      d.box(0.24, 0.07, 0.04, Math.cos(sp + 3.3) * 0.52, Math.sin(sp + 3.3) * 0.52, zp + s * 0.02, 0, 0, sp + 3.3 + Math.PI / 2);   // balance weight bolted on the plate
     }
     const drum = d.build();
 
-    // front frame: box frame round the drum (side plates with bolt rings, front and rear cross members), hitch arms
-    const f = part();
+    // front frame: arms from the hitch to the hub on each side (they leave most of the end plate in view), hub covers, front cross member
+    // and lamps, scraper bars on the smooth face front and rear, hitch knuckle
+    const f = part(), ZP = HW + 0.035, DZ = HW + 0.06;   // ZP: arm plate centre (50 mm plate, 10 mm off the drum rim), DZ: its outer face; bolt heads stay inside the 2.30 width
+    const sa = -38 * Math.PI / 180;   // scraper angle below the axle line, front (the rear one mirrors it)
     for (const s of [-1, 1]) {
-      const zz = s * (HW + 0.13);
-      f.ext([[0.55, 0.32], [2.5, 0.32], [2.5, 1.12], [0.78, 1.12], [0.55, 0.98]], 0.1, zz - 0.05);
-      f.cyl(0.34, 0.16, CP.lf, R, zz + s * 0.1, 20);   // vibrator / drive housing
-      for (let k = 0; k < 10; k++) { const a = k / 10 * Math.PI * 2; f.cyl(0.03, 0.04, CP.lf + Math.cos(a) * 0.45, R + Math.sin(a) * 0.45, zz + s * 0.06, 6); }
-      for (let k = 0; k < 5; k++) f.cyl(0.035, 0.04, 2.35, 0.45 + k * 0.15, zz + s * 0.06, 6);   // bolt column at the front
-      for (const y of [0.55, 0.95]) f.cyl(0.035, 0.04, 0.72, y, zz + s * 0.06, 6);
-      f.bar([0.62, 1.1, zz], [0.05, 0.98, s * 0.3], 0.18, 0.14);   // hitch arm
+      const zz = s * ZP;
+      f.bar([CP.lf, R + 0.05, zz], [0.4, 1.22, zz], 0.2, 0.05);   // arm, hub up and back to the hitch
+      f.cyl(0.3, 0.05, CP.lf, R, zz, 24);   // hub cover (the drive / vibration housing)
+      for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2; f.cyl(0.024, 0.022, CP.lf + Math.cos(a) * 0.21, R + Math.sin(a) * 0.21, s * (DZ + 0.011), 6); }
+      f.cyl(0.07, 0.022, CP.lf, R, s * (DZ + 0.011), 12);   // grease cap
+      f.bar([0.4, 1.2, zz], [0.15, 1.0, s * 0.33], 0.18, 0.12);   // arm in to the knuckle
+      f.bar([1.7, 1.02, zz], [2.31, 1.26, zz], 0.07, 0.05);   // bumper stay
+      for (const [th] of [[sa, 1], [Math.PI - sa, -1]]) {   // scraper arms from the hub to the blade ends
+        const c = Math.cos(th), sn = Math.sin(th);
+        f.rod([CP.lf + c * 0.3, R + sn * 0.3, zz], [CP.lf + c * (R + 0.02), R + sn * (R + 0.02), zz], 0.025, 6);
+      }
     }
-    f.bx(2.5, 0.3, -HW - 0.28, 2.68, 0.78, HW + 0.28);   // front bumper bar
-    f.bar([2.45, 1.08, -HW - 0.13], [2.45, 1.08, HW + 0.13], 0.1, 0.1);
-    f.bx(0.48, 0.8, -HW - 0.18, 0.78, 1.15, HW + 0.18);   // rear cross member
-    f.bar([2.45, 0.42, -HW], [2.45, 0.42, HW], 0.07, 0.07); f.bar([0.62, 0.42, -HW], [0.62, 0.42, HW], 0.07, 0.07);   // scrapers
-    f.bx(-0.05, 0.75, -0.36, 0.35, 1.2, 0.36); f.cyl(0.1, 0.62, 0.05, 0.98, 0, 12, 'y');   // hitch knuckle
-    for (const z of [-0.85, 0.85]) f.box(0.12, 0.12, 0.2, 2.5, 1.22, z);   // lamps
+    for (const [th] of [[sa, 1], [Math.PI - sa, -1]]) {   // scraper blades: thin plates a hair off the shell, tangent to it, wider than the drum
+      const c = Math.cos(th), sn = Math.sin(th), rr = R + 0.02;
+      f.box(0.16, 0.025, 2.2, CP.lf + c * rr, R + sn * rr, 0, 0, 0, th - Math.PI / 2);
+    }
+    f.bx(2.22, 1.12, -1.15, 2.4, 1.4, 1.15);   // front cross member (bumper), top of the machine's reach
+    f.bar([2.3, 1.26, -1.05], [2.3, 1.26, 1.05], 0.05, 0.05);   // its tow-bar line
+    f.bx(0.4, 0.98, -1.09, 0.68, 1.26, 1.09);   // rear cross member, behind the drum
+    f.bx(-0.05, 0.55, -0.36, 0.35, 1.1, 0.36); f.cyl(0.1, 0.62, 0.15, 0.85, 0, 12, 'y');   // hitch knuckle and pin
+    for (const z of [-0.8, 0.8]) { f.box(0.1, 0.1, 0.2, 2.33, 1.45, z); f.line([[2.381, 1.4, z - 0.07], [2.381, 1.5, z - 0.07], [2.381, 1.5, z + 0.07], [2.381, 1.4, z + 0.07]]); }   // lamps
     const yoke = f.build();
 
-    // rear frame: chassis, cab with ROPS, engine hood (mesh grilles on top), fenders, rear tray, steps
+    // rear frame: chassis, cab with ROPS, sloped engine hood (mesh grilles), fenders, steering cylinders, platform, steps, rear counterweight
     const c = part();
-    c.bx(-3.5, 0.55, -0.55, -0.1, 1.08, 0.55);
-    c.bx(-0.55, 0.65, -0.34, -0.05, 1.22, 0.34);
-    for (const z of [-1, 1]) c.rod([-0.85, 0.95, z * 0.45], [0.2, 0.9, z * 0.32], 0.06, 8);   // steering cylinders
-    c.bx(-1.95, 1.08, -1.08, 0.05, 1.24, 1.08);   // platform
-    // cab: tapered lower body (front face raked back), glass upper with sill, posts, panes and mullions, door frame
-    const x0 = -1.75, x1 = -0.2, z0 = -0.82, z1 = 0.82, y0 = 1.24, ys = 1.92, y1 = 3.0;
-    c.ext([[x0, y0], [x1 - 0.42, y0], [x1 - 0.05, ys], [x0, ys]], 1.44, -0.72);
+    c.bx(-3.2, 0.44, -0.5, -0.1, 1.05, 0.5);   // main frame (ground clearance 0.44)
+    c.bx(-0.6, 0.55, -0.34, -0.05, 1.1, 0.34);   // frame nose at the hitch
+    for (const z of [-1, 1]) {   // steering cylinders: barrel on the frame side, ram to the front knuckle
+      c.rod([-0.55, 0.8, z * 0.46], [-0.05, 0.8, z * 0.4], 0.05, 8); c.rod([-0.05, 0.8, z * 0.4], [0.28, 0.85, z * 0.32], 0.028, 6); c.cyl(0.045, 0.05, -0.55, 0.8, z * 0.46, 8, 'y');
+    }
+    c.bx(-2.0, 1.12, -0.54, -0.6, 1.2, 0.54);   // platform between the tyres
+    c.bx(-0.62, 1.12, -1.0, 0.0, 1.2, 1.0);   // landing ahead of the tyres
+    // cab: plinth between the fenders (front raked), glass box above it over the fenders with sill, posts, panes, mullions, door
+    const x0 = -1.85, x1 = -0.3, z0 = -0.8, z1 = 0.8, y0 = 1.2, ys = 1.92, y1 = 2.99;
+    c.ext([[x0, y0], [x1 - 0.35, y0], [x1, ys], [x0, ys]], 1.04, -0.52);
     c.bx(x0 - 0.03, ys, z0 - 0.03, x1 + 0.03, ys + 0.06, z1 + 0.03);   // sill
     for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) c.bx(x - 0.05, ys, z - 0.05, x + 0.05, y1, z + 0.05);
     for (const z of [z0, z1]) c.bx(x0 + 0.06, ys + 0.08, z - 0.01, x1 - 0.06, y1 - 0.06, z + 0.01);   // side glass
     c.bx(x1 - 0.01, ys + 0.08, z0 + 0.06, x1 + 0.01, y1 - 0.06, z1 - 0.06); c.bx(x0 - 0.01, ys + 0.08, z0 + 0.06, x0 + 0.01, y1 - 0.06, z1 - 0.06);
-    for (const z of [z0 - 0.015, z1 + 0.015]) {
-      const dx0 = -1.12, dx1 = -0.42;   // door: frame from the step up to the roof, handle, mullions either side
-      c.line([[dx0, y0 + 0.06, z], [dx1, y0 + 0.06, z], [dx1, y1 - 0.05, z], [dx0, y1 - 0.05, z], [dx0, y0 + 0.06, z]]);
-      c.line([[dx0 + 0.04, 2.4, z], [dx1 - 0.04, 2.4, z]]); c.line([[dx1 - 0.12, 1.75, z], [dx1 - 0.12, 1.62, z]]);
-      c.line([[x0 + 0.06, 2.4, z], [dx0, 2.4, z]]); c.line([[dx1, 2.55, z], [x1 - 0.06, 2.55, z]]);
-      for (let k = 0; k < 3; k++) c.line([[x0 + 0.08 + k * 0.1, 1.4, z], [x0 + 0.08 + k * 0.1, 1.8, z]]);   // louvre on the lower body
+    for (const s of [-1, 1]) {
+      const zg = s * (z1 + 0.015), zp = s * 0.535, dx0 = -1.5, dx1 = -0.55;   // door: glass part on the cab box, lower part on the plinth, handle, mullions
+      c.line([[dx0, ys + 0.06, zg], [dx1, ys + 0.06, zg], [dx1, y1 - 0.05, zg], [dx0, y1 - 0.05, zg], [dx0, ys + 0.06, zg]]);
+      c.line([[dx0 + 0.04, 2.45, zg], [dx1 - 0.04, 2.45, zg]]);
+      c.line([[dx0, y0 + 0.06, zp], [dx1, y0 + 0.06, zp], [dx1, ys - 0.02, zp], [dx0, ys - 0.02, zp], [dx0, y0 + 0.06, zp]]); c.line([[dx1 - 0.1, 1.62, zp], [dx1 - 0.1, 1.5, zp]]);
+      c.line([[x0 + 0.06, 2.45, zg], [dx0, 2.45, zg]]); c.line([[dx1, 2.55, zg], [x1 - 0.06, 2.55, zg]]);
+      for (let k = 0; k < 3; k++) c.line([[x0 + 0.08 + k * 0.1, 1.4, zp], [x0 + 0.08 + k * 0.1, 1.8, zp]]);   // louvre on the plinth
     }
     for (const x of [x0 - 0.015, x1 + 0.015]) { c.line([[x, ys + 0.1, 0], [x, y1 - 0.06, 0]]); c.line([[x, 2.5, z0 + 0.06], [x, 2.5, z1 - 0.06]]); }   // front and rear mullions
-    c.bx(x0 - 0.1, y1, z0 - 0.12, x1 + 0.16, y1 + 0.13, z1 + 0.12);   // roof
+    c.bx(x0 - 0.1, y1, -0.9, x1 + 0.16, y1 + 0.12, 0.9);   // roof, top face 3.11
     // the roof is left clear for the Cyber Shroud (it carries the GNSS and the beacon): no roof unit, no beacon
-    for (const z of [-1, 1]) { c.rod([x1 + 0.05, y1 - 0.15, z * 0.8], [x1 + 0.35, y1 - 0.4, z * 0.98], 0.02, 6); c.box(0.06, 0.24, 0.14, x1 + 0.38, y1 - 0.52, z * 1.0); }   // mirrors
-    for (const s of [-1, 1]) {   // ladder ahead of the tyre, up to the platform, with a grab rail
-      const zl = s * 1.12;
-      for (const x of [-0.58, -0.18]) c.rod([x, 0.32, zl], [x, 1.24, zl], 0.025, 6);
-      for (let k = 0; k < 4; k++) c.bx(-0.58, 0.36 + k * 0.24, zl - 0.12, -0.18, 0.39 + k * 0.24, zl + 0.12);
-      c.rod([-0.12, 1.24, zl], [-0.12, 2.1, s * 0.86], 0.022, 6);
+    for (const z of [-1, 1]) { c.rod([x1 + 0.05, y1 - 0.15, z * 0.8], [x1 + 0.35, y1 - 0.4, z * 0.96], 0.02, 6); c.box(0.06, 0.24, 0.14, x1 + 0.38, y1 - 0.52, z * 0.98); }   // mirrors
+    for (const s of [-1, 1]) {   // ladder ahead of the tyre, up to the landing, with a grab rail
+      const zl = s * 0.95;
+      for (const x of [-0.56, -0.2]) c.rod([x, 0.3, zl], [x, 1.2, zl], 0.025, 6);
+      for (let k = 0; k < 3; k++) c.bx(-0.56, 0.4 + k * 0.28, zl - 0.12, -0.2, 0.43 + k * 0.28, zl + 0.12);
+      c.rod([-0.14, 1.2, zl], [-0.14, 2.1, s * 0.84], 0.022, 6);
     }
-    // engine hood: tall behind the cab (top above the roof line), curving back over the engine and down a sloped rear,
-    // dense mesh grilles on the top and the rear slope
-    const HP = [[-3.8, 1.08], [-1.85, 1.08], [-1.85, 2.3], [-1.9, 2.72], [-2.02, 3.0], [-2.22, 3.18], [-2.5, 3.27], [-2.85, 3.25], [-3.18, 3.1], [-3.45, 2.85], [-3.66, 2.48], [-3.8, 2.02]];
-    c.ext(HP, 1.36, -0.68);
+    // sloped hood (CS-B style): highest at the cab, falling away to the rear for the view back; mesh grilles on the slope and the rear
+    const HP = [[-3.4, 1.05], [-1.9, 1.05], [-1.9, 2.5], [-1.96, 2.66], [-2.15, 2.74], [-2.5, 2.68], [-2.9, 2.45], [-3.2, 2.2], [-3.36, 1.95], [-3.4, 1.7]];
+    c.ext(HP, 1.1, -0.55);
     const meshPoly = (pts, nz, nu) => {   // lines along the profile and across it, just proud of the skin
       const L = [0]; for (let i = 1; i < pts.length; i++) L.push(L[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
       const at = (u, z) => {
         const sL = u * L[L.length - 1]; let i = 1; while (i < L.length - 1 && L[i] < sL) i++;
-        const p = pts[i - 1], q = pts[i], k = (sL - L[i - 1]) / (L[i] - L[i - 1]), dx = q[0] - p[0], dy = q[1] - p[1], d = Math.hypot(dx, dy);
-        return [p[0] + dx * k + dy / d * 0.014, p[1] + dy * k - dx / d * 0.014, z];
+        const p = pts[i - 1], q = pts[i], k = (sL - L[i - 1]) / (L[i] - L[i - 1]), dx = q[0] - p[0], dy = q[1] - p[1], dd = Math.hypot(dx, dy);
+        return [p[0] + dx * k + dy / dd * 0.014, p[1] + dy * k - dx / dd * 0.014, z];
       };
-      for (let j = 0; j <= nz; j++) { const z = -0.56 + j * 1.12 / nz, row = []; for (let k = 0; k <= 16; k++) row.push(at(0.04 + 0.92 * k / 16, z)); c.line(row); }
-      for (let k = 0; k <= nu; k++) { const u = 0.04 + 0.92 * k / nu; c.line([at(u, -0.56), at(u, 0.56)]); }
+      for (let j = 0; j <= nz; j++) { const z = -0.46 + j * 0.92 / nz, row = []; for (let k = 0; k <= 14; k++) row.push(at(0.04 + 0.92 * k / 14, z)); c.line(row); }
+      for (let k = 0; k <= nu; k++) { const u = 0.04 + 0.92 * k / nu; c.line([at(u, -0.46), at(u, 0.46)]); }
     };
-    meshPoly(HP.slice(3, 8), 16, 16); meshPoly(HP.slice(8, 12), 16, 12);
+    meshPoly(HP.slice(3, 7), 12, 14); meshPoly(HP.slice(7, 10), 12, 8);
     for (const s of [-1, 1]) {   // side panel: an inset line following the hood's outline
-      const z = s * 0.685, cx = -2.85, cy = 2.1, ring = [];
-      for (const [x, y] of HP.slice(2)) { const dx = cx - x, dy = cy - y, d = Math.hypot(dx, dy); ring.push([x + dx / d * 0.14, y + dy / d * 0.14, z]); }
-      ring.push([-3.66, 1.2, z], [-1.98, 1.2, z], ring[0]); c.line(ring);
-      c.line([[-2.75, 1.2, z], [-2.75, 3.08, z]]);
+      const z = s * 0.555, cx = -2.7, cy = 2.0, ring = [];
+      for (const [x, y] of HP.slice(2)) { const dx = cx - x, dy = cy - y, dd = Math.hypot(dx, dy); ring.push([x + dx / dd * 0.13, y + dy / dd * 0.13, z]); }
+      ring.push([-3.3, 1.2, z], [-1.98, 1.2, z], ring[0]); c.line(ring);
+      c.line([[-2.65, 1.2, z], [-2.65, 2.62, z]]);
     }
-    for (let k = 0; k < 6; k++) c.line([[-3.805, 1.2 + k * 0.12, -0.5], [-3.805, 1.2 + k * 0.12, 0.5]]);   // rear grille
-    c.rod([-2.05, 3.0, 0.32], [-2.05, 3.32, 0.32], 0.05, 8); c.cyl(0.13, 0.08, -2.05, 3.36, 0.32, 12, 'y');   // air intake cap
-    for (const z of [-1, 1]) c.extShape(sh => { sh.absarc(-1.45, CP.ty, CP.ty + 0.16, 0.2, Math.PI - 0.15, false); sh.absarc(-1.45, CP.ty, CP.ty + 0.1, Math.PI - 0.15, 0.2, true); }, 0.66, z * CP.tz - 0.33, 14);   // fenders
-    // rear tray behind the tyres
-    c.bx(-3.85, 0.55, -1.15, -3.55, 0.95, 1.15);
-    for (const z of [-1, 1]) c.bx(-3.85, 0.85, z * 1.15 - 0.06, -2.55, 0.95, z * 1.15 + 0.06);
+    for (let k = 0; k < 4; k++) c.line([[-3.405, 1.78 + k * 0.1, -0.4], [-3.405, 1.78 + k * 0.1, 0.4]]);   // rear grille
+    c.rod([-2.3, 2.66, 0.32], [-2.3, 2.96, 0.32], 0.05, 8); c.cyl(0.12, 0.06, -2.3, 3.0, 0.32, 12, 'y');   // air intake cap
+    c.rod([-2.6, 2.58, -0.3], [-2.6, 2.9, -0.3], 0.04, 8);   // exhaust stack
+    for (const s of [-1, 1]) c.extShape(sh => { sh.absarc(-CP.lr, CP.ty, CP.ty + 0.15, 0.2, Math.PI - 0.15, false); sh.absarc(-CP.lr, CP.ty, CP.ty + 0.09, Math.PI - 0.15, 0.2, true); }, 0.62, s > 0 ? 0.53 : -1.15, 14);   // fenders
+    c.bx(-3.46, 0.52, -0.95, -3.14, 1.25, 0.95);   // rear counterweight / bumper
+    for (const z of [-0.8, 0.8]) c.box(0.04, 0.1, 0.18, -3.44, 1.12, z);   // rear lamps
     const chassis = c.build();
-    const t = part(); for (const s of [-1, 1]) wheel(t, CP.tr, CP.tw, { lugs: 20, rim: 0.62, lugD: 0.2, side: s, z0: s * CP.tz, lugW: 0.2, lugA: 0.62 });   // big chevron lugs
+
+    // tyres 23.1-26 with a traction chevron; the lugs are lower than the padfoot's (35 mm). The lug tops sit at radius CP.ty so the
+    // tyre rolls on them. A lug's lean is about its own radial axis, so its top face stays a true tangent.
+    const t = part();
+    for (const s of [-1, 1]) {
+      const z0 = s * CP.tz, r = CP.tr, w = CP.tw, lugs = 24, lugD = CP.ty - CP.tr;
+      t.cyl(r, w, 0, 0, z0, 36);
+      t.cyl(r * 0.92, 0.02, 0, 0, z0 + s * (w / 2 + 0.005), 36);   // sidewall bead line
+      t.cyl(r * 0.6, 0.04, 0, 0, z0 + s * (w / 2 - 0.01), 24);   // rim face, recessed
+      t.cyl(r * 0.27, 0.04, 0, 0, z0 + s * w / 2, 16);   // hub
+      for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2, rr = r * 0.45; t.cyl(0.03, 0.03, Math.cos(a) * rr, Math.sin(a) * rr, z0 + s * (w / 2 + 0.005), 6); }   // lug nuts
+      for (let k = 0; k < lugs; k++) {
+        const a = k / lugs * Math.PI * 2, c0 = Math.cos(a), s0 = Math.sin(a), rr = r + lugD / 2;
+        for (const h of [-1, 1]) {   // chevron: two lugs leaning opposite ways, apex forward
+          const g = new THREE.BoxGeometry(0.075, lugD, 0.27);
+          g.rotateY(h * 0.62); g.rotateZ(a - Math.PI / 2); g.translate(c0 * rr, s0 * rr, z0 + h * w * 0.24); t.add(g);
+        }
+      }
+    }
     const tyres = t.build();
     cpT = { drum, yoke, chassis, tyres };
     return cpT;
   }
 
   function compactor() {
-    const T = cpTemplate(), m = mats(), R = CP.dr + CP.pad;
+    const T = cpTemplate(), m = mats(), R = CP.dr;
     const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
     const front = new THREE.Group(); body.add(front);   // steers about the hitch (origin)
     front.add(node(T.yoke, m));
@@ -790,8 +833,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
     return {
       root, body, kind: 'compactor', front, lf: CP.lf, lr: CP.lr,
       // cab roof in the rear frame's space (model metres): its top face and centre
-      ROOF: { y: 3.13, x: -0.945, z: 0, len: 1.81, wid: 1.88 },
-      setDrive(d) { drum.rotation.z = -d / R; tyres.rotation.z = -d / CP.ty; },
+      ROOF: { y: 3.11, x: -1.045, z: 0, len: 1.81, wid: 1.8 },
+      setDrive(d) { drum.rotation.z = -d / R; tyres.rotation.z = -d / CP.ty; },   // no slip: the drum rolls on r 0.767, the tyres on the lug tops
       setSteer(a) { front.rotation.y = a; },   // articulation, rad (+ turns the drum to the machine's left)
       setArm() {},
       setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,

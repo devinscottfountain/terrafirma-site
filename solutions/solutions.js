@@ -165,7 +165,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   // ------------------------------------------------------------------ machines: one slot per job
   // Slots (Tim's Figma "New Vehicles", 23099:9765): the dozer took the haul job (it replaced the backhoe loader stand-in) and
-  // the padfoot compactor the grade job (it replaced the roller stand-in). To swap a model in later, change the factory here
+  // the smooth drum compactor (CS56B class, Roller 03) the grade job (it replaced the roller stand-in). To swap a model in later, change the factory here
   // and model it in sol-machines.js (the old backhoe and roller are still in the kit). `dig` must keep the excavator rig API
   // (setArm, tip, bucket, boom); `haul` and `grade` only need root, setDrive, setOpacity; the crew also drives setBlade /
   // setRipper (haul) and setSteer (grade) when a model has them.
@@ -756,7 +756,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   // ------------------------------------------------------------------ TerraFirma ATLAS Cyber Shroud on every machine's cab roof
   // Lazy (after the first frame, on idle), high tier only (on the low tier it is a few px). One shared geometry (kit/shroud.js
-  // fetches the glb once per page), one mount per machine: excavator house, dozer canopy, compactor cab. Brighter line art than
+  // fetches the glb once per page), one mount per machine: excavator house, dozer canopy, roller cab. Brighter line art than
   // the machines (HDR, so the bloom lifts it a touch): it is the product. Same programs as the machines: no compile.
   let shroud = null, shroudP = null, shroudQ = false, dead = false, shroudKit = null;
   const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 200));
