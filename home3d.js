@@ -28,12 +28,14 @@ const mount = root && root.querySelector('[data-three-mount="solutions"]');
 const spacer = root && root.querySelector('[data-solutions-spacer]');
 
 // ---------------------------------------------------------------- bail conditions (section stays as is)
+// one probe for every entry on the page (this one, careers.js, the film): each probe is a real context creation (a GPU process round trip)
 function hasWebGL2() {
+  if (window.__tfGL2 !== undefined) return window.__tfGL2;
   try {
     const gl = document.createElement('canvas').getContext('webgl2');
     gl?.getExtension('WEBGL_lose_context')?.loseContext();   // free the probe context right away
-    return !!gl;
-  } catch (_) { return false; }
+    return (window.__tfGL2 = !!gl);
+  } catch (_) { return (window.__tfGL2 = false); }
 }
 const bail = !root || !mount || qs.get('sol') === '0' || matchMedia('(prefers-reduced-motion: reduce)').matches || !hasWebGL2();
 // loader gate (Home head sets window.tfGate on capable desktops while the page loader shows): boot at once instead of lazily and

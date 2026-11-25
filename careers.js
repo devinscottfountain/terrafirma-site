@@ -30,17 +30,14 @@ const logoEl = root && root.querySelector('[data-foot-logo]');
 const poster = mount && mount.querySelector('img');
 
 // ---------------------------------------------------------------- bail conditions (poster stays)
-let gl2Probe;   // one probe context for the footer and the mission
+// one probe for every entry on the page (home3d.js, the film): each probe is a real context creation (a GPU process round trip)
 function hasWebGL2() {
-  if (gl2Probe !== undefined) return gl2Probe;
-  return gl2Probe = probeWebGL2();
-}
-function probeWebGL2() {
+  if (window.__tfGL2 !== undefined) return window.__tfGL2;
   try {
     const gl = document.createElement('canvas').getContext('webgl2');
     gl?.getExtension('WEBGL_lose_context')?.loseContext();   // free the probe context right away
-    return !!gl;
-  } catch (_) { return false; }
+    return (window.__tfGL2 = !!gl);
+  } catch (_) { return (window.__tfGL2 = false); }
 }
 const bail = !root || qs.get('foot') === '0' || matchMedia('(prefers-reduced-motion: reduce)').matches || !hasWebGL2();
 
