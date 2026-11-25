@@ -57,6 +57,9 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
 
   // ---------------------------------------------------------------- composer
   const composer = new EffectComposer(renderer);
+  // the cine chain always renders the scene into scenePass.rt (its own depth texture); the composer's ping-pong pair only ever holds colour, so
+  // their default depth renderbuffers (2 x 24 bit at full size, 23 MB at 2160 x 1350) are never written or read. Set before the first draw allocates them
+  composer.renderTarget1.depthBuffer = composer.renderTarget2.depthBuffer = false;
 
   // 1. scene pass. Renders into a private HDR target that owns a depth texture when motion blur is active,
   //    otherwise straight into the composer buffer (no extra copy, no extra memory traffic).
