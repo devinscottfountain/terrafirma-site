@@ -726,7 +726,16 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
   // no KHR_parallel_shader_compile (Firefox): compile() blocks the main thread until the programs link; ?gov=log prints how long each root took
-  const compileIn = root => { if (PARALLEL) return renderer.compileAsync(root, cam, scene); const t0 = performance.now(); renderer.compile(root, cam, scene); if (GOV_LOG) console.log('[film warm] blocking compile', (root.name || root.type), (performance.now() - t0).toFixed(0) + ' ms'); return Promise.resolve(); };
+  // renderer.compile(root, cam, scene) gathers lights from the scene and again from root: with root already in the scene, every light under it counts
+  // twice (the site's 2 work lights -> 4, the colony's fire light -> 2) and the programs compile for a light count that is never drawn. root is lifted
+  // out of its parent's child list for the synchronous gather, so the counts match the real draw and the throwaway draw finds its programs ready
+  const compileIn = root => {
+    const par = root.parent, i = par ? par.children.indexOf(root) : -1; if (i >= 0) par.children.splice(i, 1);
+    try {
+      if (PARALLEL) return renderer.compileAsync(root, cam, scene);
+      const t0 = performance.now(); renderer.compile(root, cam, scene); if (GOV_LOG) console.log('[film warm] blocking compile', (root.name || root.type), (performance.now() - t0).toFixed(0) + ' ms'); return Promise.resolve();
+    } finally { if (i >= 0) par.children.splice(i, 0, root); }
+  };
   const spaceRoots = () => [...spaceMeshes, sunCore, ...(sky ? [sky.group] : []), ...planets.entryRoots()];
   // run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights, so its visibility sets the light count in the program keys.
   function inWorld(w, fn) {
