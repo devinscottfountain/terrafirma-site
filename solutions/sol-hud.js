@@ -2,19 +2,20 @@
 // pointer-events none). Numbers are live data; every word comes from `words` (data-* attributes, see README).
 const FONT_MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace';
 
-export function createHud(host, words, pal) {
+export function createHud(host, words, pal, { phone = false } = {}) {
   const cv = document.createElement('canvas');
   cv.setAttribute('aria-hidden', 'true');
   cv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none';
   host.appendChild(cv);
   const g = cv.getContext('2d');
   const sans = getComputedStyle(host).fontFamily || 'system-ui, sans-serif';
-  let W = 1, H = 1, pr = 1, blank = true;
+  let W = 1, H = 1, pr = 1, blank = true, blank0 = true, redraws = 0;
   const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a.toFixed(3)})`; };
   const pad = (v, n, d) => { const s = Math.abs(v).toFixed(d); return (v < 0 ? '-' : '+') + s.padStart(n + (d ? d + 1 : 0), '0'); };
 
   function resize(w, h, dpr) {
-    W = w; H = h; pr = Math.min(2, dpr || 1);
+    const p = Math.min(2, dpr || 1); if (w === W && h === H && p === pr && !blank0) return;   // same size: keep the canvas (re-allocating it clears it and costs a frame)
+    blank0 = false; W = w; H = h; pr = p;
     cv.width = Math.max(1, Math.round(w * pr)); cv.height = Math.max(1, Math.round(h * pr)); blank = false;
   }
   function text(s, x, y, size, color, { font = FONT_MONO, align = 'left', weight = 400 } = {}) {
@@ -99,13 +100,13 @@ export function createHud(host, words, pal) {
   function zoneTag(T, a) {
     if (!T || T.a < 0.01 || !T.value) return;
     const k = a * T.a, [x, y] = T.p, col = pal.zone || pal.fill;
-    text(T.label.toUpperCase(), x, y - 4, 10.5, rgba(col, 0.95 * k), { font: sans, weight: 600, align: 'center' });
-    text(T.value, x, y + 11, 10.5, rgba(pal.accent, 0.8 * k), { align: 'center' });
+    text(T.label.toUpperCase(), x, y - 4, phone ? 12 : 10.5, rgba(col, 0.95 * k), { font: sans, weight: 600, align: 'center' });
+    text(T.value, x, y + 11, phone ? 12 : 10.5, rgba(pal.accent, 0.8 * k), { align: 'center' });
   }
 
   // the dig: click markers, ghost path, reticle on the bucket teeth, a grade ladder beside it, the autopilot readout, the hint
   function dig(s, a) {
-    const A = pal.accent, cream = k => rgba(A, a * k), small = W < 600;
+    const A = pal.accent, cream = k => rgba(A, a * k), small = W < 600, FS = 12;   // FS: phones never draw text under 12 px
     s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a); zone(s.zone, a); cursor(s.cur, a);
     if (s.tip) {
       const [x, y] = s.tip, r = small ? 13 : 17;
@@ -117,28 +118,30 @@ export function createHud(host, words, pal) {
       g.stroke();
       g.fillStyle = col; g.beginPath(); g.arc(x, y, 2, 0, Math.PI * 2); g.fill();
       // grade ladder: +/- 2 m around the design grade, marker = teeth elevation
-      const lx = x + r + 26, lh = small ? 64 : 92, top = y - lh / 2, k = lh / 4;
+      // phones: the ladder goes to the side with room (its words are 12 px); elsewhere it is always on the right
+      const dr = phone && x + r + 26 + 96 > W - 6 ? -1 : 1, lx = x + dr * (r + 26), lh = small ? 64 : 92, top = y - lh / 2, k = lh / 4;
       g.strokeStyle = cream(0.35); g.beginPath(); g.moveTo(lx, top); g.lineTo(lx, top + lh);
       for (let i = 0; i <= 8; i++) { const ty = top + i * lh / 8, w = i % 2 ? 3 : 6; g.moveTo(lx, ty); g.lineTo(lx + w, ty); }
       g.stroke();
-      g.strokeStyle = cream(0.9); g.beginPath(); g.moveTo(lx - 6, y); g.lineTo(lx + 12, y); g.stroke();
-      text(words.grade, lx + 16, y + 3.5, small ? 9 : 10, cream(0.75), { font: sans });
+      g.strokeStyle = cream(0.9); g.beginPath(); g.moveTo(lx - 6 * dr, y); g.lineTo(lx + 12 * dr, y); g.stroke();
+      text(words.grade, lx + 16 * dr, y + 3.5, phone ? FS : small ? 9 : 10, cream(0.75), { font: sans, align: dr > 0 ? 'left' : 'right' });
       const my = Math.max(top, Math.min(top + lh, y - Math.max(-2, Math.min(2, gv)) * k));
-      g.fillStyle = col; g.beginPath(); g.moveTo(lx - 2, my); g.lineTo(lx - 9, my - 4.5); g.lineTo(lx - 9, my + 4.5); g.closePath(); g.fill();
-      text(pad(gv, 1, 2) + ' m', lx - 13, my + 3.5, small ? 10 : 11, col, { align: 'right' });
+      g.fillStyle = col; g.beginPath(); g.moveTo(lx - 2 * dr, my); g.lineTo(lx - 9 * dr, my - 4.5); g.lineTo(lx - 9 * dr, my + 4.5); g.closePath(); g.fill();
+      if (phone) text(pad(gv, 1, 2) + ' m', lx + 16 * dr, Math.abs(my - y) < 16 ? y + 19 : my + 4, FS, col, { align: dr > 0 ? 'left' : 'right' });   // phones: beside the ladder, under 'Grade' when the marker is near the centre line, clear of the reticle
+      else text(pad(gv, 1, 2) + ' m', lx - 13 * dr, my + 3.5, small ? 10 : 11, col, { align: dr > 0 ? 'right' : 'left' });
     }
     // readout, bottom of the safe band, level with the hint: always on in the dig view. Autopilot blinks, Manual holds steady.
-    const ty = (1 - s.safeBottom) * H - (small ? 12 : 16), x0 = Math.max(16, Math.min(40, W * 0.03)), T = s.tel, sz = small ? 9 : 10.5;
+    const ty = (1 - s.safeBottom) * H - (phone ? 10 : small ? 12 : 16), x0 = Math.max(16, Math.min(40, W * 0.03)), T = s.tel, sz = phone ? FS : small ? 9 : 10.5;
     let rx = x0;   // where the readout ends
     {
       const cr = k => rgba(A, a * k);
       let x = x0;
-      const item = (label, val) => { x += text(label.toUpperCase(), x, ty, sz, cr(0.5), { font: sans, weight: 500 }) + 6; x += text(val, x, ty, sz, cr(0.92)) + (small ? 12 : 22); };
+      const item = (label, val) => { x += text(label.toUpperCase(), x, ty, sz, cr(phone ? 0.65 : 0.5), { font: sans, weight: 500 }) + 6; x += text(val, x, ty, sz, cr(0.92)) + (small ? 12 : 22); };
       const blink = T.auto ? 0.55 + 0.45 * Math.sin(s.t * 4) : 1;
       g.fillStyle = cr(0.9 * blink); g.beginPath(); g.arc(x + 3, ty - 3.5, 3, 0, Math.PI * 2); g.fill(); x += 12;
       const wA = text((T.auto ? words.auto : words.manual).toUpperCase(), x, ty, sz, cr(0.92), { font: sans, weight: 600 });
       x += Math.max(wA, g.measureText((T.auto ? words.manual : words.auto).toUpperCase()).width) + (small ? 12 : 22);   // same slot for both words: the values never shift
-      item(words.swing, pad(T.swing, 3, 1) + '°');
+      if (!phone || W >= 420) item(words.swing, pad(T.swing, 3, 1) + '°');   // phones: Swing is the low-value field, it goes before any text shrinks
       item(words.reach, T.reach.toFixed(2).padStart(5, '0') + ' m');
       if (!small) item(words.depth, pad(T.grade, 1, 2) + ' m');
       item(words.load, String(Math.round(T.load * 100)).padStart(3, '0') + '%');
@@ -180,8 +183,8 @@ export function createHud(host, words, pal) {
     for (let i = 0; i < list.length; i++) {
       const T = list[i];
       if (!T || !T.p || T.a < 0.01) continue;
-      const k = a * T.a, [x, y] = T.p, small = W < 600, fs = small ? 10.5 : 11.5;
-      g.font = `600 ${fs}px ${sans}`; const w1 = g.measureText(T.label).width; g.font = `400 ${fs - 1}px ${FONT_MONO}`; const w2 = g.measureText(T.value).width;
+      const k = a * T.a, [x, y] = T.p, small = W < 600, fs = phone ? 12 : small ? 10.5 : 11.5;
+      g.font = `600 ${fs}px ${sans}`; const w1 = g.measureText(T.label).width; g.font = `400 ${phone ? fs : fs - 1}px ${FONT_MONO}`; const w2 = g.measureText(T.value).width;
       const tw = w1 + 8 + w2 + 12, flip = x + 18 + tw > W - 12;
       let ly = y - (small ? 26 : 34), lx = flip ? x - 18 : x + 18;
       const bx = flip ? lx - tw : lx;
@@ -196,7 +199,7 @@ export function createHud(host, words, pal) {
       g.fillStyle = rgba(pal.accent, 0.95 * k); g.beginPath(); g.arc(x, y, 2.5, 0, Math.PI * 2); g.fill();
       const tx = flip ? lx - tw + 2 : lx + 12;
       text(T.label, tx, ly + 4, fs, rgba(pal.accent, 0.95 * k), { font: sans, weight: 600 });
-      text(T.value, tx + w1 + 8, ly + 4, fs - 1, rgba(T.color || pal.accent, 0.8 * k));
+      text(T.value, tx + w1 + 8, ly + 4, phone ? fs : fs - 1, rgba(T.color || pal.accent, 0.8 * k));
     }
   }
   // planning: a label with a number on each zone
@@ -204,18 +207,18 @@ export function createHud(host, words, pal) {
     for (const Z of list) {
       if (!Z || Z.a < 0.01) continue;
       const k = a * Z.a, [x, y] = Z.p;
-      const w1 = text(Z.label.toUpperCase(), x, y, 10.5, rgba(Z.color, 0.95 * k), { font: sans, weight: 600, align: 'center' });
-      text(Z.value, x, y + 15, 10.5, rgba(pal.accent, 0.75 * k), { align: 'center' });
+      const fz = phone ? 12 : 10.5, w1 = text(Z.label.toUpperCase(), x, y, fz, rgba(Z.color, 0.95 * k), { font: sans, weight: 600, align: 'center' });
+      text(Z.value, x, y + (phone ? 16 : 15), fz, rgba(pal.accent, 0.75 * k), { align: 'center' });
       void w1;
     }
   }
 
   return {
-    canvas: cv, resize, tagOut, hintBox,
+    canvas: cv, resize, tagOut, hintBox, get redraws() { return redraws; },
     draw(s) {
       const any = s.wDig > 0.01 || s.wExec > 0.01 || s.wPlan > 0.01;
       if (!any) { if (!blank) { g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height); blank = true; } return; }
-      blank = false;
+      blank = false; redraws++;
       g.setTransform(pr, 0, 0, pr, 0, 0); g.clearRect(0, 0, W, H);
       if (s.wDig > 0.01) dig(s, s.wDig);
       if (s.wDig > 0.01 || s.wPlan > 0.01) zoneTag(s.zoneTag, Math.max(s.wDig, s.wPlan));

@@ -86,7 +86,7 @@ export const EXC_LIMITS = (() => {
 export const EXC_HYD = { dead: 0.14, lip: 0.12, guide: 0.06 };
 
 // opts.line: line art colour (any THREE.Color input), opts.solid: the hidden-line occluder colour
-export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = {}) {
+export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, phone = false } = {}) {
   const LINE = new THREE.Color(line), SOLID = new THREE.Color(solid);
   const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(), V = new THREE.Vector3(), S1 = new THREE.Vector3(1, 1, 1);
   const UP = new THREE.Vector3(0, 1, 0), A = new THREE.Vector3(), B = new THREE.Vector3(), D = new THREE.Vector3();
@@ -440,8 +440,9 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000 } = 
       const c = Math.cos(ang), s = Math.sin(ang);
       for (let i = 0; i < local.length; i += 3, o += 3) { const lx = local[i], ly = local[i + 1]; out[o] = x + lx * c - ly * s; out[o + 1] = y + lx * s + ly * c; out[o + 2] = ARMZ + dz + local[i + 2]; }
     };
-    const K = {}; let l1 = NaN, l2 = NaN, l3 = NaN;
+    const K = {}; let l1 = NaN, l2 = NaN, l3 = NaN, skip = false;
     const update = (a1, a2, a3) => {
+      if (phone && ((skip = !skip) && l1 === l1)) return;   // phones: the cylinders re-pose every other call (a 1 frame lag is under a pixel; halves the 135 KB/frame upload)
       if (a1 === l1 && a2 === l2 && a3 === l3) return; l1 = a1; l2 = a2; l3 = a3;
       excFK(a1, a2, a3, K); const P = EXC_PIN;
       // [base pin, rod pin] per cylinder; links: idler G -> J, power F -> J

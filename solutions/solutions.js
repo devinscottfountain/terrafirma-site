@@ -115,8 +115,10 @@ export function topoFromSvg(el) {
   return out.length ? out : null;
 }
 
-export function createSolutions({ THREE, host, root = host, quality = 'high', interactive = true, safe = null }) {
+export function createSolutions({ THREE, host, root = host, quality = 'high', interactive = true, safe = null, phone = false }) {
   const LOW = quality === 'low';
+  const PH = phone && LOW;   // a phone on the low tier: everything marked PH below changes there only, desktop output stays as it was
+  const PHONE_PR = [0.75, 1, 1.5];   // phone pixel ratio per governor level (the film's phone ladder tops at 2 over a viewport twice this tall; 1.5 here is about 0.4 MP on a 390 x 400 box)
   const attr = n => root.getAttribute('data-sol-' + n) ?? host.getAttribute('data-sol-' + n);
   const words = {}; for (const k in WORDS) words[k] = attr(WORDS[k][0]) ?? WORDS[k][1];
   words.grade = words.grade_; const tagWords = { dig: attr('tag-dig') ?? WORDS.dig[1], haul: attr('tag-haul') ?? WORDS.haul[1], grade: attr('tag-grade') ?? WORDS.grade[1] };
@@ -127,13 +129,13 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // ------------------------------------------------------------------ renderer, canvas, HUD
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, premultipliedAlpha: true, powerPreference: 'high-performance' });
   renderer.setClearColor(0x000000, 0); renderer.autoClear = false; renderer.info.autoReset = false;
-  let prCap = LOW ? 1 : Math.min(window.devicePixelRatio || 1, PR_MAX);
+  let prCap = PH ? Math.min(window.devicePixelRatio || 1, PR_MAX, PHONE_PR[2]) : LOW ? 1 : Math.min(window.devicePixelRatio || 1, PR_MAX);
   renderer.setPixelRatio(prCap); renderer.setSize(1, 1, false);
   const canvas = renderer.domElement;
   canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none;touch-action:pan-y;-webkit-tap-highlight-color:transparent';
   if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
   host.appendChild(canvas);
-  const hud = createHud(host, words, pal);
+  const hud = createHud(host, words, pal, { phone: PH });
   const post = createPost(THREE, renderer, { low: LOW });
 
   const scene = new THREE.Scene(), skyScene = new THREE.Scene();
@@ -160,7 +162,8 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   const field = createField(THREE);
   U.uField.value = field.tex; U.uFieldT.value = field.uniform;
   const dots = buildDots(THREE, { low: LOW });
-  const dotMat = dotMaterial(THREE, U);
+  const dotMat = dotMaterial(THREE, U, { cull: PH });
+  if (PH) field.setRate(20);
   const points = new THREE.Points(dots.geo, dotMat); points.frustumCulled = false; points.renderOrder = 3; scene.add(points);
   const sky = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), skyMaterial(THREE, U)); sky.frustumCulled = false; sky.material.blending = THREE.NoBlending; skyScene.add(sky);
   const mote = motes(THREE, LOW ? 260 : 700, U); mote.renderOrder = 7; scene.add(mote);
@@ -172,7 +175,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // and model it in sol-machines.js (the old backhoe and roller are still in the kit). `dig` must keep the excavator rig API
   // (setArm, tip, bucket, boom); `haul` and `grade` only need root, setDrive, setOpacity; the crew also drives setBlade /
   // setRipper (haul) and setSteer (grade) when a model has them.
-  const kit = createMachineKit(THREE, { line: pal.accent });
+  const kit = createMachineKit(THREE, { line: pal.accent, phone: PH });
   const SLOT = { dig: kit.excavator, haul: kit.dozer, grade: kit.compactor };
   const mk = fn => { const m = fn(); m.root.scale.setScalar(MSCALE); m.root.rotation.order = 'YXZ'; scene.add(m.root); m.setOpacity(1); return m; };
   const exc = mk(SLOT.dig), loader = mk(SLOT.haul), roller = mk(SLOT.grade);   // loader / roller: the haul and grade slots
@@ -371,7 +374,10 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     2: { pitch: 39 * DEG, fov: 30, fogD: 290, siteR: 1e4, siteW: 1, minS: 4.2, sizeK: 0.42, near: 0, moteA: 0.55, skyA: 0.85, moteW: 120, maxPx: 3.6 },
   };
   const SAFE = { top: 0.2, bottom: 0.3, ...(safe || {}) };
-  const TUNE = { execYaw: 0.8, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.5 };
+  const TUNE = { execYaw: 0.8, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.5,
+    // phones (PH): own shots for a ~390 x 400 box. dig: tighter lens and air, the camera follows the bucket by `follow` (0 home, 1 on the tip);
+    // exec: a slow pan between the excavator + dozer and the dozer + roller (hold `hold` s at each end, `move` s between), `execK` air on both
+    ph: { digFov: 34, digPitch: 31 * DEG, digK: 0.9, follow: 0.4, execFov: 26, execYaw: 0.25, execK: 1.0, armEnd: 0.45, brStart: 0.4, hold: 7, move: 5 } };
   const keyPlan = [], keyExec = [], keyDig = [];
   for (const P of [SITE.pit, SITE.pad, SITE.plat]) for (const [x, z] of rectPoly({ ...P, hx: P.hx + P.ws * 0.6, hz: P.hz + P.ws * 0.6 })) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));
   for (const Zn of ZONES) for (const [x, z] of Zn) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));   // the machine zones too
@@ -409,7 +415,16 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     }
     return c;
   }
+  // phones: after the fit, slide the picture (lens shift) so the key points' vertical middle sits at the middle of the safe band (a wide subject
+  // in a near square box would otherwise ride high and leave the lower half empty)
+  function recentre(c, pts) {
+    const yT = 1 - 2 * SAFE.top, yB = 2 * SAFE.bottom - 1; aim(fitCam, c); let lo = 1e9, hi = -1e9;
+    for (const p of pts) { fv.copy(p).project(fitCam); if (fv.z < 1) { lo = Math.min(lo, fv.y); hi = Math.max(hi, fv.y); } }
+    if (hi > lo) c.sy += (yT + yB) / 2 - (lo + hi) / 2;
+    return c;
+  }
   const base = { 0: null, 1: null, 2: null };
+  let base2B = null, panT = 0, lastExec = false;
   function refit() {
     const asp = cw / ch;
     // plan: north up on wide hosts, turned a quarter on tall ones so the long axis runs down the screen
@@ -429,6 +444,16 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     const c1 = Object.assign(pose(), SHOT[1], { tx, ty: hF(tx, tz) + 0.6, tz, yaw: camYaw, dist: 18 });
     if (asp < 0.95) { c1.fov = 50; c1.pitch = 30 * DEG; }
     base[1] = fit(c1, keyDig); base[1].dist *= TUNE.digK;   // a little air around the machine: a drone feed, not a portrait
+    if (PH) {
+      const T = TUNE.ph, c = Object.assign(pose(), SHOT[1], { tx, ty: hF(tx, tz) + 0.6, tz, yaw: camYaw, dist: 18, fov: T.digFov, pitch: T.digPitch });
+      base[1] = fit(c, keyDig); base[1].dist *= T.digK; recentre(base[1], keyDig);
+      // exec: two framed shots, A the excavator + pile + dozer, B the dozer + roller, the pan blends them (target(), mode 2)
+      const mk = pts => { const K = []; for (const [x, z] of pts) K.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z)); const m = mid(K);
+        const e = fit(Object.assign(pose(), SHOT[2], { tx: m.x, ty: 0, tz: m.z, yaw: T.execYaw, dist: 80, fov: T.execFov }), K); e.dist *= T.execK; return recentre(e, K); };
+      const K = SITE.push, line = (t0, t1) => [0, 1, 2, 3].map(i => { const t = t0 + (t1 - t0) * i / 3; return [K.bx + (K.tx - K.bx) * t, K.bz + (K.tz - K.bz) * t]; });   // points along the dozer's push line
+      base[2] = mk([...pitM, ...ZONES[0], [SITE.pile.x, SITE.pile.z], ...line(0, T.armEnd)]);   // the dig zone: the excavator drives inside it
+      base2B = mk([...line(T.brStart, 1), ...ZONES[2]]);
+    }
   }
 
   // live target pose for a mode (the dig shot breathes, drifts with the swing, and follows the machine when it drives)
@@ -442,7 +467,9 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     const B = dig.body, O = dig.op;
     if (dig.user && O.on) { let dx = O.x - B.x, dz = O.z - B.z; const d = Math.hypot(dx, dz), k = d > 0.01 ? Math.min(d * 0.6, TUNE.digAhead) / d : 0; out.x = B.x + dx * k; out.z = B.z + dz * k; return out; }
     if (dig.user) return out;   // idle under a visitor: stay put
-    out.x = B.x + Math.cos(SITE.E.yaw) * TUNE.digAhead; out.z = B.z - Math.sin(SITE.E.yaw) * TUNE.digAhead; return out;
+    out.x = B.x + Math.cos(SITE.E.yaw) * TUNE.digAhead; out.z = B.z - Math.sin(SITE.E.yaw) * TUNE.digAhead;
+    if (PH) { const f = TUNE.ph.follow; out.x += (dig.tip.x - out.x) * f; out.z += (dig.tip.z - out.z) * f; }   // phones: the shot is tight, so it leans toward the bucket (the foc smoothing below keeps it slow)
+    return out;
   }
   function target(m, dt) {
     const o = Object.assign(live[m], base[m]);
@@ -468,6 +495,12 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       o.yaw += Math.sin(clockT * 0.71) * 0.006 + Math.sin(clockT * 1.93 + 1) * 0.003;   // a little handheld life
       o.pitch += Math.sin(clockT * 1.13 + 2) * 0.004 + Math.sin(clockT * 2.7) * 0.0015;
       o.ty += Math.sin(clockT * 0.9) * 0.05;
+    } else if (m === 2 && PH) {
+      // phones: pan A -> B -> A, eased, holding at each end (the three machines do not read together in a 390 px wide box)
+      const T = TUNE.ph, per = 2 * (T.hold + T.move), u = panT % per; let p = 0;
+      if (u >= T.hold && u < T.hold + T.move) p = (u - T.hold) / T.move; else if (u >= T.hold + T.move && u < 2 * T.hold + T.move) p = 1; else if (u >= 2 * T.hold + T.move) p = 1 - (u - 2 * T.hold - T.move) / T.move;
+      p = p * p * (3 - 2 * p); const B = base2B;
+      o.tx = lerp(o.tx, B.tx, p); o.ty = lerp(o.ty, B.ty, p); o.tz = lerp(o.tz, B.tz, p); o.dist = Math.exp(lerp(Math.log(o.dist), Math.log(B.dist), p)); o.yaw += Math.sin(clockT * 0.05) * 0.03;
     } else if (m === 2) {
       o.yaw += Math.sin(clockT * 0.05) * 0.06;   // a slow drift so the wide shot never sits dead
     } else {
@@ -494,7 +527,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   const v3 = new THREE.Vector3(), v4 = new THREE.Vector3(), pin = new THREE.Vector3(), bend = new THREE.Vector3();
   let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0, hintP = -1, viewT = 0, viewOK = true;
   const HINT_PULSE = 1.2, HINT_PULSES = 3;   // the first hint breathes 3 times (1.2 s each), then holds steady
-  const tipXY = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PH = [0, 0, 0];
+  const tipXY = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PHS = [0, 0, 0];
   const LAB = [tagWords.dig, tagWords.haul, tagWords.grade], TCOL = [pal.cut, pal.accent, pal.fill];
   const MRK = 28, GHOST = 18;   // points per marker ring, per ghost path
   const hudState = { wDig: 0, wPlan: 0, wExec: 0, tip: [0, 0], tipOn: false, tel, safeTop: 0.2, safeBottom: 0.3, hint: 0, hintText: words.hint, t: 0, tags: [{}, {}, {}], zones: [{}, {}],
@@ -549,6 +582,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     if (D.n && D.hov && !D.snap && project(D.hx, field.ground(D.hx, D.hz) + 0.1, D.hz, pp)) { Z.hov = true; Z.h[0] = pp[0]; Z.h[1] = pp[1]; }
   }
   // the closed zone's tag at its centre: label, m3 dug, share done (numbers at 4 Hz)
+  let hudAcc = 0, hudHz = 0, hzT = 0, hzN = 0;
   let zTagAcc = 1;
   function zoneTag(dt) {
     const J = dig.job, T = hudState.zoneTag;
@@ -583,6 +617,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   function frame(dt) {
     clockT += dt; TU.value = clockT;
+    if (mode === 2) { if (!lastExec) panT = 0; panT += dt; } lastExec = mode === 2;
     // flight
     let k = 1;
     if (fl) { k = clamp01((clockT - fl.t0) / FLIGHT); if (k >= 1) { fl = null; wFrom.copy(wTo); } }
@@ -651,9 +686,9 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     }
     // exec graphics: live paths with a bright head where each machine is, data links pulsing between the machines
     const ev = clamp01((wE - 0.3) / 0.7);
-    PH[0] = crew.L.t; PH[1] = crew.R.t; PH[2] = clamp01((tel.swing * DEG - 0.5) / (SITE.pileSw - 0.5));
+    PHS[0] = crew.L.t; PHS[1] = crew.R.t; PHS[2] = clamp01((tel.swing * DEG - 0.5) / (SITE.pileSw - 0.5));
     for (let j = 0; j < 3; j++) {
-      const s = PATHS[j]; s.mesh.visible = ev > 0.004; s.mat.uniforms.uOpacity.value = ev; s.mat.uniforms.uFlow.value.set(0.25, 4, 0.5, 0.45); s.mat.uniforms.uHead.value.set(PH[j], 1.6, 0.25, 0.45);
+      const s = PATHS[j]; s.mesh.visible = ev > 0.004; s.mat.uniforms.uOpacity.value = ev; s.mat.uniforms.uFlow.value.set(0.25, 4, 0.5, 0.45); s.mat.uniforms.uHead.value.set(PHS[j], 1.6, 0.25, 0.45);
     }
     links.mesh.visible = ev > 0.004;
     if (links.mesh.visible) {
@@ -684,10 +719,10 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     // the readout (Autopilot / Manual + telemetry) is always on in the dig view too; only its values change (sol-hud.js)
     if (hudState.wDig > 0.01) { digMarks(dt); zoneHud(); }
     else hudState.zone.n = 0;
-    if (hudState.wDig > 0.01 || hudState.wPlan > 0.01) zoneTag(dt); else hudState.zoneTag.a = 0;
+    if (!PH && (hudState.wDig > 0.01 || hudState.wPlan > 0.01)) zoneTag(dt); else hudState.zoneTag.a = 0;   // phones: no zone tag (it sat on the machine and the cut / fill labels)
     if (hudState.wExec > 0.01 && hudState.anchors) {
       const A = hudState.anchors;
-      for (let j = 0; j < 3; j++) { const T = hudState.tags[j]; T.p = T.p || [0, 0]; T.a = project(A[j][0], A[j][1], A[j][2], T.p) ? 1 : 0; T.label = LAB[j]; T.color = TCOL[j]; }
+      for (let j = 0; j < 3; j++) { const T = hudState.tags[j]; T.p = T.p || [0, 0]; T.a = project(A[j][0], A[j][1], A[j][2], T.p) && (!PH || (T.p[0] > 8 && T.p[0] < cw - 8 && T.p[1] > 8 && T.p[1] < ch - 8)) ? 1 : 0; T.label = LAB[j]; T.color = TCOL[j]; }
       const F = SITE.FOOT, MB = hudState.mbox;
       machineBox(MB[0], dig.body.x, dig.body.z, dig.body.yaw, EXC_BOX, 9.5);   // the excavator box is tall: its boom stands up to ~9 m
       growBox(MB[0], dig.tip); growBox(MB[0], exc.stick.getWorldPosition(v4));   // and reaches out: tags keep off the arm
@@ -703,8 +738,16 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       const Z = hudState.zones; Z[0].p = Z[0].p || [0, 0]; Z[1].p = Z[1].p || [0, 0];
       Z[0].a = project(SITE.pit.x, hD(SITE.pit.x, SITE.pit.z), SITE.pit.z, Z[0].p) ? 1 : 0; Z[0].label = words.cut; Z[0].value = zoneVals.cut.toFixed(2) + ' m'; Z[0].color = pal.cut;
       Z[1].a = project(SITE.pad.x, hD(SITE.pad.x, SITE.pad.z), SITE.pad.z, Z[1].p) ? 1 : 0; Z[1].label = words.fill; Z[1].value = zoneVals.fill.toFixed(2) + ' m'; Z[1].color = pal.fill;
+      if (PH) for (let j = 0; j < 2; j++) {   // phones: the two lines sit just above the zone's outline (not on the machine inside it), inside the safe band
+        const P = j ? SITE.pad : SITE.pit; let top = 1e9, cx = 0;
+        for (const [x, z] of rectPoly(P)) { project(x, hD(x, z), z, pp); top = Math.min(top, pp[1]); cx += pp[0] / 4; }
+        Z[j].p[0] = Math.max(40, Math.min(cw - 40, cx)); Z[j].p[1] = Math.max(SAFE.top * ch + 16, top - 24);
+      }
     }
-    hud.draw(hudState);
+    // phones: the HUD redraws at 30 Hz at most (a 2D canvas of 780 x 800 px is re-composited over the 3D every time); a 30 Hz page draws every frame
+    hudAcc += dt;
+    if (!PH || hudAcc >= 1 / 36) { hudAcc = 0; hud.draw(hudState); }
+    if (clockT - hzT >= 1) { hudHz = (hud.redraws - hzN) / (clockT - hzT); hzT = clockT; hzN = hud.redraws; }
 
     // sky and motes
     U.uInvP.value.copy(camera.projectionMatrixInverse); U.uCamW.value.copy(camera.matrixWorld);
@@ -723,11 +766,15 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   // ------------------------------------------------------------------ adaptive quality (frame time -> DPR, dots, bloom, motes)
   // levels: 3 full, 2 lower DPR, 1 DPR 1 + 70% dots, 0 DPR .85 + 50% dots + no motes + no bloom
-  const gov = { level: LOW ? 1 : 3, max: LOW ? 1 : 3, ema: 1 / 60, slow: 0, fast: 0, motes: true, real: false };
+  // Phones (PH) have their own ladder: 2 = pixel ratio 1.5 (reached after 6 s of clean 60 fps from the start at 1), 1 = 1, 0 = .75 + half the dots + no motes + no bloom. A step up that fails inside
+  // 15 s caps the ladder at the level below for a minute (no up / down flapping), and a steady 30 Hz cadence is read as the browser's cap
+  // (iOS Low Power Mode, 30 Hz displays), not as load: one step down at most, then it holds.
+  const gov = { level: PH ? 1 : LOW ? 1 : 3, max: PH ? 2 : LOW ? 1 : 3, ceil: PH ? 2 : 3, ceilT: 0, upT: -1e9, capped: false, ema: 1 / 60, slow: 0, fast: 0, motes: true, real: false, steps: 0 };
+  const gw = new Float32Array(40), gs = new Float32Array(40); let gn = 0, gh = 0;
   function applyLevel() {
     const l = gov.level, dpr = Math.min(window.devicePixelRatio || 1, PR_MAX);
-    const pr = LOW ? (l >= 1 ? 1 : 0.85) : l === 3 ? dpr : l === 2 ? Math.min(dpr, 1.25) : l === 1 ? 1 : 0.85;
-    const dens = l >= 2 ? 1 : l === 1 ? (LOW ? 1 : 0.7) : 0.5;
+    const pr = PH ? Math.min(dpr, PHONE_PR[l]) : LOW ? (l >= 1 ? 1 : 0.85) : l === 3 ? dpr : l === 2 ? Math.min(dpr, 1.25) : l === 1 ? 1 : 0.85;
+    const dens = PH ? (l >= 1 ? 1 : 0.5) : l >= 2 ? 1 : l === 1 ? (LOW ? 1 : 0.7) : 0.5;
     U.uDensity.value = dens; dots.geo.setDrawRange(0, Math.ceil(dots.N * dens));
     gov.motes = l > 0; post.bloomOn = l > 0;
     if (pr !== prCap) { prCap = pr; renderer.setPixelRatio(pr); setBuf(); }
@@ -735,15 +782,22 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   function governor(dt) {
     if (!gov.real || dt <= 0 || dt > 0.25 || GOV_OFF) return;
     gov.ema += (dt - gov.ema) * 0.08;
+    if (PH) { gw[gh] = dt * 1000; gh = (gh + 1) % 40; if (gn < 40) gn++; if (gn === 40) { gs.set(gw); gs.sort(); gov.capped = gs[4] > 25 && gs[36] - gs[4] < 3; } }
     if (gov.ema > 1 / 45) { gov.slow += dt; gov.fast = 0; } else if (gov.ema < 1 / 57) { gov.fast += dt; gov.slow = 0; } else { gov.slow = gov.fast = 0; }
-    if (gov.slow > 1.5 && gov.level > 0) { gov.level--; gov.slow = 0; if (GOV_LOG) console.log('[sol perf] level', gov.level, 'ema ms', (gov.ema * 1000).toFixed(1)); gov.ema = 1 / 60; applyLevel(); }
-    else if (gov.fast > 6 && gov.level < gov.max) { gov.level++; gov.fast = 0; if (GOV_LOG) console.log('[sol perf] level', gov.level, 'ema ms', (gov.ema * 1000).toFixed(1)); applyLevel(); }
+    if (PH && gov.ceil < gov.max && clockT - gov.ceilT > 60) gov.ceil = gov.max;
+    if (gov.slow > 1.5 && gov.level > 0) {
+      gov.slow = 0;
+      if (PH && gov.capped && gov.level < gov.max) return;   // steady 30 Hz after the one step: the cap, not the GPU
+      if (PH && clockT - gov.upT < 15) { gov.ceil = gov.level - 1; gov.ceilT = clockT; }
+      gov.level--; if (GOV_LOG) console.log('[sol perf] level', gov.level, 'ema ms', (gov.ema * 1000).toFixed(1)); gov.ema = 1 / 60; gov.steps++; gn = 0; gh = 0; applyLevel();
+    } else if (gov.fast > 6 && gov.level < Math.min(gov.max, gov.ceil)) { gov.level++; if (GOV_LOG) console.log('[sol perf] level', gov.level, 'ema ms', (gov.ema * 1000).toFixed(1)); gov.fast = 0; gov.upT = clockT; gov.steps++; gn = 0; gh = 0; applyLevel(); }
   }
 
   // ------------------------------------------------------------------ size / visibility
-  let alloc = false, freeT = 0;
+  let alloc = false, freeT = 0, szKey = '';
   function setBuf() {
-    if (alloc) renderer.setSize(cw, ch, false);
+    // never re-allocate the canvas for a size it already has (three's setSize resets the drawing buffer every call)
+    if (alloc) { const k = cw + 'x' + ch + '@' + renderer.getPixelRatio(); if (k !== szKey) { szKey = k; renderer.setSize(cw, ch, false); } }
     const v = new THREE.Vector2(); renderer.getDrawingBufferSize(v); RES.value.copy(v);
     PRU.value = alloc ? v.x / cw : renderer.getPixelRatio();
     post.setSize(v.x, v.y);
@@ -759,8 +813,14 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     cw = Math.max(1, host.clientWidth); ch = Math.max(1, host.clientHeight);
     camera.aspect = cw / ch; setBuf(); refit();
   }
-  let running = false, raf = 0, last = 0;
-  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null; if (ro) ro.observe(host); else window.addEventListener('resize', resize);
+  let running = false, raf = 0, last = 0, rsT = 0;
+  // phones: the URL bar collapsing resizes the visual viewport again and again. Width changes apply at once; a height-only change waits
+  // until it has been still for 200 ms (the canvas is CSS-sized, so it only stretches for that moment), then one resize rebuilds the targets
+  const onRO = !PH ? resize : () => {
+    const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
+    if (w !== cw) { clearTimeout(rsT); resize(); } else if (h !== ch) { clearTimeout(rsT); rsT = setTimeout(resize, 200); }
+  };
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onRO) : null; if (ro) ro.observe(host); else window.addEventListener('resize', onRO);
   resize(); applyLevel();
   Object.assign(cam, base[1]);
 
@@ -796,6 +856,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   }
   function loop(ts) {
     raf = requestAnimationFrame(loop);
+    if (document.hidden) { last = 0; return; }
     const dt = last ? (ts - last) / 1000 : 0.016; last = ts;
     gov.real = true; frame(Math.min(0.05, dt)); if (dt < 0.25) governor(0); draw();
   }
@@ -845,7 +906,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     step(dt) { if (running) { gov.real = true; frame(Math.min(0.05, dt)); draw(); } },
     stop() {
       running = false; cancelAnimationFrame(raf); hud.clear();
-      clearTimeout(freeT); freeT = setTimeout(() => { if (!running && alloc) { alloc = false; renderer.setSize(1, 1, false); setBuf(); } }, 2500);
+      clearTimeout(freeT); freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, 2500);
     },
     // test hook: n fixed steps of dt, then draw once (headless screenshots, no frame timing involved)
     renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); draw(); },
@@ -863,14 +924,20 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     get canvas() { return canvas; },
     get stats() {
       const v = new THREE.Vector2(); renderer.getDrawingBufferSize(v);
-      return { buffer: [v.x, v.y], pr: PRU.value, calls: renderer.info.render.calls, points: Math.ceil(dots.N * U.uDensity.value), dotsTotal: dots.N, programs: renderer.info.programs.length, level: gov.level, mode, flying: !!fl };
+      return { phone: PH, buffer: [v.x, v.y], pixels: v.x * v.y, pr: PRU.value, hudDraws: hud.redraws, hudHz: +hudHz.toFixed(1), govSteps: gov.steps, capped: gov.capped, calls: renderer.info.render.calls, points: Math.ceil(dots.N * U.uDensity.value), dotsTotal: dots.N, programs: renderer.info.programs.length, level: gov.level, mode, flying: !!fl };
     },
     // QA: camera pose (position + forward), the dig, the crew and the field
     camState() { camera.getWorldDirection(v4); return { p: camera.position.toArray(), d: v4.toArray(), fov: camera.fov }; },
-    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, loader, roller, camera, refit() { refit(); }, govTick(dt) { gov.real = true; governor(dt); },
-      get shroud() { return shroud; }, loadShroud: () => { shroudQ = true; return loadShroud(); }, camHold(o) { camOv = o || null; } },
+    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, loader, roller, camera, refit() { refit(); }, govTick(dt) { gov.real = true; clockT += dt; governor(dt); },
+      get shroud() { return shroud; }, loadShroud: () => { shroudQ = true; return loadShroud(); }, camHold(o) { camOv = o || null; },
+      setLevel(l) { gov.level = l; applyLevel(); },
+      // dots the vertex shader works on in this view: submitted, inside the (margin 1.75) cull box. CPU estimate with the existing height only
+      dotsInView() { const P = dots.geo.attributes.position.array, M = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), e = M.elements, n = Math.ceil(dots.N * U.uDensity.value); let kept = 0;
+        for (let i = 0; i < n; i++) { const x = P[i * 3], z = P[i * 3 + 2], y = hF(x, z), w = e[3] * x + e[7] * y + e[11] * z + e[15], cx = e[0] * x + e[4] * y + e[8] * z + e[12], cy = e[1] * x + e[5] * y + e[9] * z + e[13];
+          if (!(w > 20 && (Math.abs(cx) > w * 1.75 || Math.abs(cy) > w * 1.75))) kept++; }
+        return { submitted: n, worked: PH ? kept : n }; } },
     dispose() {
-      dead = true; this.stop(); clearTimeout(freeT); if (ro) ro.disconnect(); else window.removeEventListener('resize', resize);
+      dead = true; this.stop(); clearTimeout(freeT); if (ro) ro.disconnect(); else window.removeEventListener('resize', onRO); clearTimeout(rsT);
       dig.dispose(); hud.dispose(); post.dispose(); field.dispose();
       scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });
       mote.material.dispose(); parts.pts.material.dispose();
