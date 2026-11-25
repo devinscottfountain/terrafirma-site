@@ -119,7 +119,8 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
   // ---------------------------------------------------------------- layout
   let W = 1, Hh = 1, docTop = 0, docH = 1, shipLen = 100;
   const px = new Float32Array(SAMPLES + 1), py = new Float32Array(SAMPLES + 1);   // path in section px (y down)
-  let pathOK = false;
+  let pathOK = false, pathSampled = false, sizeDpr = 0, sizeW = 0, sizeH = 0;
+  const pathKey = new Float64Array(7);            // screen map + length of the sampled path (see measure)
   let pathLen = 0, drawnLast = -1;                // arc length in svg user units, last drawn fraction written to the dash
   const stats = {
     quality, programs: 0, calls: 0, triangles: 0, frames: 0, dpr: 1, w: 0, h: 0, p: 0, visible: false, running: false,
@@ -132,7 +133,9 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     W = Math.max(1, host.clientWidth || hr.width); Hh = Math.max(1, host.clientHeight || hr.height);
     docTop = hr.top + window.scrollY; docH = Hh;
     const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
-    renderer.setPixelRatio(dpr); renderer.setSize(W, Hh, false);
+    // setSize with the same size still reallocates the drawing buffer and clears it (a blank frame until the next draw): body resizes
+    // (late images, fonts, accordions above) call measure() often, so only touch the canvas when something really changed
+    if (dpr !== sizeDpr || W !== sizeW || Hh !== sizeH) { renderer.setPixelRatio(dpr); renderer.setSize(W, Hh, false); sizeDpr = dpr; sizeW = W; sizeH = Hh; }
     camera.left = 0; camera.right = W; camera.top = Hh; camera.bottom = 0; camera.updateProjectionMatrix();
     stats.dpr = dpr; stats.w = W; stats.h = Hh;
     const place = (P, box, out) => {
@@ -149,7 +152,11 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     pathOK = false;
     if (pathEl) {
       const ctm = pathEl.getScreenCTM(), len = pathEl.getTotalLength();
-      if (ctm && len > 0) {
+      // same screen map and length as the last sampling: the 193 getPointAtLength calls and the style writes would give the same numbers
+      const k = pathKey;
+      if (ctm && len > 0 && pathSampled && k[0] === ctm.a && k[1] === ctm.b && k[2] === ctm.c && k[3] === ctm.d && k[4] === ctm.e - hr.left && k[5] === ctm.f - hr.top && k[6] === len) pathOK = true;
+      else if (ctm && len > 0) {
+        k[0] = ctm.a; k[1] = ctm.b; k[2] = ctm.c; k[3] = ctm.d; k[4] = ctm.e - hr.left; k[5] = ctm.f - hr.top; k[6] = len; pathSampled = true;
         // the trail draws on behind the ship with a dash in svg user units. Chrome measures dashes in screen px when the stroke is
         // non-scaling, so the stroke scales with the svg here and its width is set back to 1 css px by hand (the same look in every browser)
         const scale = Math.hypot(ctm.a, ctm.b) || 1;
@@ -340,5 +347,6 @@ export function createMission({ THREE, section, quality = 'high', base } = {}) {
     ready, canvas, renderer, stats, capture, dispose,
     start() { enabled = true; sync(); }, stop() { enabled = false; sync(); },
     resize() { if (!dead) measure(); },
+    renderAt(t = 0) { if (isReady && !dead) { time = +t || 0; snap = true; draw(0); } },   // QA: one frame at scene clock t (s) with the rocket snapped to the scroll, for repeatable stills
   };
 }
