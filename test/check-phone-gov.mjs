@@ -2,11 +2,13 @@
 // 1 clean 60 Hz climbs 1 -> 2 once; 2 a steady 30 Hz cadence (iOS Low Power Mode) costs at most one step and never climbs; 3 real load steps down and does not flap;
 // 4 a failed step up puts a ceiling on the ladder (one failed climb, then no climb for a minute). Exits non-zero on failure.
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
-const port = process.argv[2] || '8731';
+import { serve, ORIGIN } from './lib/serve.mjs';
+const port = process.argv[2];   // no port: the page is served from disk by page.route (no listening process)
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+if (!port) await serve(ctx);
 const page = await ctx.newPage(); page.on('pageerror', e => console.log('PAGEERR', e.message));
-await page.goto(`http://localhost:${port}/test/home.html?qa&layout=phone&demo=0`, { waitUntil: 'load' });
+await page.goto(`${port ? 'http://localhost:' + port : ORIGIN}/test/home.html?qa&layout=phone&demo=0`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.TFSolutions && window.TFSolutions.sol, null, { timeout: 120000 });
 const res = await page.evaluate(async () => {
   const s = window.TFSolutions.sol, q = s.qa; await s.ready; s.stop();
