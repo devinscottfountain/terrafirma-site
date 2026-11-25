@@ -14,11 +14,9 @@
 
 const ORDER = ['film', 'foot'];      // turn order: film on even frames, footer on odd
 const STALE = 10000;                 // ms: a safety net only (every stop path reports 0); long enough for a very slow frame
-const S = (typeof window !== 'undefined' && (window.__tfStage || (window.__tfStage = { c: {}, n: 0, f: -1, seam: null }))) || { c: {}, n: 0, f: -1, seam: null };
+const S = (typeof window !== 'undefined' && (window.__tfStage || (window.__tfStage = { c: {}, n: 0, f: -1, k: 0, seen: 0, seam: null }))) || { c: {}, n: 0, f: -1, k: 0, seen: 0, seam: null };
 
 const now = () => performance.now();
-// one id per animation frame: document.timeline's time is fixed for the whole frame (every rAF callback and the gsap ticker see it)
-const frameId = () => (typeof document !== 'undefined' && document.timeline && document.timeline.currentTime != null ? document.timeline.currentTime : Math.floor(now() / 4));
 
 function live(name) { const e = S.c[name]; return e && e.v > 0 && now() - e.t < STALE ? e.v : 0; }
 function onScreen() { const o = []; for (const k of ORDER) if (live(k) > 0) o.push(k); return o; }
@@ -26,12 +24,20 @@ function onScreen() { const o = []; for (const k of ORDER) if (live(k) > 0) o.pu
 export function report(name, vis) { const e = S.c[name] || (S.c[name] = { v: 0, t: 0 }); e.v = Math.max(0, Math.min(1, +vis || 0)); e.t = now(); }
 export function vis(name) { return live(name); }
 export function overlap() { return onScreen().length > 1; }
+// A new animation frame starts when a canvas asks for its turn a second time: each loop asks at most once per frame, so this needs no
+// clock. (It used to key on document.timeline.currentTime, which Firefox with resistFingerprinting rounds to 16.7 or 100 ms: at 100 ms
+// the whole 6-frame span shared one id, so the film drew every frame of its block, then the footer every frame of the next, at 5 Hz each.)
+// S.seen is a bit set of the names that asked in the current frame, S.k the frame counter (its own key: an older copy of this file
+// sharing window.__tfStage keeps using n and f, so two copies never double-step one counter).
 export function turn(name) {
   const on = onScreen();
   if (on.length < 2) return true;
-  const f = frameId(); if (f !== S.f) { S.f = f; S.n++; }
   const i = on.indexOf(name);
-  return i < 0 || S.n % on.length === i;
+  if (i < 0) return true;
+  const bit = 1 << ORDER.indexOf(name);
+  if (S.seen & bit) { S.k++; S.seen = 0; }
+  S.seen |= bit;
+  return S.k % on.length === i;
 }
 export function seam(src) {
   if (src !== undefined) { S.seam = typeof src === 'function' ? src : null; return; }
