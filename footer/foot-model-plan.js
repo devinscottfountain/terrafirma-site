@@ -10,6 +10,9 @@ export function toFooter(x, z) {
   const c = Math.cos(PLACE.rot), s = Math.sin(PLACE.rot); x *= PLACE.mirror;
   return [PLACE.x + x * c - z * s, PLACE.z + x * s + z * c];
 }
+// the same map written into out = [x, z] (no allocation: the rovers and traffic call it every frame); same arithmetic as toFooter
+const PC = Math.cos(PLACE.rot), PS = Math.sin(PLACE.rot);
+export function toFooterTo(out, x, z) { x *= PLACE.mirror; out[0] = PLACE.x + x * PC - z * PS; out[1] = PLACE.z + x * PS + z * PC; return out; }
 
 const angD = (a, b) => Math.abs(((a - b) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI);
 
@@ -73,5 +76,6 @@ export function footerPlan({ high = true } = {}) {
     land: L.ships.map(s => T(s.x, s.z)), build, padR: L.buildPad.r,
     tower: [build[0] - 17, build[1] - 4],     // beside the pad on the lens's left (the timelapse offset would stand it in front of the ship)
     ring: (R, a) => T(Math.cos(a) * R, Math.sin(a) * R),   // a point on a ring road (colony angle), footer space
+    ringTo: (out, R, a) => toFooterTo(out, Math.cos(a) * R, Math.sin(a) * R),   // the same into out = [x, z], no allocation
   };
 }

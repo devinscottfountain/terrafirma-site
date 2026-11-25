@@ -123,27 +123,31 @@ export function buildLife({ THREE, root, plan, high, lamps = [] }) {
   pts.onBeforeRender = rd => { ptU.uPR.value = rd.getPixelRatio(); };
   root.add(pts);
 
-  // ---------------------------------------------------------------- per frame
-  const fwd = new V3(), side = new V3();
+  // ---------------------------------------------------------------- per frame (no allocation: scratch pairs, hoisted colours, plain loops)
+  const fwd = new V3(), side = new V3(), A = [0, 0], B = [0, 0], HEADK = HEAD.map(c => c * 1.6);
   const setL = (k, x, y, z, c) => { lpos.setXYZ(nStatic + k, x, y, z); lcol.setXYZ(nStatic + k, c[0], c[1], c[2]); };
   function update(t) {
-    ROV.forEach((v, i) => {
-      const a = v.a0 + t * v.v / v.R;
-      const [x, z] = plan.ring(v.R, a), [x2, z2] = plan.ring(v.R, a + Math.sign(v.v) * 0.01), y = gy(x, z) + 0.04;
+    for (let i = 0; i < ROV.length; i++) {
+      const v = ROV[i], a = v.a0 + t * v.v / v.R;
+      plan.ringTo(A, v.R, a); plan.ringTo(B, v.R, a + Math.sign(v.v) * 0.01);
+      const x = A[0], z = A[1], x2 = B[0], z2 = B[1], y = gy(x, z) + 0.04;
       fwd.set(x2 - x, 0, z2 - z).normalize(); side.set(-fwd.z, 0, fwd.x);
       const ry = Math.atan2(-fwd.z, fwd.x);
       m4.compose(p3.set(x, y + 0.03 * Math.sin(t * 2.1 + i), z), q.setFromAxisAngle(Y, ry), s3.set(1, 1, 1)); rovers.setMatrixAt(i, m4);
-      for (const [k, sd] of [[0, -0.8], [1, 0.8]]) setL(i * 4 + k, x + fwd.x * 3.05 + side.x * sd, y + 1.25, z + fwd.z * 3.05 + side.z * sd, HEAD.map(c => c * 1.6));
-      for (const [k, sd] of [[2, -0.9], [3, 0.9]]) setL(i * 4 + k, x - fwd.x * 2.8 + side.x * sd, y + 1.2, z - fwd.z * 2.8 + side.z * sd, TAIL);
-    });
+      setL(i * 4, x + fwd.x * 3.05 + side.x * -0.8, y + 1.25, z + fwd.z * 3.05 + side.z * -0.8, HEADK);
+      setL(i * 4 + 1, x + fwd.x * 3.05 + side.x * 0.8, y + 1.25, z + fwd.z * 3.05 + side.z * 0.8, HEADK);
+      setL(i * 4 + 2, x - fwd.x * 2.8 + side.x * -0.9, y + 1.2, z - fwd.z * 2.8 + side.z * -0.9, TAIL);
+      setL(i * 4 + 3, x - fwd.x * 2.8 + side.x * 0.9, y + 1.2, z - fwd.z * 2.8 + side.z * 0.9, TAIL);
+    }
     rovers.instanceMatrix.needsUpdate = true;
-    traffic.forEach((c, k) => { const [x, z] = plan.ring(c.R, c.a + t * c.v / c.R); setL(ROV.length * 4 + k, x, gy(x, z) + 1, z, c.v > 0 ? HEAD : TAIL); });
+    for (let k = 0; k < traffic.length; k++) { const c = traffic[k]; plan.ringTo(A, c.R, c.a + t * c.v / c.R); setL(ROV.length * 4 + k, A[0], gy(A[0], A[1]) + 1, A[1], c.v > 0 ? HEAD : TAIL); }
     lpos.clearUpdateRanges?.(); lcol.clearUpdateRanges?.();
     lpos.addUpdateRange?.(nStatic * 3, dyn * 3); lcol.addUpdateRange?.(nStatic * 3, dyn * 3);
     lpos.needsUpdate = lcol.needsUpdate = true;
     // the walker: slow out-and-back along the dome front, turning at each end
     const ph = (t / WALK.T) % 1, w = ph < 0.5 ? ph * 2 : 2 - ph * 2, e = w * w * (3 - 2 * w), dir = ph < 0.5 ? 0 : Math.PI;
-    const [x, z, ry] = verge(WALK.R, WALK.a[0] + (WALK.a[1] - WALK.a[0]) * e);
+    const wa = WALK.a[0] + (WALK.a[1] - WALK.a[0]) * e; plan.ringTo(A, WALK.R, wa); plan.ringTo(B, WALK.R, wa + 0.01);
+    const x = A[0], z = A[1], ry = Math.atan2(-(B[1] - z), B[0] - x);
     // rotY(ry + pi/2) turns the figure's +z (visor) side onto the road tangent; out and back
     m4.compose(p3.set(x, gy(x, z) + 0.02 * Math.abs(Math.sin(t * 5.5)), z), q.setFromAxisAngle(Y, ry + Math.PI / 2 + dir), s3.set(1, 1, 1)); figs.setMatrixAt(WALK.i, m4);
     figs.instanceMatrix.needsUpdate = true;
