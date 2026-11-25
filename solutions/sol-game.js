@@ -686,7 +686,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     // world points of the arm for shadows and the HUD: boom pin, stick end, teeth
     arm(outPin, outEnd) { exc.boom.getWorldPosition(outPin); exc.bucket.getWorldPosition(outEnd); },
     telemetry(out) {
-      out.swing = cur.sw * 180 / Math.PI; out.reach = cur.r; out.grade = tip.y - hD(tip.x, tip.z); out.load = load / capNow(); out.auto = !user || !interactive;   // the phone demo reads Autopilot
+      out.swing = cur.sw * 180 / Math.PI; out.reach = cur.r; out.grade = tip.y - hD(tip.x, tip.z); out.load = load / capNow(); out.auto = !user || !interactive || job.demo;   // the phone demo and the desktop intro read Autopilot
       out.ground = tip.y - ground(tip.x, tip.z);
       return out;
     },
