@@ -65,11 +65,36 @@ export function createHud(host, words, pal) {
       g.lineWidth = 1.5; g.strokeStyle = rgba(col, 0.95 * a); g.fillStyle = rgba(col, 0.18 * a);
       g.beginPath(); g.arc(P[0], P[1], 7, 0, Math.PI * 2); g.fill(); g.stroke();
     }
+    if (Z.pulse && Z.ok[0]) { // the first corner is the click target: a ring breathes out of it (two, and a steady one, once a click there can close the zone)
+      const strong = Z.pulse > 1, per = strong ? 1.1 : 1.7, x = P[0], y = P[1];
+      for (let q = 0; q < (strong ? 2 : 1); q++) {
+        const k = (s0t / per + q * 0.5) % 1;
+        g.lineWidth = strong ? 2.25 : 1.75; g.strokeStyle = rgba(col, (strong ? 1 : 0.7) * (1 - k) * a);
+        g.beginPath(); g.arc(x, y, 6 + (strong ? 19 : 13) * k, 0, Math.PI * 2); g.stroke();
+      }
+      if (strong) { g.lineWidth = 1.5; g.strokeStyle = rgba(col, 0.6 * a); g.beginPath(); g.arc(x, y, 11, 0, Math.PI * 2); g.stroke(); }
+    }
     if (Z.hov) {
       const [x, y] = Z.h; g.lineWidth = 1; g.strokeStyle = rgba(col, 0.8 * a);
       g.beginPath(); g.moveTo(x - 5, y); g.lineTo(x + 5, y); g.moveTo(x, y - 5); g.lineTo(x, y + 5); g.stroke();
     }
   }
+  // the intro's cursor sprite: a cream arrow (tip at x, y, 16 px tall) that dips on a press, and a ring that expands and fades
+  // from the tip (C.pa: seconds since the last press)
+  function cursor(C, a) {
+    if (!C || !C.ok || (C.a < 0.01 && C.pa > 0.6)) return;
+    const [x, y] = C.p, pa = C.pa;
+    if (pa >= 0 && pa < 0.6) {
+      const q = pa / 0.6, e = 1 - (1 - q) * (1 - q);
+      g.lineWidth = 1.75; g.strokeStyle = rgba(pal.accent, 0.85 * (1 - q) * a); g.beginPath(); g.arc(x, y, 4 + 18 * e, 0, Math.PI * 2); g.stroke();
+    }
+    if (C.a < 0.01) return;
+    const sc = pa >= 0 && pa < 0.14 ? 0.86 : 1, ox = pa >= 0 && pa < 0.14 ? 0.5 : 0;
+    g.beginPath();
+    for (let i = 0; i < 7; i++) { const px = x + ox + CUR[i * 2] * sc, py = y + ox + CUR[i * 2 + 1] * sc; i ? g.lineTo(px, py) : g.moveTo(px, py); }
+    g.closePath(); g.lineWidth = 1.5; g.lineJoin = 'round'; g.strokeStyle = `rgba(0,0,0,${(0.75 * a * C.a).toFixed(3)})`; g.fillStyle = rgba(pal.accent, 0.98 * a * C.a); g.fill(); g.stroke();
+  }
+  const CUR = [0, 0, 0, 15, 3.7, 11.7, 6.3, 17, 8.6, 16, 6.1, 10.9, 10.8, 10.6];   // arrow outline, tip first
   // the closed zone's tag: label and what it has dug, at its centre
   function zoneTag(T, a) {
     if (!T || T.a < 0.01 || !T.value) return;
@@ -81,7 +106,7 @@ export function createHud(host, words, pal) {
   // the dig: click markers, ghost path, reticle on the bucket teeth, a grade ladder beside it, the autopilot readout, the hint
   function dig(s, a) {
     const A = pal.accent, cream = k => rgba(A, a * k), small = W < 600;
-    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a); zone(s.zone, a);
+    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a); zone(s.zone, a); cursor(s.cur, a);
     if (s.tip) {
       const [x, y] = s.tip, r = small ? 13 : 17;
       const gv = s.tel.grade, col = Math.abs(gv) < 0.12 ? cream(0.95) : rgba(gv > 0 ? pal.cut : pal.fill, a * 0.95);
@@ -120,21 +145,28 @@ export function createHud(host, words, pal) {
       g.strokeStyle = cr(0.18); g.beginPath(); g.moveTo(x0, ty - 15); g.lineTo(Math.min(W - x0, x - 10), ty - 15); g.stroke();
       rx = x;
     }
-    // hint
+    // hint: bottom centre of the safe band, under the machine, 14 px. It sits level with the readout when it clears it (the widest
+    // of its texts decides, so it never hops between rows), else one row above the readout's rule. "Esc to cancel" rides beside
+    // it on the right (never over the readout, which is on the left). hintPulse (0..1) breathes it for the first hint.
     const ht = s.hintText;
-    if (s.hint > 0.01 && ht) { // bottom right of the safe band, level with the readout (clear of the machine at the centre)
-      g.font = `500 12px ${sans}`; const tw = g.measureText(ht).width + 28;
-      const hy = ty - 4, hx = W - x0 - tw / 2;
-      g.strokeStyle = cream(0.45 * s.hint); g.fillStyle = `rgba(0,0,0,${(0.35 * a * s.hint).toFixed(3)})`;
-      g.beginPath(); g.roundRect ? g.roundRect(hx - tw / 2, hy - 15, tw, 26, 13) : g.rect(hx - tw / 2, hy - 15, tw, 26); g.fill(); g.stroke();
-      text(ht, hx, hy + 2.5, 12, cream(0.95 * s.hint), { font: sans, align: 'center', weight: 500 });
-      hintBox[0] = hx - tw / 2; hintBox[1] = hy - 15; hintBox[2] = hx + tw / 2; hintBox[3] = hy + 11;
-      if (s.hintSub) { // "Esc to cancel" while drawing, left of the pill when there is room beside the readout
-        g.font = `400 11px ${sans}`; const sx = hx - tw / 2 - 12;
-        if (sx - g.measureText(s.hintSub).width > rx + 8) text(s.hintSub, sx, hy + 2.5, 11, cream(0.55 * s.hint), { font: sans, align: 'right' });
+    if (s.hint > 0.01 && ht) {
+      if (hintW0 !== W) { hintW0 = W; hintMax = 0; g.font = `500 14px ${sans}`; for (const k of HINTS) if (words[k]) hintMax = Math.max(hintMax, g.measureText(words[k]).width); }
+      g.font = `500 14px ${sans}`;
+      const tw = g.measureText(ht).width + 32, th = 34, hp = s.hintPulse || 0, cx = W / 2;
+      const lift = cx - (hintMax + 32) / 2 < rx + 16 ? 38 : 0, hy = ty - 5 - lift, w = tw * (1 + 0.05 * hp), h = th * (1 + 0.05 * hp), k = s.hint;
+      g.lineWidth = 1; g.strokeStyle = cream((0.5 + 0.45 * hp) * k); g.fillStyle = `rgba(0,0,0,${(0.42 * a * k).toFixed(3)})`;
+      g.beginPath(); g.roundRect ? g.roundRect(cx - w / 2, hy - h / 2, w, h, h / 2) : g.rect(cx - w / 2, hy - h / 2, w, h); g.fill(); g.stroke();
+      if (hp > 0.01) { const e = 5 + 8 * hp; g.strokeStyle = cream(0.4 * hp * k); g.beginPath(); g.roundRect ? g.roundRect(cx - w / 2 - e, hy - h / 2 - e, w + 2 * e, h + 2 * e, h / 2 + e) : g.rect(cx - w / 2 - e, hy - h / 2 - e, w + 2 * e, h + 2 * e); g.stroke(); }
+      text(ht, cx, hy + 5, 14, cream(0.97 * k), { font: sans, align: 'center', weight: 500 });
+      hintBox[0] = cx - tw / 2; hintBox[1] = hy - th / 2; hintBox[2] = cx + tw / 2; hintBox[3] = hy + th / 2;
+      if (s.hintSub) {
+        g.font = `400 12px ${sans}`; const sw = g.measureText(s.hintSub).width, sx = cx + tw / 2 + 14;
+        if (sx + sw < W - x0) { text(s.hintSub, sx, hy + 4, 12, cream(0.75 * k), { font: sans }); hintBox[2] = sx + sw; }
       }
     }
   }
+  const HINTS = ['hint', 'hintPoint', 'hintClose', 'hintDrag', 'hintClick'];
+  let hintW0 = 0, hintMax = 0;   // the widest hint text at this width (cached per resize)
 
   // execution: one tag per machine, a leader up to a label with a live number
   // execution: one tag per machine, a leader up to a label with a live number. Labels never overlap: each takes the first
