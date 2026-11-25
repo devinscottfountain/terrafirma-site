@@ -1,11 +1,11 @@
 {
   "home3d.js": {
     "file": "home3d.js",
-    "bytes": 4280,
+    "bytes": 4430,
     "static": [],
     "dynamic": [
       {
-        "file": "chunks/mount-ACGWY3UG.js",
+        "file": "chunks/mount-KV65QR7X.js",
         "bytes": 4827
       },
       {
@@ -21,16 +21,20 @@
         "bytes": 7429
       },
       {
-        "file": "chunks/film-RN3STJHZ.js",
-        "bytes": 321766
+        "file": "chunks/film-4FDAWCYA.js",
+        "bytes": 322414
       },
       {
         "file": "chunks/chunk-E5WEMQM4.js",
         "bytes": 3070
       },
       {
-        "file": "chunks/chunk-ECMF7PTV.js",
-        "bytes": 22578
+        "file": "chunks/chunk-PSG3CONO.js",
+        "bytes": 22636
+      },
+      {
+        "file": "chunks/chunk-5SWZIP3G.js",
+        "bytes": 506
       },
       {
         "file": "chunks/chunk-TAKKMMN3.js",
@@ -89,8 +93,8 @@
         "bytes": 31910
       },
       {
-        "file": "chunks/solutions-ISBJILCF.js",
-        "bytes": 135771
+        "file": "chunks/solutions-BS6EHUV4.js",
+        "bytes": 140214
       }
     ]
   },
@@ -137,12 +141,16 @@
         "bytes": 44839
       },
       {
-        "file": "chunks/footer3d-RZ2RGJV2.js",
-        "bytes": 108
+        "file": "chunks/footer3d-54LSDFZL.js",
+        "bytes": 136
       },
       {
-        "file": "chunks/chunk-ECMF7PTV.js",
-        "bytes": 22578
+        "file": "chunks/chunk-PSG3CONO.js",
+        "bytes": 22636
+      },
+      {
+        "file": "chunks/chunk-5SWZIP3G.js",
+        "bytes": 506
       },
       {
         "file": "chunks/foot-tex-PXDMWWA5.js",
