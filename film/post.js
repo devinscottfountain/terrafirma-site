@@ -400,7 +400,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
-  const POSTPR = new URLSearchParams(location.search).get('postpr') === '1'; // opt-in: post targets follow renderer.getPixelRatio() (look changes on hi-DPI at lower tiers)
+  const POSTPR = new URLSearchParams(location.search).get('postpr') !== '0'; // post targets follow renderer.getPixelRatio() (the governor's pr steps); ?postpr=0 restores the construct-time ratio
   let have = false, lastDt = 1 / 60, resetNext = false, bufW = W;
 
   function setSize(w, h) {
