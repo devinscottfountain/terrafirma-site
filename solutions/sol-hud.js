@@ -87,15 +87,16 @@ export function createHud(host, words, pal, { phone = false } = {}) {
     const [x, y] = C.p, pa = C.pa;
     if (pa >= 0 && pa < 0.6) {
       const q = pa / 0.6, e = 1 - (1 - q) * (1 - q);
-      g.lineWidth = 1.75; g.strokeStyle = rgba(pal.accent, 0.85 * (1 - q) * a); g.beginPath(); g.arc(x, y, 4 + 18 * e, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 1.75 * CS; g.strokeStyle = rgba(pal.accent, 0.85 * (1 - q) * a); g.beginPath(); g.arc(x, y, (4 + 18 * e) * CS, 0, Math.PI * 2); g.stroke();
     }
     if (C.a < 0.01) return;
-    const sc = pa >= 0 && pa < 0.14 ? 0.86 : 1, ox = pa >= 0 && pa < 0.14 ? 0.5 : 0;
+    const sc = pa >= 0 && pa < 0.14 ? 0.86 : 1, ox = pa >= 0 && pa < 0.14 ? 0.5 * CS : 0;
     g.beginPath();
     for (let i = 0; i < 7; i++) { const px = x + ox + CUR[i * 2] * sc, py = y + ox + CUR[i * 2 + 1] * sc; i ? g.lineTo(px, py) : g.moveTo(px, py); }
-    g.closePath(); g.lineWidth = 1.5; g.lineJoin = 'round'; g.strokeStyle = `rgba(0,0,0,${(0.75 * a * C.a).toFixed(3)})`; g.fillStyle = rgba(pal.accent, 0.98 * a * C.a); g.fill(); g.stroke();
+    g.closePath(); g.lineWidth = 1.5 * CS; g.lineJoin = 'round'; g.strokeStyle = `rgba(0,0,0,${(0.75 * a * C.a).toFixed(3)})`; g.fillStyle = rgba(pal.accent, 0.98 * a * C.a); g.fill(); g.stroke();
   }
-  const CUR = [0, 0, 0, 15, 3.7, 11.7, 6.3, 17, 8.6, 16, 6.1, 10.9, 10.8, 10.6];   // arrow outline, tip first
+  const CS = 24 / 17;   // sprite scale: the arrow outline is 17 px tall, the sprite is 24
+  const CUR = [0, 0, 0, 15, 3.7, 11.7, 6.3, 17, 8.6, 16, 6.1, 10.9, 10.8, 10.6];   // arrow outline, tip first (17 px tall, scaled by CS when drawn)
   // the closed zone's tag: label and what it has dug, at its centre
   function zoneTag(T, a) {
     if (!T || T.a < 0.01 || !T.value) return;
