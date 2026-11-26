@@ -107,15 +107,34 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     };
   })();
   // Firefox (no GPU timer queries): a GPU-bound page vsync-locks to a tight 30 Hz that looks exactly like a 30 Hz cap, so capOK is off there (it would stop the governor after one step), and it starts at level 3 (pr 1, TAA) and climbs when clean
-  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, start: FF && HIGH ? 3 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => !FF, gpu: () => gt.p90, apply: (q, lv) => {
-    const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr);
-    if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
-    post.setQuality(Math.min(HIGH ? q.post : Math.min(q.post, 1), POST_MAX ?? 3));
-    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep; gt.reset(); // GPU samples from the old level say nothing about the new one
-    const sh = sunLight.shadow, sx = HIGH ? q.shadow : Math.min(q.shadow, 2048);
-    if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
+  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, start: FF && HIGH ? 3 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => !FF, gpu: () => gt.p90, apply: (q, lv, urgent) => {
+    // light parts (trails, shadow refresh rate, particle share) are flags: now. Heavy parts (pixel ratio, post level, shadow map size) reallocate render targets
+    // and dispose the shadow map, a hitch the eye catches mid-scroll: a step that needs them waits for a still scroll (300 ms) or a hold() window. It goes at
+    // once when urgent (emergency, sustained stalls, a pin, the first frame), when frames run over 40 ms for a full second, or after 3 s at the latest
+    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep;
     const r = colonyW.api && colonyW.api.rockets; if (r && r.setKeep) r.setKeep(partKeep);
+    deferred = null;
+    const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr), pl = Math.min(HIGH ? q.post : Math.min(q.post, 1), POST_MAX ?? 3);
+    const sx = HIGH ? q.shadow : Math.min(q.shadow, 2048), heavy = renderer.getPixelRatio() !== pr || post.getQuality() !== pl || sunLight.shadow.mapSize.x !== sx;
+    if (heavy && !urgent && !stillNow()) { deferred = { q, lv }; deferT = performance.now(); badMs = 0; return; }
+    applyHeavy(q, lv, pr, pl, sx);
   } });
+  function applyHeavy(q, lv, pr, pl, sx) {
+    if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
+    post.setQuality(pl);
+    post.setDofHalf(HIGH && lv < 5); // the top level keeps full-res DOF; every step below runs it at half res
+    gt.reset(); // GPU samples from the old level say nothing about the new one
+    const sh = sunLight.shadow;
+    if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
+  }
+  // scroll still for 300 ms, or inside the planet-to-colony flash where a hitch hides
+  let deferred = null, deferT = 0, badMs = 0, scY = -1, scT = 0;
+  const stillNow = () => performance.now() - scT > 300 || (S > E0 && S < 0.52);
+  function flushDeferred(dt) {
+    badMs = dt > 0.04 ? badMs + dt * 1000 : 0;
+    const now = performance.now();
+    if (stillNow() || badMs >= 1000 || now - deferT > 3000) { const d = deferred; deferred = null; applyHeavy(d.q, d.lv, Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[d.lv] : d.q.pr), Math.min(HIGH ? d.q.post : Math.min(d.q.post, 1), POST_MAX ?? 3), HIGH ? d.q.shadow : Math.min(d.q.shadow, 2048)); }
+  }
   // UnrealBloom's blurs use sigma = kernel radius, so a lone bright pixel blooms into a soft square. A proper Gaussian keeps the glow round.
   (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 
@@ -429,6 +448,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   let over = 0, overV = 0, gS = 0, gL = 0; // launch overrun past the track end (g), its rate; the scroll and launch colony clocks
   let shadowEvery = 1;                        // colony shadow refresh while something casting moves: every Nth frame (governor)
   let overlap = false, seamCol = null;        // the footer canvas is on screen too (stage.js); its seam colour for the lower edge
+  const CRANE_SHADOW = 3;                     // idle colony (nothing but the cranes moving): the shadow map refreshes every 3rd frame
   const OVERLAP_SHADOW = 3;                   // while overlapping: the launch light's shadow redraws at most every 3rd film frame
   const edge = { k: 0, col: [0, 0, 0], el: null }; // CTA hand-off: how far the next section has risen, its background (display rgb 0..1)
   const shakeV = new THREE.Vector3(), shakeR = new THREE.Vector3(), shakeU = new THREE.Vector3();
@@ -641,7 +661,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       // overlapping the footer (the launch past the track end, mostly under the fade): the plume light moves every frame, so its
       // shadow would redraw every frame. A few frames' lag is invisible there; a forced redraw (new set, new size) still goes now.
       const every = overlap ? Math.max(shadowEvery, OVERLAP_SHADOW) : shadowEvery;
-      if (forceShadow || ((built || cranesUp()) && shadowFrame % every === 0) || (!overlap && built)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; }
+      // built = the build state or the shadow light moved this frame (scroll moving, launch plume): that keeps the per-frame rule above. Otherwise only the
+      // crane jibs turn (0.15 rad/s, 0.0075 rad per 3 frames): refresh every CRANE_SHADOW-th frame and reuse the map in between
+      const craneOnly = !built && cranesUp(), ev = craneOnly ? Math.max(every, CRANE_SHADOW) : every;
+      if (forceShadow || ((built || craneOnly) && shadowFrame % ev === 0) || (!overlap && built)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; }
     }
     else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
     // operator layer: only a faint handheld drift
@@ -726,7 +749,16 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const PARALLEL = renderer.extensions.has('KHR_parallel_shader_compile'), NOOP = new THREE.Object3D();
   // no KHR_parallel_shader_compile (Firefox): compile() blocks the main thread until the programs link; ?gov=log prints how long each root took
-  const compileIn = root => { if (PARALLEL) return renderer.compileAsync(root, cam, scene); const t0 = performance.now(); renderer.compile(root, cam, scene); if (GOV_LOG) console.log('[film warm] blocking compile', (root.name || root.type), (performance.now() - t0).toFixed(0) + ' ms'); return Promise.resolve(); };
+  // renderer.compile(root, cam, scene) gathers lights from the scene and again from root: with root already in the scene, every light under it counts
+  // twice (the site's 2 work lights -> 4, the colony's fire light -> 2) and the programs compile for a light count that is never drawn. root is lifted
+  // out of its parent's child list for the synchronous gather, so the counts match the real draw and the throwaway draw finds its programs ready
+  const compileIn = root => {
+    const par = root.parent, i = par ? par.children.indexOf(root) : -1; if (i >= 0) par.children.splice(i, 1);
+    try {
+      if (PARALLEL) return renderer.compileAsync(root, cam, scene);
+      const t0 = performance.now(); renderer.compile(root, cam, scene); if (GOV_LOG) console.log('[film warm] blocking compile', (root.name || root.type), (performance.now() - t0).toFixed(0) + ' ms'); return Promise.resolve();
+    } finally { if (i >= 0) par.children.splice(i, 0, root); }
+  };
   const spaceRoots = () => [...spaceMeshes, sunCore, ...(sky ? [sky.group] : []), ...planets.entryRoots()];
   // run fn with exactly one world shown, as the loop shows it in that mode. Only site.group holds lights, so its visibility sets the light count in the program keys.
   function inWorld(w, fn) {
@@ -790,10 +822,37 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   document.fonts?.ready.then(() => { LAY = null; });
   const relayout = () => { LAY = null; };
   addEventListener('load', relayout);
+  // frame pacing. Default: on a display above 90 Hz (median of the last 30 raw intervals, re-read every 15 frames so a throttled first second
+  // corrects itself) the film renders every 2nd callback: 120 -> 60, 144 -> 72, 160 -> 80, 165 -> 82. Only from 110 Hz up: 2 x 10 ms at 100 Hz is 20 ms,
+  // exactly the governor's MISS line, so a 100 Hz panel stays uncapped. ?fps=0 uncaps, ?fps=N forces a cap (every Nth callback, N = round(1 / (interval x cap))),
+  // ?idle=N adds a cap while the scroll has been still for 400 ms. While the footer shares the screen stage.js already alternates the two canvases, so no cap
+  // is added then. Scroll is still sampled every rAF (Lenis runs on its own ticker; mount.js keeps calling step). The clock gets the whole elapsed time, the
+  // governor the real interval between rendered frames (not the display's), so a cap is never read as load and 30 Hz detection stays out of it
+  const PQ = new URLSearchParams(location.search), FPSQ = PQ.get('fps'), FPS_FORCE = FPSQ == null ? -1 : Math.max(0, +FPSQ || 0), IDLE_CAP = Math.max(0, +PQ.get('idle') || 0);
+  const pRing = new Float32Array(31), pTmp = new Float32Array(31); let pAcc = 0, pN = 0, pI = 0, pCnt = 0, pMed = 0, pY = -1, pYT = 0, pSkip = 0;
+  function paceN(dt, now) { // callbacks per rendered frame (1 = render now)
+    if (dt > 0 && dt < 0.1) { pRing[pI++ % 31] = dt; if (++pCnt >= 30 && pCnt % 15 === 0) { pTmp.set(pRing); pMed = pTmp.sort()[15]; } }
+    const sy = scrollY; if (sy !== pY) { pY = sy; pYT = now; }
+    const idle = IDLE_CAP && now - pYT > 400 ? IDLE_CAP : 0;
+    let cap = FPS_FORCE >= 0 ? FPS_FORCE : (pMed > 0 && 1 / pMed >= 110 ? 1 / (2 * pMed) : 0);
+    if (idle && (!cap || idle < cap)) cap = idle;
+    return cap && pMed > 0 ? Math.max(1, Math.round(1 / (pMed * cap))) : 1;
+  }
   function step(dt) {
     if (!running || !booted || dead) return;
-    dt = Math.max(0, dt || 0); if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
-    gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
+    dt = Math.max(0, dt || 0); { const sy = scrollY; if (sy !== scY) { scY = sy; scT = performance.now(); } }
+    if (!overlap && !snapNext) {
+      const now = performance.now(), n = paceN(dt, now); pAcc += dt; pN++;
+      if (++pSkip < n) return;
+      pSkip = 0; dt = pAcc; pAcc = 0; pN = 0; // dt: everything since the last rendered frame
+      if (!freeze) tEl += Math.min(dt, 1 / 15);
+      if (!(IDLE_CAP && now - pYT > 400)) gov.frame(dt * 1000); // the real rendered-frame interval; at-rest idle frames say nothing about throughput
+    } else {
+      pAcc = 0; pN = 0; pSkip = 0;
+      if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
+      gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
+    }
+    if (deferred) flushDeferred(dt);
     gt.poll(); gt.begin();
     try { frame(Math.min(0.05, dt)); } finally { gt.end(); }
   }
@@ -811,6 +870,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     // seam: display rgb (0..1) the lower edge fades into, from the footer scene; null falls back to the next section's background
     setSeam(c) { seamCol = c && c.length >= 3 ? c : null; },
     snap() { snapNext = true; },
+    get pace() { return { hz: pMed ? +(1 / pMed).toFixed(1) : 0, every: Math.max(1, pCnt < 30 ? 1 : paceN(0, performance.now())) }; }, // QA: the detected display rate and the current callbacks per rendered frame
     tune, look: LOOK, // the live look object and its shipped defaults (look.json.js)
     get freeze() { return freeze; }, set freeze(v) { freeze = !!v; },
     // track px for a film clock value v: -2..-1 runs the Austin leg (first frame to the Earth frame), -1..P_END is S (dial scrub)

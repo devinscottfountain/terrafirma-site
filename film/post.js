@@ -6,6 +6,7 @@
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+import { BokehShader } from 'three/addons/shaders/BokehShader.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
@@ -56,14 +57,26 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
   };
 
   // ---------------------------------------------------------------- composer
+  // ?hdr=rg11b10 (off by default): colour targets use R11F_G11F_B10F (4 B/px instead of 8, no alpha, unsigned) through texture.internalFormat. Data targets
+  // (exposure, AO, the half-res DOF with its weight in alpha) stay HalfFloat. Banding in dark skies cannot be judged on software GL: look at it on a GPU first
+  const HDR11 = new URLSearchParams(location.search).get('hdr') === 'rg11b10';
+  const hdr = rt => { if (HDR11) rt.texture.internalFormat = 'R11F_G11F_B10F'; return rt; };
+  if (HDR11) { // r160 has no RGB texture format, and R11F_G11F_B10F only accepts format RGB: fix the combination at the one call that allocates render-target storage
+    const gl = renderer.getContext(), tex = gl.texImage2D;
+    gl.texImage2D = function () { if (arguments.length >= 9 && arguments[2] === gl.R11F_G11F_B10F && arguments[6] === gl.RGBA) arguments[6] = gl.RGB; return tex.apply(gl, arguments); };
+  }
   const composer = new EffectComposer(renderer);
+  hdr(composer.renderTarget1); hdr(composer.renderTarget2);
+  // the cine chain always renders the scene into scenePass.rt (its own depth texture); the composer's ping-pong pair only ever holds colour, so
+  // their default depth renderbuffers (2 x 24 bit at full size, 23 MB at 2160 x 1350) are never written or read. Set before the first draw allocates them
+  composer.renderTarget1.depthBuffer = composer.renderTarget2.depthBuffer = false;
 
   // 1. scene pass. Renders into a private HDR target that owns a depth texture when motion blur is active,
   //    otherwise straight into the composer buffer (no extra copy, no extra memory traffic).
   class ScenePass extends Pass {
     constructor() {
       super(); this.needsSwap = false; this.useRT = false; this.jx = 0; this.jy = 0; // jx/jy: TAA sub-pixel jitter (cine only), px
-      this.rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H) });
+      this.rt = hdr(new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H) }));
     }
     render(r, write, read) {
       const old = r.autoClear; r.autoClear = false;
@@ -212,10 +225,10 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     }
     draw(r, m, target) { this.fsQuad.material = m; r.setRenderTarget(target); this.fsQuad.render(r); }
     alloc() {
-      const mk = (w, h, filt) => new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: filt, magFilter: filt });
+      const mk = (w, h, filt, col = true) => { const t = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: filt, magFilter: filt }); return col ? hdr(t) : t; };
       const hw = Math.max(1, this.w >> 1), hh = Math.max(1, this.h >> 1);
       if ((trails.enabled || this.taa) && !this.hist) { this.hist = [mk(this.w, this.h, THREE.LinearFilter), mk(this.w, this.h, THREE.LinearFilter)]; this.histOk = false; }
-      if (ao.enabled && !this.aoA) { this.aoA = mk(hw, hh, THREE.NearestFilter); this.aoB = mk(hw, hh, THREE.NearestFilter); }
+      if (ao.enabled && !this.aoA) { this.aoA = mk(hw, hh, THREE.NearestFilter, false); this.aoB = mk(hw, hh, THREE.NearestFilter, false); }
       if (ao.enabled && (trails.enabled || this.taa || this.blur) && !this.tmp) this.tmp = mk(this.w, this.h, THREE.LinearFilter);
     }
     render(r, write) {
@@ -367,7 +380,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
       u.lin.value = auto.linear; u.snap.value = this.snap ? 1 : 0; u.on.value = auto.enabled ? 1 : 0; this.snap = false;
       this.pass(r, this.mAdapt, this.sB); const s = this.sA; this.sA = this.sB; this.sB = s;
       this.mTone.uniforms.tDiffuse.value = read.texture; this.mTone.uniforms.tExp.value = this.sA.texture;
-      this.pass(r, this.mTone, this.renderToScreen ? null : write);
+      this.pass(r, this.merge ? this.mMerge : this.mTone, this.merge || this.renderToScreen ? null : write); // merge: tone + lens in one pass straight to the canvas
     }
   }
   const tonePass = new ExposureTonePass();
@@ -393,15 +406,18 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
       gl_FragColor=vec4(col,1.); }`
   });
   if (!cine) composer.addPass(lens);
-  const C = cine ? createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low }) : null;
+  const C = cine ? createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low, hdr }) : null;
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
+  const DOF_MIN_PX = 1;
+  const POSTPR = new URLSearchParams(location.search).get('postpr') !== '0'; // post targets follow renderer.getPixelRatio() (the governor's pr steps); ?postpr=0 restores the construct-time ratio
   let have = false, lastDt = 1 / 60, resetNext = false, bufW = W;
 
   function setSize(w, h) {
     renderer.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
     const p = renderer.getPixelRatio(); bufW = Math.max(1, Math.floor(w * p));
+    if (POSTPR) composer.setPixelRatio(p); // the composer keeps the ratio it was built with; without this the governor's pr steps never reach the post targets
     composer.setSize(w, h); lens.uniforms.res.value.set(w, h); resetNext = true;
     if (C) C.setSize();
   }
@@ -443,8 +459,8 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     mbPass.blur = on; mbPass.taa = taaOn;
     const fx = on || trails.enabled || ao.enabled || taaOn;   // depth target + FX pass only when something needs them
     motion.active = on; trails.active = trails.enabled; ao.active = ao.enabled;
-    // DOF taps reach 0.4 * maxblur of the width; under half a pixel the pass is invisible, so skip it
-    const dofOn = 0.4 * dof.uniforms.maxblur.value * bufW >= 0.5;
+    // DOF taps reach 0.4 * maxblur of the width; under DOF_MIN_PX (device pixels) the widest circle of confusion is within what AA already does, so skip the pass
+    const dofOn = 0.4 * dof.uniforms.maxblur.value * bufW >= DOF_MIN_PX;
     mbPass.enabled = fx; dof.enabled = dofOn; scenePass.useRT = fx || dofOn || !!C;
     if (C) C.jitter(taaOn);
     prevVP.copy(curVP); lastPos.copy(cam.position); lastQuat.copy(cam.quaternion); have = true; resetNext = false;
@@ -491,7 +507,9 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     getExposure,
     // cine only (D6.1): live lens knobs, look tunables, quality ladder 0..3 (see createCine)
     cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, grade: C ? C.grade : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (cx, cy, rx, ry, k) => C.scrim(cx, cy, rx, ry, k) : () => {}, edge: C ? (k, col, h, glow) => C.edge(k, col, h, glow) : () => {},
-    setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
+    setDofHalf: C ? on => C.setDofHalf(on) : () => {}, setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
+    get toneMerge() { return C ? C.toneMerge : false; }, set toneMerge(v) { if (C) C.toneMerge = v; },
+    get frame() { return C ? C.frame : 0; }, set frame(v) { if (C) C.frame = v; }, // QA: see createCine
     gpuTimes: C ? () => C.gpuTimes() : () => null
   };
 }
@@ -537,9 +555,9 @@ const CINE_LIVE = new Set();
 // governor hook: applies to every live cine post (0 = cheapest .. 3 = best)
 export function setPostQuality(level) { for (const c of CINE_LIVE) c.setQuality(level); }
 
-function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low = false }) {
+function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low = false, hdr = t => t }) {
   const HF = THREE.HalfFloatType, LIN = THREE.LinearFilter;
-  const mk = () => new THREE.WebGLRenderTarget(1, 1, { type: HF, depthBuffer: false, minFilter: LIN, magFilter: LIN, generateMipmaps: false });
+  const mk = (col = true) => { const t = new THREE.WebGLRenderTarget(1, 1, { type: HF, depthBuffer: false, minFilter: LIN, magFilter: LIN, generateMipmaps: false }); return col ? hdr(t) : t; };
   const fsq = new FullScreenQuad(null);
   const mat = (frag, uniforms) => new THREE.ShaderMaterial({ uniforms, vertexShader: FS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false });
   const draw = (m, target) => { fsq.material = m; renderer.setRenderTarget(target); fsq.render(renderer); };
@@ -567,6 +585,14 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   let level = -1, Q = QL[3], explicit = false, frame = 0;
 
   // ---------------------------------------------------------------- bloom + streak (half / quarter res)
+  // DOF at half res (governor levels below the top): the bokeh taps run into a half-size target whose alpha is the blur weight (tap reach in px / 1.5),
+  // then a cheap full-res composite blends it over the sharp frame by that weight, so pixels at the focus plane stay at full resolution
+  const rtDof = mk(false); let dofHalf = false; dof.uniforms.uW = { value: 1 };
+  const mDofHalf = new THREE.ShaderMaterial({ uniforms: dof.uniforms, defines: { ...dof.materialBokeh.defines }, vertexShader: FS_VERT, depthTest: false, depthWrite: false,
+    fragmentShader: BokehShader.fragmentShader.replace('uniform float aspect;', 'uniform float aspect; uniform float uW;')
+      .replace(/gl_FragColor = col \/ 41\.0;\s*gl_FragColor\.a = 1\.0;/, 'gl_FragColor = vec4( col.rgb / 41.0, clamp( dofblur.x * 0.4 * uW / 1.5, 0.0, 1.0 ) );') });
+  const mDofComp = new THREE.ShaderMaterial({ uniforms: { tSharp: { value: null }, tBlur: { value: null } }, vertexShader: FS_VERT, depthTest: false, depthWrite: false,
+    fragmentShader: 'uniform sampler2D tSharp, tBlur; varying vec2 vUv; void main(){ vec4 b = texture2D(tBlur, vUv); gl_FragColor = vec4(mix(texture2D(tSharp, vUv).rgb, b.rgb, b.a), 1.); }' });
   const rtPre = mk(), rtT = [], rtL = [], rtS = [mk(), mk()];
   for (let i = 0; i < 5; i++) { rtT.push(mk()); rtL.push(mk()); }
   const mPre = mat(`
@@ -647,11 +673,10 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     uBw: { value: new THREE.Vector4() }, uBw4: { value: 0 }, uBloom: { value: 0.3 }, uStreak: { value: 0 }, uSTint: { value: look.streakTint },
     uFlash: { value: 0 }, uDirt: { value: 0 },
     uDial: { value: 0 }, uExpK: { value: 1 }, uWB: { value: new THREE.Vector3(1, 1, 1) }, uCon: { value: 1 }, uSat: { value: 1 }, uLift: { value: 0 }, uGam: { value: 1 }, uGain: { value: 1 } };
-  tonePass.mTone = mat(`
-    uniform sampler2D tDiffuse, tExp, tB0, tB1, tB2, tB3, tB4, tS, tDirt; uniform vec4 uBw; uniform float uBw4, uBloom, uStreak, uFlash, uDirt; uniform vec3 uSTint;
-    uniform float uDial, uExpK, uCon, uSat, uLift, uGam, uGain; uniform vec3 uWB;
-    varying vec2 vUv;
-    ${CINE_GLSL}
+  // TONE_FN: the whole tone stage as a function of the sampling uv, so the merged tone + lens pass (below) can call it as well
+  const TONE_UNI = `uniform sampler2D tDiffuse, tExp, tB0, tB1, tB2, tB3, tB4, tS, tDirt; uniform vec4 uBw; uniform float uBw4, uBloom, uStreak, uFlash, uDirt; uniform vec3 uSTint;
+    uniform float uDial, uExpK, uCon, uSat, uLift, uGam, uGain; uniform vec3 uWB;`;
+  const TONE_FN = `
     // dial grade on display values: lift raises the blacks, gain scales, uGam = 1/gamma, contrast about mid grey, then saturation
     vec3 dialGrade(vec3 o){
       o=max((o+uLift*(1.-o))*uGain,0.);
@@ -659,29 +684,48 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       o=max((o-.46)*uCon+.46,0.);
       float l=dot(o,vec3(.2126,.7152,.0722)); o=max(mix(vec3(l),o,uSat),0.);
       return clamp(o,0.,1.); }
-    void main(){
-      vec3 c=texture2D(tDiffuse,vUv).rgb; c=any(isnan(c)) ? vec3(0.) : min(c,vec3(6e4));
-      vec3 b=texture2D(tB0,vUv).rgb*uBw.x+texture2D(tB1,vUv).rgb*uBw.y+texture2D(tB2,vUv).rgb*uBw.z+texture2D(tB3,vUv).rgb*uBw.w+texture2D(tB4,vUv).rgb*uBw4;
+    vec3 toneAt(vec2 uv){
+      vec3 c=texture2D(tDiffuse,uv).rgb; c=any(isnan(c)) ? vec3(0.) : min(c,vec3(6e4));
+      vec3 b=texture2D(tB0,uv).rgb*uBw.x+texture2D(tB1,uv).rgb*uBw.y+texture2D(tB2,uv).rgb*uBw.z+texture2D(tB3,uv).rgb*uBw.w+texture2D(tB4,uv).rgb*uBw4;
       float f2=uFlash*uFlash;
       c+=b*(uBloom+2.5*uFlash);                                       // the flash is the lens flooding: bloom swells first
-      c+=texture2D(tS,vUv).rgb*uSTint*uStreak;
-      if(uDirt>0.) c+=texture2D(tDirt,vUv).rgb*(texture2D(tB2,vUv).rgb*.3+texture2D(tB3,vUv).rgb+texture2D(tB4,vUv).rgb)*uDirt*1.6;
+      c+=texture2D(tS,uv).rgb*uSTint*uStreak;
+      if(uDirt>0.) c+=texture2D(tDirt,uv).rgb*(texture2D(tB2,uv).rgb*.3+texture2D(tB3,uv).rgb+texture2D(tB4,uv).rgb)*uDirt*1.6;
       c+=f2*vec3(1.,.72,.5)*.9;                                       // warm wash in HDR: the tone curve rolls it to cream, never flat orange
       float e=texture2D(tExp,vec2(.5)).r*(1.+1.6*f2);
       if(uDial>.5){ e*=uExpK; c*=uWB; }                              // dial exposure and white balance (scene linear)
       vec3 o=cineGrade(cineOETF(cineTone(c*e/.6)));
       if(uDial>.5) o=dialGrade(o);
-      gl_FragColor=vec4(o,1.); }`, toneU);
+      return o; }`;
+  tonePass.mTone = mat(`
+    ${TONE_UNI}
+    varying vec2 vUv;
+    ${CINE_GLSL}
+    ${TONE_FN}
+    void main(){ gl_FragColor=vec4(toneAt(vUv),1.); }`, toneU);
 
   // ---------------------------------------------------------------- lens: heat shimmer, FXAA, vignette, grain, dither
   const lensU = { tDiffuse: { value: null }, res: { value: new THREE.Vector2(1, 1) }, time: { value: 0 }, grain: { value: look.grain }, vig: { value: look.vignette },
     heat: { value: 0 }, heatAt: { value: new THREE.Vector2(0.5, 0.5) }, heatLocal: { value: 0 }, fxaa: { value: 0 },
     scrim: { value: new THREE.Vector4(0.5, 0.5, 1, 1) }, scrimK: { value: 0 }, // soft burn behind on-screen copy: centre uv (y up), radii uv, depth
     edgeC: { value: new THREE.Vector3() }, edgeK: { value: 0 }, edgeH: { value: 0.3 }, edgeG: { value: 0 } }; // lower edge fade into the next section
-  const mLens = mat(`
-    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform vec4 scrim; uniform vec3 edgeC; uniform float time, grain, vig, heat, heatLocal, fxaa, scrimK, edgeK, edgeH, edgeG; varying vec2 vUv;
-    ${CINE_GLSL}
+  // LENS_FIN: vignette, scrim, warm edge haze, grain and the lower-edge fade on a display-space colour (shared by the lens pass and the merged tone + lens pass)
+  const LENS_UNI = 'uniform vec4 scrim; uniform vec3 edgeC; uniform float time, grain, vig, scrimK, edgeK, edgeH, edgeG;';
+  const LENS_FIN = `
     float vh(vec2 p){ return cH12(p*1.17+.31); }
+    vec3 lensFinish(vec3 col){
+      vec2 c=vUv-.5; float r2=dot(c,c);
+      col*=mix(1.,smoothstep(.75,.12,r2*1.6),vig);
+      if(scrimK>0.){ vec2 q=(vUv-scrim.xy)/scrim.zw; col*=1.-scrimK*exp(-dot(q,q)); } // a printer's burn under the copy, never a box
+      float ey=vUv.y/edgeH;
+      col+=edgeG*vec3(1.,.6,.32)*exp(-(ey-.8)*(ey-.8)*2.5);                   // warm haze rising off the bottom of the frame, just above the fade
+      col=clamp(cineGrain(col,gl_FragCoord.xy,time,grain),0.,1.);
+      if(edgeK>0.){ float m=1.-smoothstep(0.,1.,ey); col=mix(col,edgeC,edgeK*m*m*(3.-2.*m)); } // after the grain: the last rows are the next section's colour exactly
+      return col; }`;
+  const mLens = mat(`
+    uniform sampler2D tDiffuse; uniform vec2 res, heatAt; uniform float heat, heatLocal, fxaa; ${LENS_UNI} varying vec2 vUv;
+    ${CINE_GLSL}
+    ${LENS_FIN}
     float vn(vec2 x){ vec2 i=floor(x),f=fract(x); f=f*f*(3.-2.*f); return mix(mix(vh(i),vh(i+vec2(1,0)),f.x),mix(vh(i+vec2(0,1)),vh(i+vec2(1,1)),f.x),f.y); }
     float lu(vec3 c){ return dot(c,vec3(.299,.587,.114)); }
     vec3 fx3(vec2 uv){ // FXAA (console variant): 5 taps, edge-directed blur, rejects when it leaves the local range
@@ -704,20 +748,25 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
         float w=heatLocal>.5 ? exp(-dot(dq,dq)*30.)*smoothstep(-.06,.06,uv.y-heatAt.y) : .3+.7*smoothstep(.15,.75,length((uv-.5)*vec2(asp,1.)));
         uv+=n*heat*w*vec2(.0035,.006); }
       vec3 col=fxaa>.5 ? fx3(uv) : texture2D(tDiffuse,uv).rgb;
-      vec2 c=vUv-.5; float r2=dot(c,c);
-      col*=mix(1.,smoothstep(.75,.12,r2*1.6),vig);
-      if(scrimK>0.){ vec2 q=(vUv-scrim.xy)/scrim.zw; col*=1.-scrimK*exp(-dot(q,q)); } // a printer's burn under the copy, never a box
-      float ey=vUv.y/edgeH;
-      col+=edgeG*vec3(1.,.6,.32)*exp(-(ey-.8)*(ey-.8)*2.5);                   // warm haze rising off the bottom of the frame, just above the fade
-      col=clamp(cineGrain(col,gl_FragCoord.xy,time,grain),0.,1.);
-      if(edgeK>0.){ float m=1.-smoothstep(0.,1.,ey); col=mix(col,edgeC,edgeK*m*m*(3.-2.*m)); } // after the grain: the last rows are the next section's colour exactly
-      gl_FragColor=vec4(col,1.); }`, lensU);
+      gl_FragColor=vec4(lensFinish(col),1.); }`, lensU);
+
+  // merged tone + lens: when nothing sits between them (no FXAA or SMAA, no heat shimmer) the display-space frame never needs to exist as a
+  // texture: one full-screen pass instead of two, saving a full-size HalfFloat write and read. ?tonemerge=0 keeps the two passes
+  let TONE_MERGE = new URLSearchParams(location.search).get('tonemerge') !== '0';
+  tonePass.mMerge = mat(`
+    ${TONE_UNI} ${LENS_UNI} varying vec2 vUv;
+    ${CINE_GLSL}
+    ${TONE_FN}
+    ${LENS_FIN}
+    void main(){ gl_FragColor=vec4(lensFinish(toneAt(vUv)),1.); }`, Object.assign({}, lensU, toneU)); // the same uniform holders: nothing to copy per frame
+  tonePass.merge = false;
 
   // ---------------------------------------------------------------- sizing + quality
   let w = 1, h = 1, bw = 1, bh = 1;
   function setSize() {
     w = composer.renderTarget1.width; h = composer.renderTarget1.height; lensU.res.value.set(w, h);
     bw = Math.max(1, w >> Q.div); bh = Math.max(1, h >> Q.div);
+    rtDof.setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
     rtPre.setSize(bw, bh); mPre.uniforms.uTexel.value.set(0.5 * (1 << Q.div) / w, 0.5 * (1 << Q.div) / h); // 4 taps at source-texel corners of the 2^div block
     let sw = bw, sh = bh;
     for (let i = 0; i < 5; i++) { const dw = Math.max(1, i ? sw >> 1 : sw), dh = Math.max(1, i ? sh >> 1 : sh); rtT[i].setSize(dw, dh); rtL[i].setSize(dw, dh); sw = dw; sh = dh; }
@@ -775,7 +824,11 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     e = tBeg('dof');
     if (dof.enabled) {
       const u = dof.uniforms, tg = other(cur); u.tColor.value = cur; u.tDepth.value = scenePass.rt.depthTexture; u.nearClip.value = cam.near; u.farClip.value = cam.far;
-      r.setRenderTarget(tg); dof.fsQuad.render(r); cur = tg.texture;
+      if (dofHalf || force) { // force (the boot warm-up) runs both variants so neither compiles mid-scroll
+        u.uW.value = w; draw(mDofHalf, rtDof); mDofComp.uniforms.tSharp.value = cur; mDofComp.uniforms.tBlur.value = rtDof.texture; draw(mDofComp, tg);
+      }
+      if (!dofHalf || force) { r.setRenderTarget(tg); dof.fsQuad.render(r); }
+      cur = tg.texture;
     }
     tEnd(e);
     // bloom chain (+ streak), half or quarter res
@@ -796,6 +849,12 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
       toneU.tS.value = rtS[0].texture;
     }
     tEnd(e);
+    // lens uniforms first: the merged pass reads them
+    const ht = force ? 0.5 : Math.max(0, fx.heat), merge = TONE_MERGE && !force && ht <= 0 && (q.aa === 0 || q.aa === 3);
+    lensU.time.value = api.time; lensU.fxaa.value = q.aa === 1 ? 1 : 0;
+    lensU.grain.value = look.grain; lensU.vig.value = look.vignette;
+    lensU.heat.value = ht;
+    if (fx.heatAt) { lensU.heatAt.value.set(fx.heatAt[0], fx.heatAt[1]); lensU.heatLocal.value = 1; } else lensU.heatLocal.value = 0;
     // tone (exposure state is updated inside tonePass)
     e = tBeg('tone');
     const bl = bloom.strength;
@@ -804,24 +863,26 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     const G = grade, gOn = G.expK !== 1 || G.wr !== 1 || G.wg !== 1 || G.wb !== 1 || G.contrast !== 1 || G.saturation !== 1 || G.lift !== 0 || G.gamma !== 1 || G.gain !== 1;
     toneU.uDial.value = gOn ? 1 : 0;
     if (gOn) { toneU.uExpK.value = G.expK; toneU.uWB.value.set(G.wr, G.wg, G.wb); toneU.uCon.value = G.contrast; toneU.uSat.value = G.saturation; toneU.uLift.value = G.lift; toneU.uGam.value = 1 / Math.max(0.05, G.gamma); toneU.uGain.value = G.gain; }
+    tonePass.merge = merge;
     let X = other(cur); fakeRead.texture = cur; tonePass.render(r, X, fakeRead); cur = X.texture;
     tEnd(e);
+    if (merge) return; // tone + lens already on the canvas
     e = tBeg('aa');
     if (q.aa === 2) { const Y = other(cur); smaa.renderToScreen = false; smaa.render(r, Y, X); cur = Y.texture; }
     tEnd(e);
     e = tBeg('lens');
-    lensU.tDiffuse.value = cur; lensU.time.value = api.time; lensU.fxaa.value = q.aa === 1 ? 1 : 0;
-    lensU.grain.value = look.grain; lensU.vig.value = look.vignette;
-    const ht = force ? 0.5 : Math.max(0, fx.heat); lensU.heat.value = ht;
-    if (fx.heatAt) { lensU.heatAt.value.set(fx.heatAt[0], fx.heatAt[1]); lensU.heatLocal.value = 1; } else lensU.heatLocal.value = 0;
+    lensU.tDiffuse.value = cur;
     draw(mLens, null);
+    if (force) draw(tonePass.mMerge, null); // warm the merged program too (garbage output, the canvas is hidden)
     tEnd(e);
   }
 
   const api = {
     fx, look, grade, level, time: 0,
     taaOn: () => (level < 0 ? !low : Q.aa === 3),
-    jitter, render, setSize, setQuality,
+    get toneMerge() { return TONE_MERGE; }, set toneMerge(v) { TONE_MERGE = !!v; }, // QA
+    get frame() { return frame; }, set frame(v) { frame = v | 0; }, // QA: the render counter (it picks the TAA jitter sample), so two runs can start from the same one
+    jitter, render, setSize, setQuality, setDofHalf(on) { dofHalf = !!on; },
     profile(on = true) { profiling = !!on && !!tq; return profiling; },
     // scrim(cx, cy, rx, ry, k): darken a soft ellipse (uv, y up) by up to k behind copy that sits over a busy frame; k 0 = off
     scrim(cx, cy, rx, ry, k) { lensU.scrim.value.set(cx, cy, Math.max(1e-3, rx), Math.max(1e-3, ry)); lensU.scrimK.value = Math.max(0, k); },
