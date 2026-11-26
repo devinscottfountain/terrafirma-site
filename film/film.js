@@ -107,16 +107,34 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     };
   })();
   // Firefox (no GPU timer queries): a GPU-bound page vsync-locks to a tight 30 Hz that looks exactly like a 30 Hz cap, so capOK is off there (it would stop the governor after one step), and it starts at level 3 (pr 1, TAA) and climbs when clean
-  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, start: FF && HIGH ? 3 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => !FF, gpu: () => gt.p90, apply: (q, lv) => {
-    const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr);
-    if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
-    post.setQuality(Math.min(HIGH ? q.post : Math.min(q.post, 1), POST_MAX ?? 3));
-    post.setDofHalf(HIGH && lv < 5); // the top level keeps full-res DOF; every step below runs it at half res
-    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep; gt.reset(); // GPU samples from the old level say nothing about the new one
-    const sh = sunLight.shadow, sx = HIGH ? q.shadow : Math.min(q.shadow, 2048);
-    if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
+  const gov = createGovernor({ high: HIGH, top: PHONE ? PHONE_PR.length - 1 : null, start: FF && HIGH ? 3 : null, hold: () => S > E0 && S < 0.52, holdUp: () => overlap, capOK: () => !FF, gpu: () => gt.p90, apply: (q, lv, urgent) => {
+    // light parts (trails, shadow refresh rate, particle share) are flags: now. Heavy parts (pixel ratio, post level, shadow map size) reallocate render targets
+    // and dispose the shadow map, a hitch the eye catches mid-scroll: a step that needs them waits for a still scroll (300 ms) or a hold() window. It goes at
+    // once when urgent (emergency, sustained stalls, a pin, the first frame), when frames run over 40 ms for a full second, or after 3 s at the latest
+    trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep;
     const r = colonyW.api && colonyW.api.rockets; if (r && r.setKeep) r.setKeep(partKeep);
+    deferred = null;
+    const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr), pl = Math.min(HIGH ? q.post : Math.min(q.post, 1), POST_MAX ?? 3);
+    const sx = HIGH ? q.shadow : Math.min(q.shadow, 2048), heavy = renderer.getPixelRatio() !== pr || post.getQuality() !== pl || sunLight.shadow.mapSize.x !== sx;
+    if (heavy && !urgent && !stillNow()) { deferred = { q, lv }; deferT = performance.now(); badMs = 0; return; }
+    applyHeavy(q, lv, pr, pl, sx);
   } });
+  function applyHeavy(q, lv, pr, pl, sx) {
+    if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
+    post.setQuality(pl);
+    post.setDofHalf(HIGH && lv < 5); // the top level keeps full-res DOF; every step below runs it at half res
+    gt.reset(); // GPU samples from the old level say nothing about the new one
+    const sh = sunLight.shadow;
+    if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs
+  }
+  // scroll still for 300 ms, or inside the planet-to-colony flash where a hitch hides
+  let deferred = null, deferT = 0, badMs = 0, scY = -1, scT = 0;
+  const stillNow = () => performance.now() - scT > 300 || (S > E0 && S < 0.52);
+  function flushDeferred(dt) {
+    badMs = dt > 0.04 ? badMs + dt * 1000 : 0;
+    const now = performance.now();
+    if (stillNow() || badMs >= 1000 || now - deferT > 3000) { const d = deferred; deferred = null; applyHeavy(d.q, d.lv, Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[d.lv] : d.q.pr), Math.min(HIGH ? d.q.post : Math.min(d.q.post, 1), POST_MAX ?? 3), HIGH ? d.q.shadow : Math.min(d.q.shadow, 2048)); }
+  }
   // UnrealBloom's blurs use sigma = kernel radius, so a lone bright pixel blooms into a soft square. A proper Gaussian keeps the glow round.
   (bloom.separableBlurMaterials || []).forEach(m => { const c = m.uniforms.gaussianCoefficients?.value; if (!c) return; const n = c.length, sg = n / 2.6; for (let i = 0; i < n; i++) c[i] = 0.39894 * Math.exp(-0.5 * i * i / (sg * sg)) / sg; });
 
@@ -822,7 +840,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   }
   function step(dt) {
     if (!running || !booted || dead) return;
-    dt = Math.max(0, dt || 0);
+    dt = Math.max(0, dt || 0); { const sy = scrollY; if (sy !== scY) { scY = sy; scT = performance.now(); } }
     if (!overlap && !snapNext) {
       const now = performance.now(), n = paceN(dt, now); pAcc += dt; pN++;
       if (++pSkip < n) return;
@@ -834,6 +852,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
       gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
     }
+    if (deferred) flushDeferred(dt);
     gt.poll(); gt.begin();
     try { frame(Math.min(0.05, dt)); } finally { gt.end(); }
   }

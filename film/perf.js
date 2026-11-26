@@ -57,12 +57,13 @@ export function createGovernor({ high = true, top = null, start = null, apply, h
     if (lv < level && clock - lastUp < PROBATION) { ceil = level - 1; ceilT = clock; lastUp = -1e9; log('ceiling', ceil); } // dropped soon after a step up: that level is off the table for a minute (one ceiling per failed step up, no cascade)
     if (lv > level) lastUp = clock;
     level = lv; cool = clock + COOL; upT = 0; n = 0; head = 0; misses = 0; recent = 0; state.steps++; log('level', lv, why, 'gpu', state.gpu, 'med', state.med, 'coarse', state.coarse);
-    push();
+    push(why);
   }
-  function push() { if (applied === level) return; applied = level; state.level = level; state.ceil = ceil; apply(LADDER[level], level); }
+  // apply(q, level, urgent): urgent = emergency, sustained stalls, a pin or the first frame; the film may defer the heavy reallocation of any other step until the scroll is still
+  function push(why = '') { if (applied === level) return; applied = level; state.level = level; state.ceil = ceil; apply(LADDER[level], level, /^(emergency|sustained|pinned|start)/.test(why)); }
   // dtMs: the interval since the last film frame, in ms (the film's own clock, so tests can feed it)
   function frame(dtMs) {
-    if (applied < 0) push();
+    if (applied < 0) push('start');
     if (OFF || PIN != null) return;
     clock += Math.min(dtMs, 100);
     if (dtMs > HITCH) { since = clock; if (++stalls >= 8 && level > 0) { stalls = 0; set(level - 1, 'sustained stalls'); } return; } // one stall is a hitch; eight in a row is throughput
