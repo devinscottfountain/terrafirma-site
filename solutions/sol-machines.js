@@ -86,6 +86,8 @@ export const EXC_LIMITS = (() => {
 export const EXC_HYD = { dead: 0.14, lip: 0.12, guide: 0.06 };
 
 // opts.line: line art colour (any THREE.Color input), opts.solid: the hidden-line occluder colour
+const drain = g => { let r; while (!(r = g.next()).done); return r.value; };
+
 export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, phone = false } = {}) {
   const LINE = new THREE.Color(line), SOLID = new THREE.Color(solid);
   const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(), V = new THREE.Vector3(), S1 = new THREE.Vector3(1, 1, 1);
@@ -341,7 +343,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
   const TL = 3.7, TR = 0.46, TW = 0.6, TZ = 1.28, TY = 0.53;
   const ARMZ = 0.2, ARMZ_CYL = 0.4, ARMZ_EAR = 0.33;   // arm plane z in the turret; boom cylinders' and the bucket ears' z offset from it
   let excT = null;
-  function excTemplate() {
+  const excTemplate = () => drain(excTemplateG());
+  function* excTemplateG() {
     if (excT) return excT;
     // undercarriage
     const u = part();
@@ -356,7 +359,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     }
     u.bx(-1.0, 0.0, -TZ + 0.3, 1.0, 0.42, TZ - 0.3); // car body
     u.cyl(1.0, 0.16, 0, 0.5, 0, 28, 'y'); // swing bearing
-    const under = u.build();
+    const under = u.build(); yield;
     for (const k in under) under[k].translate(0, TY, 0);
 
     // upper structure, origin at swing centre top of bearing
@@ -387,7 +390,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     for (const z of [-0.05, 0.45]) t.ext([[0.2, 0.28], [1.25, 0.28], [1.2, 1.25], [0.75, 1.35]], 0.12, z - 0.06); // boom foot bracket
     t.cyl(0.13, 0.75, 0.95, 1.0, 0.2, 16);
     for (const z of [0.2 - ARMZ_CYL, 0.2 + ARMZ_CYL]) t.bx(EXC_PIN.BA[0] - 0.2, 0.28, z - 0.05, EXC_PIN.BA[0] + 0.2, EXC_PIN.BA[1] + 0.07, z + 0.05); // frame lugs for the boom cylinder bases
-    const upper = t.build();
+    const upper = t.build(); yield;
 
     // boom: banana profile from pin (0,0) to tip (5.7,0)
     const b = part(); const BL = 5.7, BW = 0.5;
@@ -401,7 +404,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     for (const z of [-0.13, 0.13]) b.ext([[1.9, 0.68], [2.0, 1.06], [2.4, 1.06], [2.5, 0.82]], 0.05, z - 0.025);
     b.cyl(0.06, 0.3, EXC_PIN.SA[0], EXC_PIN.SA[1], 0, 6);
     b.cyl(0.12, BW + 0.2, 0, 0, 0, 16); b.cyl(0.12, BW + 0.2, BL, 0, 0, 16);
-    const boom = b.build();
+    const boom = b.build(); yield;
 
     // stick
     const s = part(); const SL = 2.9, SW = 0.38;
@@ -412,7 +415,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     s.cyl(0.06, 0.58, EXC_PIN.G[0], EXC_PIN.G[1], 0, 6); // idler link pin under the stick tip
     s.bar([0.4, -0.25, SW / 2 + 0.01], [SL - 0.4, -0.2, SW / 2 + 0.01], 0.05, 0.02); s.bar([0.4, -0.25, -SW / 2 - 0.01], [SL - 0.4, -0.2, -SW / 2 - 0.01], 0.05, 0.02);
     s.cyl(0.1, SW + 0.15, SL, 0, 0, 16);
-    const stick = s.build();
+    const stick = s.build(); yield;
 
     // bucket: shell profile, teeth, side cutters, ribs
     const k = part(); const BKW = 1.15;
@@ -422,7 +425,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     for (const [a, c] of [[[0.5, 0.21], [0.95, 0.02]], [[0.95, 0.02], [1.27, -0.48]], [[1.27, -0.48], [1.37, -1.0]]]) for (let i = -1; i <= 1; i++) k.bar([a[0], a[1] + 0.02, i * 0.32], [c[0] + 0.02, c[1] + 0.02, i * 0.32], 0.05, 0.05); // straps
     k.cyl(0.08, BKW + 0.1, 0, 0, 0, 16);
     k.cyl(0.06, 2 * ARMZ_EAR + 0.1, EXC_PIN.F[0], EXC_PIN.F[1], 0, 6); // ear pin (power link)
-    const bucket = k.build();
+    const bucket = k.build(); yield;
     excT = { under, upper, boom, stick, bucket, BL, SL };
     return excT;
   }
@@ -690,7 +693,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     wheels: [[-1.55, 1.95, 0.61], [1.95, 0.64, 0.49], [-1.85, 0.64, 0.49]] };   // sprocket, front idler, rear idler (pitch radius)
   const mb = t => [3.76 - 0.06 * t - 0.62 * Math.sin(Math.PI * 0.85 * t), 2.12 * t];   // moldboard face profile, t 0 (edge) .. 1 (top)
   let dzT = null;
-  function dzTemplate() {
+  const dzTemplate = () => drain(dzTemplateG());
+  function* dzTemplateG() {
     if (dzT) return dzT;
     const c = part(), H = DZ.gauge / 2;
     // undercarriage, both sides
@@ -748,7 +752,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     // rear: ripper mount plates and drawbar
     for (const z of [-0.55, 0.55]) c.ext([[-2.15, 0.55], [-2.8, 0.55], [-2.8, 2.15], [-2.15, 2.3]], 0.12, z - 0.06);
     c.bx(-2.75, 0.6, -0.5, -2.3, 0.9, 0.5);
-    const body = c.build();
+    const body = c.build(); yield;
 
     // blade: semi-U, curved face with its grid, wings, push arms, braces, rock guard. Built in place, then moved to the tilt pivot
     const b = part(), N = 12, TH = 0.11, xJ = 3.3, WA = 0.44, half = 1.5, wingW = 0.97;
@@ -781,7 +785,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       b.rod([1.6, 0.86, s * 1.7], [2.95, 1.72, s * 1.45], 0.07, 8);   // tilt brace
       b.bx(DZ.cylEnd[0] - 0.12, DZ.cylEnd[1] - 0.2, s * 0.99 - 0.16, DZ.cylEnd[0] + 0.12, DZ.cylEnd[1] + 0.14, s * 0.99 + 0.16);   // lift cylinder clevis on the blade top
     }
-    const blade = b.build(); blade.geo.translate(-DZ.tilt[0], -DZ.tilt[1], 0); blade.edges.translate(-DZ.tilt[0], -DZ.tilt[1], 0);
+    const blade = b.build(); blade.geo.translate(-DZ.tilt[0], -DZ.tilt[1], 0); blade.edges.translate(-DZ.tilt[0], -DZ.tilt[1], 0); yield;
 
     // lift cylinders: from the radiator brackets to the blade, drawn along +x from the base pin (rest length L0)
     const L0 = Math.hypot(DZ.cylEnd[0] - DZ.cylBase[0], DZ.cylEnd[1] - DZ.cylBase[1]), lc = part();
@@ -789,7 +793,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       lc.rod([0.05, 0, z], [L0 * 0.6, 0, z], 0.13, 14); for (const f of [0.08, 0.3, 0.55]) lc.rod([L0 * f, 0, z], [L0 * (f + 0.04), 0, z], 0.16, 14);
       lc.rod([L0 * 0.55, 0, z], [L0 - 0.05, 0, z], 0.075, 10); lc.cyl(0.15, 0.24, 0, 0, z, 14); lc.cyl(0.12, 0.2, L0, 0, z, 12);
     }
-    const liftCyl = lc.build();
+    const liftCyl = lc.build(); yield;
 
     // ripper: an open parallelogram linkage (two side beams top and bottom), the two lift cylinders, a frame of cross tubes
     // and one shank with its tip; pivot at the lower link pin
@@ -807,7 +811,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     for (let k = 0; k < 4; k++) r.cyl(0.04, 0.32, xb - 0.15, 1.95 - k * 0.28, 0, 8);   // depth pin holes
     r.ext([[xb - 0.05, 2.45], [xb - 0.35, 2.45], [xb - 0.42, 0.85], [-4.72, 0.0], [-4.88, -0.3], [-4.6, -0.22], [xb - 0.1, 0.62]], 0.12, -0.06);   // shank
     r.ext([[-4.62, -0.2], [-4.92, -0.33], [-5.05, -0.52], [-4.85, -0.47], [-4.56, -0.3]], 0.16, -0.08);   // replaceable tip
-    const ripper = r.build(); ripper.geo.translate(-DZ.rip[0], -DZ.rip[1], 0); ripper.edges.translate(-DZ.rip[0], -DZ.rip[1], 0);
+    const ripper = r.build(); ripper.geo.translate(-DZ.rip[0], -DZ.rip[1], 0); ripper.edges.translate(-DZ.rip[0], -DZ.rip[1], 0); yield;
     dzT = { body, blade, liftCyl, ripper, L0 };
     return dzT;
   }
@@ -854,7 +858,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
   // with the hub, a bolt circle, lightening holes, a filler plug and a balance weight (the last two are what show the roll). The rolling face stays clean.
   const CP = { lf: 1.5, lr: 1.4, dr: 0.767, dw: 2.134, tr: 0.765, ty: 0.8, tw: 0.59, tz: 0.835 };   // tr: tyre carcass, ty: rolling radius over the tread lugs
   let cpT = null;
-  function cpTemplate() {
+  const cpTemplate = () => drain(cpTemplateG());
+  function* cpTemplateG() {
     if (cpT) return cpT;
     const R = CP.dr, HW = CP.dw / 2, PL = HW - 0.09;   // PL: end plate face, recessed 90 mm inside the shell rim
     // drum: one lathe profile (r, z) round the z axis, counter-clockwise so the faces point out. Shell 30 mm with a 30 mm chamfer at each
@@ -880,7 +885,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       d.line([[Math.cos(pa) * 0.6 - 0.035, Math.sin(pa) * 0.6, zp + s * 0.0365], [Math.cos(pa) * 0.6 + 0.035, Math.sin(pa) * 0.6, zp + s * 0.0365]]);
       d.box(0.24, 0.07, 0.04, Math.cos(sp + 3.3) * 0.52, Math.sin(sp + 3.3) * 0.52, zp + s * 0.02, 0, 0, sp + 3.3 + Math.PI / 2);   // balance weight bolted on the plate
     }
-    const drum = d.build();
+    const drum = d.build(); yield;
 
     // front frame: arms from the hitch to the hub on each side (they leave most of the end plate in view), hub covers, front cross member
     // and lamps, scraper bars on the smooth face front and rear, hitch knuckle
@@ -908,7 +913,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     f.bx(0.4, 0.98, -1.09, 0.68, 1.26, 1.09);   // rear cross member, behind the drum
     f.bx(-0.05, 0.55, -0.36, 0.35, 1.1, 0.36); f.cyl(0.1, 0.62, 0.15, 0.85, 0, 12, 'y');   // hitch knuckle and pin
     for (const z of [-0.8, 0.8]) { f.box(0.1, 0.1, 0.2, 2.33, 1.45, z); f.line([[2.381, 1.4, z - 0.07], [2.381, 1.5, z - 0.07], [2.381, 1.5, z + 0.07], [2.381, 1.4, z + 0.07]]); }   // lamps
-    const yoke = f.build();
+    const yoke = f.build(); yield;
 
     // rear frame: chassis, cab with ROPS, sloped engine hood (mesh grilles), fenders, steering cylinders, platform, steps, rear counterweight
     const c = part();
@@ -970,7 +975,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     for (const s of [-1, 1]) c.extShape(sh => { sh.absarc(-CP.lr, CP.ty, CP.ty + 0.15, 0.2, Math.PI - 0.15, false); sh.absarc(-CP.lr, CP.ty, CP.ty + 0.09, Math.PI - 0.15, 0.2, true); }, 0.62, s > 0 ? 0.53 : -1.15, 14);   // fenders
     c.bx(-3.46, 0.52, -0.95, -3.14, 1.25, 0.95);   // rear counterweight / bumper
     for (const z of [-0.8, 0.8]) c.box(0.04, 0.1, 0.18, -3.44, 1.12, z);   // rear lamps
-    const chassis = c.build();
+    const chassis = c.build(); yield;
 
     // tyres 23.1-26 with a traction chevron; the lugs are lower than the padfoot's (35 mm). The lug tops sit at radius CP.ty so the
     // tyre rolls on them. A lug's lean is about its own radial axis, so its top face stays a true tangent.
@@ -990,7 +995,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
         }
       }
     }
-    const tyres = t.build();
+    const tyres = t.build(); yield;
     cpT = { drum, yoke, chassis, tyres };
     return cpT;
   }
@@ -1021,5 +1026,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     excT = bhT = rlT = dzT = cpT = null;
   }
 
-  return { excavator, backhoe, roller, dozer, compactor, disposeAll, clip };
+  // generators that build a machine type's shared geometry in slices (yield between parts); the factory call after it is then cheap
+  const prepare = { excavator: function* () { yield* excTemplateG(); yield; hydTemplate(); }, dozer: dzTemplateG, compactor: cpTemplateG };
+  return { excavator, backhoe, roller, dozer, compactor, prepare, disposeAll, clip };
 }

@@ -17,6 +17,7 @@ for (const [name, w, h, dsf] of VPS) {
   page.on('pageerror', e => console.log('PAGEERROR', e.message));
   await page.goto(`http://localhost:${port}/test/home.html?qa&layout=phone&demo=0${H ? '&h=' + H : ''}${extra}`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.TFSolutions && window.TFSolutions.sol, null, { timeout: 120000 });
+  await page.waitForFunction(() => window.TFSolutions.warmed !== false, null, { timeout: 120000 });
   await page.evaluate(() => { const g = window.TFSolutions.sol.qa.gov; Object.defineProperty(g, 'real', { get: () => false, set() {} }); return window.TFSolutions.sol.ready; });   // software GL is slow: keep the governor from reacting to it (its own behaviour is tested separately)
   if (TUNE) await page.evaluate(t => { const q = window.TFSolutions.sol.qa, o = JSON.parse(t); Object.assign(q.TUNE.ph, o.ph || {}); q.refit(); }, TUNE);
   await page.evaluate(() => document.getElementById('solutions-stage').scrollIntoView({ block: 'center' }));

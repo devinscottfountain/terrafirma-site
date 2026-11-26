@@ -22,6 +22,7 @@
 // then fades it, heals the ground back and picks a new spot in the pit (see demoTick).
 import { SITE, hF, hD } from './sol-terrain.js';
 import { EXC_LIMITS } from './sol-machines.js';
+import { rand } from './sol-rand.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
@@ -125,7 +126,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   }
 
   // bucket load: a few dirt points that ride in the bucket
-  const lp = new Float32Array(90 * 3); for (let k = 0; k < 90; k++) { lp[k * 3] = 0.45 + Math.random() * 0.8; lp[k * 3 + 1] = -0.7 + Math.random() * 0.7; lp[k * 3 + 2] = (Math.random() - 0.5) * 1.0; }
+  const lp = new Float32Array(90 * 3); for (let k = 0; k < 90; k++) { lp[k * 3] = 0.45 + rand() * 0.8; lp[k * 3 + 1] = -0.7 + rand() * 0.7; lp[k * 3 + 2] = (rand() - 0.5) * 1.0; }
   const loadGeo = new THREE.BufferGeometry(); loadGeo.setAttribute('position', new THREE.BufferAttribute(lp, 3));
   const loadMat = new THREE.PointsMaterial({ size: 0.13, color: 0xe7c9a0, transparent: true, opacity: 0, depthWrite: false });
   const loadPts = new THREE.Points(loadGeo, loadMat); loadPts.renderOrder = 3; exc.bucket.add(loadPts);
@@ -260,10 +261,10 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     let bs = -1e9, bsw = 0, br = 7.5;
     for (let sw = -0.6; sw <= 0.601; sw += 0.15) for (const r of [7.0, 8.2, 9.4, 10.4]) {
       along(sw, r - 1, tmp); const cut = ground(tmp.x, tmp.z) - hD(tmp.x, tmp.z);
-      const s = cut - Math.abs(sw - prevSw) * 0.25 + Math.random() * 0.15;
+      const s = cut - Math.abs(sw - prevSw) * 0.25 + rand() * 0.15;
       if (s > bs) { bs = s; bsw = sw; br = r; }
     }
-    if (bs < 0.12) { bsw = (Math.random() - 0.5) * 0.9; br = 7 + Math.random() * 3.2; }   // all at grade: keep trimming
+    if (bs < 0.12) { bsw = (rand() - 0.5) * 0.9; br = 7 + rand() * 3.2; }   // all at grade: keep trimming
     prevSw = bsw; along(bsw, br - 1.3, out); return out;
   }
   const pick0 = { x: 0, z: 0 };
@@ -435,9 +436,9 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
       const rem = field.lower(tip.x, tip.z, op.zone ? ZR : 0.85, tip.y, floorFn, Math.min(cap - load, cap * dt * 0.8));   // fills over ~1.3 s of drag
       load += rem; op.took += rem; emitAcc += rem * 30 / (op.zone ? ZK : 1);
       while (emitAcc > 1) { // clods spill over the lip, dust puffs off the cut
-        emitAcc -= 1; const a = Math.random() * 6.283, sp = 0.6 + Math.random() * 1.4;
-        parts.emit(t, tip.x, g + 0.1, tip.z, Math.cos(a) * sp, 1.5 + Math.random() * 2.2, Math.sin(a) * sp, 1.2, g - 0.05, 1);
-        if (Math.random() < 0.35) parts.emit(t, tip.x + (Math.random() - 0.5), g + 0.2, tip.z + (Math.random() - 0.5), (Math.random() - 0.5) * 0.6, 0.3, (Math.random() - 0.5) * 0.6, 2.2, -99, 0);
+        emitAcc -= 1; const a = rand() * 6.283, sp = 0.6 + rand() * 1.4;
+        parts.emit(t, tip.x, g + 0.1, tip.z, Math.cos(a) * sp, 1.5 + rand() * 2.2, Math.sin(a) * sp, 1.2, g - 0.05, 1);
+        if (rand() < 0.35) parts.emit(t, tip.x + (rand() - 0.5), g + 0.2, tip.z + (rand() - 0.5), (rand() - 0.5) * 0.6, 0.3, (rand() - 0.5) * 0.6, 2.2, -99, 0);
       }
     }
     // the bucket opens: the load pours out under the teeth
@@ -446,8 +447,8 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
       const dv = Math.min(load, cap * dt * 1.4); load -= dv;
       field.raise(dumpAt.x, dumpAt.z, 1.7, dv); relaxT = 1.2; if (job.demo) demoSpoil(dumpAt.x, dumpAt.z);
       const n = 2 + Math.round(dv * 60);
-      for (let i = 0; i < n; i++) parts.emit(t, tip.x + (Math.random() - 0.5) * 1.1, tip.y + Math.random() * 0.4, tip.z + (Math.random() - 0.5) * 1.1, (Math.random() - 0.5) * 1.2, -0.5 - Math.random() * 1.5, (Math.random() - 0.5) * 1.2, 1.6, g + 0.05, 1);
-      if (Math.random() < 0.5) parts.emit(t, tip.x, g + 0.3, tip.z, (Math.random() - 0.5) * 0.8, 0.35, (Math.random() - 0.5) * 0.8, 2.6, -99, 0);
+      for (let i = 0; i < n; i++) parts.emit(t, tip.x + (rand() - 0.5) * 1.1, tip.y + rand() * 0.4, tip.z + (rand() - 0.5) * 1.1, (rand() - 0.5) * 1.2, -0.5 - rand() * 1.5, (rand() - 0.5) * 1.2, 1.6, g + 0.05, 1);
+      if (rand() < 0.5) parts.emit(t, tip.x, g + 0.3, tip.z, (rand() - 0.5) * 0.8, 0.35, (rand() - 0.5) * 0.8, 2.6, -99, 0);
     }
     if (load <= 0) dumpAt.on = false;
     if (relaxT > 0) { relaxT -= dt; field.relax(dumpAt.on ? dumpAt.x : tip.x, dumpAt.on ? dumpAt.z : tip.z, 3.2, 2); }
@@ -469,7 +470,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   // machine's job, exactly like a visitor's) | hold (dug: the tag shows 100%) | heal (outline fades, the ground eases back
   // to how it was, spoil beside the zone too) -> wait. A new zone only starts while the dig view is showing.
   let shown = false;
-  const demo = { phase: 'wait', t: -DEMO.first + DEMO.rest, n: 0, k: 0, x: new Float32Array(6), z: new Float32Array(6), T: 0.75, spot: Math.floor(Math.random() * DSPOT.length), cycles: 0,
+  const demo = { phase: 'wait', t: -DEMO.first + DEMO.rest, n: 0, k: 0, x: new Float32Array(6), z: new Float32Array(6), T: 0.75, spot: Math.floor(rand() * DSPOT.length), cycles: 0,
     sp: new Float32Array(24), ns: 0, bx0: 0, bz0: 0, bx1: 0, bz1: 0, cx: 0, cz: 0 };
   // the desktop intro: on while it may still run, ctl while it holds the controls (hint hidden), view: the section is in view,
   // a/x/z/press: the cursor sprite (alpha, world point, clock time of the last press) for the HUD
@@ -485,14 +486,14 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   }
   // a quad near a pit spot, jittered, every corner clamped into reach (the same clamp as a visitor's click)
   function demoPlan() {
-    const P = SITE.pit, c = Math.cos(P.rot), s = Math.sin(P.rot), S = DSPOT[demo.spot = intro.on ? farSpot() : (demo.spot + 1 + (Math.random() < 0.3 ? 1 : 0)) % DSPOT.length];
-    const lx = S[0] + (Math.random() - 0.5) * 1.2, lz = S[1] + (Math.random() - 0.5) * 1.2, cx = P.x + lx * c + lz * s, cz = P.z - lx * s + lz * c;
+    const P = SITE.pit, c = Math.cos(P.rot), s = Math.sin(P.rot), S = DSPOT[demo.spot = intro.on ? farSpot() : (demo.spot + 1 + (rand() < 0.3 ? 1 : 0)) % DSPOT.length];
+    const lx = S[0] + (rand() - 0.5) * 1.2, lz = S[1] + (rand() - 0.5) * 1.2, cx = P.x + lx * c + lz * s, cz = P.z - lx * s + lz * c;
     // the desktop stage is wide: a bigger patch reads
-    const jit = intro.on ? 0.3 : 0.7, sz = intro.on ? 1.35 : 1, hx = (1.9 + Math.random() * 0.6) * sz, hz = (1.4 + Math.random() * 0.5) * sz, r = (Math.random() - 0.5) * 1.0, rc = Math.cos(r), rs = Math.sin(r);
-    const n = 4, rot = Math.floor(Math.random() * 4);   // start on any corner, always the same way round
+    const jit = intro.on ? 0.3 : 0.7, sz = intro.on ? 1.35 : 1, hx = (1.9 + rand() * 0.6) * sz, hz = (1.4 + rand() * 0.5) * sz, r = (rand() - 0.5) * 1.0, rc = Math.cos(r), rs = Math.sin(r);
+    const n = 4, rot = Math.floor(rand() * 4);   // start on any corner, always the same way round
     for (let i = 0; i < n; i++) {
       const q = (i + rot) % 4, a = q === 0 || q === 3 ? -1 : 1, b = q < 2 ? -1 : 1;
-      const ax = a * hx + (Math.random() - 0.5) * jit, az = b * hz + (Math.random() - 0.5) * jit;
+      const ax = a * hx + (rand() - 0.5) * jit, az = b * hz + (rand() - 0.5) * jit;
       const p = { x: cx + ax * rc + az * rs, z: cz - ax * rs + az * rc };
       if (intro.on) { const bx = p.x - body.x, bz = p.z - body.z, bd = Math.hypot(bx, bz); if (bd < 4.8) { p.x = body.x + bx / bd * 4.8; p.z = body.z + bz / bd * 4.8; } }   // the intro keeps clear of the tracks
       reachable(p);
@@ -517,7 +518,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
       case 'wait': {
         const ready = shown && (!I.on || I.view);
         if (I.on && !ready) D.t = 0;   // the intro waits until the dig view is showing and in view
-        if (ready && D.t > (I.on ? INTRO.wait : DEMO.rest)) { demoPlan(); D.phase = 'draw'; D.t = 0; D.T = I.on ? INTRO.first : DEMO.corner[0] + Math.random() * (DEMO.corner[1] - DEMO.corner[0]); }
+        if (ready && D.t > (I.on ? INTRO.wait : DEMO.rest)) { demoPlan(); D.phase = 'draw'; D.t = 0; D.T = I.on ? INTRO.first : DEMO.corner[0] + rand() * (DEMO.corner[1] - DEMO.corner[0]); }
         break;
       }
       case 'draw': {
@@ -530,7 +531,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
         } else { const g = ease(Math.min(1, D.t / (D.T * 0.85))); I.x = D.cx + (nx - D.cx) * g; I.z = D.cz + (nz - D.cz) * g; }   // to the first corner from the middle of the patch
         if (last) { if (D.t > P.snap + 0.65) { draw.hov = false; field.keep(); D.ns = 0; I.press = t; if (closeZone()) { D.phase = 'dig'; D.t = 0; introEnd(); } else { D.phase = 'wait'; D.t = 0; } } }
         else if (D.t > D.T) { // the next corner goes down
-          const n0 = draw.n; I.press = t; addCorner(nx, nz); D.k++; D.t = 0; D.T = P.corner[0] + Math.random() * (P.corner[1] - P.corner[0]);
+          const n0 = draw.n; I.press = t; addCorner(nx, nz); D.k++; D.t = 0; D.T = P.corner[0] + rand() * (P.corner[1] - P.corner[0]);
           if (job.on && !job.done && !draw.n) { D.phase = 'dig'; D.t = 0; introEnd(); }   // it closed on the first corner by itself
           else if (draw.n === n0) { cancelDraw(); D.phase = 'wait'; }   // a corner refused (too close): try another zone
         }

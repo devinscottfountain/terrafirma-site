@@ -6,7 +6,10 @@
 //   Execution (mode 2)     = breadth: high and wide, three machines on three jobs, live paths, tags, data links.
 // The ground is a procedural survey point cloud lit by a low sun; the dig edits a persistent height field that the dots
 // and every machine read, so the hole stays for the page session and shows in all three views. No asset downloads.
-import { SITE, hF, hD, createField, buildDots, buildContours, rectPoly } from './sol-terrain.js';
+import { SITE, hF, hD, createField, dotsGen, contoursGen, rectPoly } from './sol-terrain.js';
+import { createPacer } from './sol-sched.js';
+import { seedRand } from './sol-rand.js';
+export { createPacer };
 import { PALETTE, dotMaterial, lineMaterial, lineSet, motes, particles, skyMaterial, createPost } from './sol-fx.js';
 import { createMachineKit } from './sol-machines.js';
 import { createDig } from './sol-game.js';
@@ -119,7 +122,12 @@ export function topoFromSvg(el) {
   return out.length ? out : null;
 }
 
-export function createSolutions({ THREE, host, root = host, quality = 'high', interactive = true, safe = null, phone = false }) {
+// Async: the build runs in slices of about 6 ms and yields to the browser between them (sol-sched.js), so it never holds a scrolled frame
+// hostage. `pace` is the page's pacer (phones building ahead of the visitor pass a polite one); without it the build yields at normal
+// priority. Nothing draws until the caller starts the scene, so nothing renders half-built.
+export async function createSolutions({ THREE, host, root = host, quality = 'high', interactive = true, safe = null, phone = false, pace = null }) {
+  const P = pace || createPacer(), ownPacer = !pace;
+  if (QS0.get('solseed')) seedRand(+QS0.get('solseed'));   // QA: a private random stream (sol-rand.js)
   const LOW = quality === 'low';
   const PH = phone && LOW;   // a phone on the low tier: everything marked PH below changes there only, desktop output stays as it was
   const PHONE_PR = [0.75, 1, 1.5];   // phone pixel ratio per governor level (the film's phone ladder tops at 2 over a viewport twice this tall; 1.5 here is about 0.4 MP on a 390 x 400 box)
@@ -141,6 +149,8 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   host.appendChild(canvas);
   const hud = createHud(host, words, pal, { phone: PH, prMax: HUD_PR });
   const post = createPost(THREE, renderer, { low: LOW });
+  canvas.style.opacity = '0';   // the canvas is in the page while the rest is built: keep it invisible until the page fades it in
+  await P.step();
 
   const scene = new THREE.Scene(), skyScene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 4000);
@@ -163,9 +173,10 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   };
 
   // ------------------------------------------------------------------ ground: edit field + dot cloud
+  await P.step();
   const field = createField(THREE);
   U.uField.value = field.tex; U.uFieldT.value = field.uniform;
-  const dots = buildDots(THREE, { low: LOW });
+  const dots = await P.run(dotsGen(THREE, { low: LOW }));
   const dotMat = dotMaterial(THREE, U, { cull: PH });
   if (PH) field.setRate(20);
   const points = new THREE.Points(dots.geo, dotMat); points.frustumCulled = false; points.renderOrder = 3; scene.add(points);
@@ -182,7 +193,11 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   const kit = createMachineKit(THREE, { line: pal.accent, phone: PH });
   const SLOT = { dig: kit.excavator, haul: kit.dozer, grade: kit.compactor };
   const mk = fn => { const m = fn(); m.root.scale.setScalar(MSCALE); m.root.rotation.order = 'YXZ'; scene.add(m.root); m.setOpacity(1); return m; };
-  const exc = mk(SLOT.dig), loader = mk(SLOT.haul), roller = mk(SLOT.grade);   // loader / roller: the haul and grade slots
+  // shared geometry per machine type is built in slices (kit.prepare), then the factory call only assembles nodes
+  await P.run(kit.prepare.excavator()); const exc = mk(SLOT.dig);
+  await P.run(kit.prepare.dozer()); const loader = mk(SLOT.haul);   // loader / roller: the haul and grade slots
+  await P.run(kit.prepare.compactor()); const roller = mk(SLOT.grade);
+  await P.step();
 
   // ------------------------------------------------------------------ the dig and the crew
   let clockT = 0; const clock = () => clockT;
@@ -200,10 +215,11 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   // topographic map: art from the Webflow element when there is one (that element is hidden while the canvas lives, it is
   // the source and the no-3D fallback), else the built-in contours. Strength: the element's CSS opacity (see readTopoA()).
   const topoEl = root.querySelector('[data-sol-topo]'), topoVis = topoEl ? topoEl.style.visibility : '';
-  const contourSegs = topoFromSvg(topoEl) || buildContours({ step: LOW ? 1.2 : 0.8 });
+  await P.step();
+  const contourSegs = topoFromSvg(topoEl) || await P.run(contoursGen({ step: LOW ? 1.2 : 0.8 }));
   if (topoEl) topoEl.style.visibility = 'hidden';
   const contours = L(col(pal.accent), 1, contourSegs.length / 8);
-  for (let i = 0, c = contourSegs, n = c.length / 8; i < n; i++) { const o = i * 8; contours.set(i, c[o], c[o + 1], c[o + 2], c[o + 3], c[o + 4], c[o + 5], c[o + 6], c[o + 6], c[o + 7]); }
+  await P.run((function* () { for (let i = 0, c = contourSegs, n = c.length / 8; i < n; i++) { if ((i & 2047) === 0) yield; const o = i * 8; contours.set(i, c[o], c[o + 1], c[o + 2], c[o + 3], c[o + 4], c[o + 5], c[o + 6], c[o + 6], c[o + 7]); } })());
   contours.commit(contourSegs.length / 8);
   const zCut = L(col(pal.cut), 1.4, 64), zFill = L(col(pal.fill), 1.4, 64), zAcc = L(col(pal.accent), 1, 220);
   const drapeY = (x, z) => hD(x, z) + 0.12;
@@ -858,6 +874,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       .catch(err => { console.warn('TerraFirma solutions: no shroud.', err); return null; });
     return shroudP;
   }
+  let everRan = false;   // the targets warm() allocated stay until the scene has run once (so the first arrival allocates nothing); after that they are freed when it stops
   let capAcc = 0;   // ?solhz: time banked since the last frame that ran
   const capSkip = dt => { if (!CAP_HZ) return false; capAcc += dt; if (capAcc < 1 / CAP_HZ - 0.0025) return true; return false; };
   function loop(ts) {
@@ -871,11 +888,14 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
 
   // pre-age the site (about 75 s of work, in small chunks off the critical path) so the first look already has a pit, a
   // pile, tracks and a part-filled pad. Nothing to download: ready resolves when this is done.
+  // The same 1125 steps, in slices (a generator step per 8 sim steps, a yield per 6 ms), so no task is longer than a few ms. The first 225 run
+  // before createSolutions returns, as they always did: the page's first setMode (which starts the camera's follow smoothing from where the
+  // excavator is at that moment) then sees the same state, so the look of the first shots is unchanged. The rest run in `ready`.
+  const age = (a, b) => (function* () { for (let n = a; n < b; n++) { clockT += 1 / 15; dig.update(1 / 15, clockT); crew.update(1 / 15, clockT); if ((n & 1) === 1) yield; } })();
+  await P.run(age(0, 225));
   const ready = (async () => {
-    for (let c = 0; c < 5; c++) {
-      for (let i = 0; i < 225; i++) { clockT += 1 / 15; dig.update(1 / 15, clockT); crew.update(1 / 15, clockT); }
-      await new Promise(r => setTimeout(r, 0));
-    }
+    await P.step();
+    await P.run(age(225, 1125));
     field.flushAll();   // the pre-aged ground goes up whole
   })();
 
@@ -909,23 +929,45 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     onGame() { return () => {}; },
     resize,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the scene runs its own rAF loop
-    start(external = false) { allocate(); if (running) return; running = true; last = 0; if (!external) raf = requestAnimationFrame(loop); },
+    start(external = false) { allocate(); if (running) return; running = true; everRan = true; last = 0; if (!external) raf = requestAnimationFrame(loop); },
     step(dt) { if (!running || capSkip(dt)) return; if (CAP_HZ) { dt = capAcc; capAcc = 0; } gov.real = true; frame(Math.min(0.05, dt)); draw(); },
     stop() {
       running = false; cancelAnimationFrame(raf); hud.clear();
-      clearTimeout(freeT); if (FREE_MS < Infinity) freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, FREE_MS);
+      clearTimeout(freeT); if (FREE_MS < Infinity && everRan) freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, FREE_MS);
     },
     // test hook: n fixed steps of dt, then draw once (headless screenshots, no frame timing involved)
     renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); field.upload(1, renderer); draw(); },   // upload: the ground the last steps wrote goes up before the one draw (a live frame uploads and draws in the same step)
     // compile every program now: all three looks, plan + exec lines, particles, motes, the sky and the post chain.
     // Hidden objects are made visible for one off-screen draw, then restored.
-    warm() {
-      const vis = []; scene.traverse(o => { vis.push([o, o.visible]); o.visible = true; });
+    // Async, in slices of a few ms: allocate the targets, compile every program (compile per top-level object, then wait for the driver to
+    // finish linking with compileAsync), render each top-level object once on its own (uniform tables, buffers and textures go up), then one
+    // full hidden draw. The first visible frame then compiles, links, uploads and allocates nothing new.
+    async warm() {
+      const all = []; scene.traverse(o => all.push([o, o.visible]));
       const bl = post.bloomOn; post.bloomOn = true;
+      let t = performance.now();
+      const pace = async () => { if (performance.now() - t > P.slice) { await P.step(); t = performance.now(); } };
       try {
-        if (renderer.compile) { renderer.setRenderTarget(post.rt); renderer.compile(scene, camera); renderer.compile(skyScene, camera); }
-        draw();
-      } finally { for (const [o, v] of vis) o.visible = v; post.bloomOn = bl; }
+        await P.step(); allocate(); await P.step();
+        for (const [o] of all) o.visible = true;
+        renderer.setRenderTarget(post.rt); t = performance.now();
+        const mats = new Set();   // every material compiled here: wait for the driver to finish linking them (KHR_parallel_shader_compile) before the first use
+        for (const c of scene.children) { for (const m of renderer.compile(c, camera, scene)) mats.add(m); await pace(); }
+        for (const m of renderer.compile(skyScene, camera)) mats.add(m);
+        for (const m of post.warm()) mats.add(m);
+        for (let k = 0; mats.size && k < 600; k++) {   // at most about 6 s, then the first use blocks as it always did
+          for (const m of mats) { const pr = renderer.properties.get(m).currentProgram; if (!pr || pr.isReady()) mats.delete(m); }
+          if (mats.size) await new Promise(r => setTimeout(r, 10));
+        }
+        await P.step(); t = performance.now();
+        // one object at a time, so no single task carries the whole first render
+        for (const [o] of all) o.visible = false; scene.visible = true;
+        renderer.setRenderTarget(post.rt); renderer.setClearColor(0x000000, 0); renderer.clear(true, true, true); renderer.render(skyScene, camera);
+        for (const c of scene.children) { c.traverse(o => { o.visible = true; }); renderer.render(scene, camera); c.traverse(o => { o.visible = false; }); await pace(); }
+        for (const [o] of all) o.visible = true;
+        await P.step(); draw();
+        await P.step(); hud.draw(hudState); hud.clear();
+      } finally { for (const [o, v] of all) o.visible = v; post.bloomOn = bl; renderer.setRenderTarget(null); }
       return null;
     },
     get canvas() { return canvas; },
@@ -954,6 +996,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       for (const m of [exc, loader, roller]) m.dispose();
       if (shroudKit) shroudKit.dispose();
       kit.disposeAll();
+      if (ownPacer) P.dispose();
       renderer.dispose(); canvas.remove();
       if (topoEl) topoEl.style.visibility = topoVis;   // the 2D art shows again (no-3D fallback)
     },

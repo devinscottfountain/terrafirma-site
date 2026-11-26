@@ -181,6 +181,9 @@ Open issues: the Austin site ortho outputs are provisional (built from a downsca
 | `?free=N` / `?free=never` | Solutions: seconds after the section scrolls away before its render targets and canvas are freed (default 2.5; `never` keeps them). Re-allocating on re-entry is a one-frame hitch, keeping them costs about 7 MB on a phone (`docs/perf-review-solutions.md` S9). |
 | `?hudpr=N` | Solutions: pixel ratio ceiling of the 2D HUD canvas (default 2). On a 3x phone `?hudpr=1.5` shrinks the canvas from 780 x 800 to 585 x 600. Text is a little softer. |
 | `?solhz=N` | Solutions: frame cap in Hz (default none: it renders at the display rate, 120 on ProMotion). `?solhz=60` halves its CPU and GPU work on a 120 Hz display; `?solhz=30` for a battery test. The clock still runs in real time. |
+| `?solahead=0` | Solutions on phones: build the scene after load in idle slices, paused while scrolling or touching, instead of when the section comes within 1.5 viewports. `?solahead=0` restores the on-approach trigger (save-data and 2 GB devices always use it). The build is sliced either way (`solutions/sol-sched.js`). |
+| `?solslice=0` | Solutions QA: no yields in the build, so it runs as one task again (screenshots must match the sliced build exactly). |
+| `?solseed=N` | Solutions QA: a private seeded random stream for the sim (`solutions/sol-rand.js`). The build is sliced, so the order in which other scripts and the sim draw from `Math.random` depends on timing; the seed makes screenshots comparable. |
 | `?film=0` `?sol=0` `?foot=0` | scene off. `?sol=0&foot=0` leaves one live WebGL context (the film), `?film=0&foot=0` only Solutions. |
 
 The film governor tolerates quantised timers (`privacy.resistFingerprinting` rounds `performance.now()` to 16.67 or 100 ms): a zero interval switches it to the mean of 8 intervals, and a 100 ms quantum holds the tier. `node test/check-gov.mjs [older perf.js]` feeds it synthetic Firefox timestamps.

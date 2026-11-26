@@ -85,6 +85,12 @@ function safeInsets() {
 
 if (!bail) {
   let sol = null, booted = false, dead = false, ready = false, visible = false;
+  // Build ahead of the visitor on phones (no loader gate): the scene is built in small low-priority slices after load, paused while the
+  // visitor scrolls or touches (sol-sched.js), instead of in one long task started mid-scroll when the section comes within 1.5
+  // viewports. Skipped with save-data or <= 2 GB of memory: those keep the on-approach trigger, so a visitor who never scrolls pays nothing.
+  const frugal = !!navigator.connection?.saveData || (navigator.deviceMemory != null && navigator.deviceMemory <= 2);
+  const ahead = phone && !gate && !frugal && qs.get('solahead') !== '0';
+  let approached = false, pace = null;   // approached: the visitor is near the section, so the build runs at normal priority
   let wantMode = MODES.orchestration;   // default tab; the page script's first tf:solutions event overrides it
   let gsapTick = null, lastTick = 0;
   const cleanups = [];
@@ -151,11 +157,14 @@ if (!bail) {
     try {
       const [THREE, mod] = await Promise.all([import('three'), import('./solutions/solutions.js')]);
       if (dead) return;
-      sol = mod.createSolutions({ THREE, host: mount, root, quality: phone && !qs.get('q') ? 'low' : quality, interactive: !phone, safe: safeInsets(), phone: phone && !qs.get('q') });   // adds its canvases to the mount
+      pace = mod.createPacer({ polite: ahead && !approached });
+      cleanups.push(() => pace.dispose());
+      sol = await mod.createSolutions({ THREE, host: mount, root, quality: phone && !qs.get('q') ? 'low' : quality, interactive: !phone, safe: safeInsets(), phone: phone && !qs.get('q'), pace });   // adds its canvases to the mount
+      if (dead) { try { sol.dispose(); } catch (_) { /* best effort */ } sol = null; return; }
       const cv = sol.canvas;
       Object.assign(cv.style, { opacity: '0', transition: `opacity ${FADE_MS}ms ease` });   // pointer-events stay owned by the dig game
       cv.addEventListener('webglcontextlost', e => { e.preventDefault(); fail(new Error('webgl context lost')); });
-      if (qs.has('qa')) window.TFSolutions = { sol, quality: phone && !qs.get('q') ? 'low' : quality, phone, get mode() { return sol?.mode; } };
+      if (qs.has('qa')) window.TFSolutions = { sol, warmed: false, quality: phone && !qs.get('q') ? 'low' : quality, phone, get mode() { return sol?.mode; } };
 
       sol.setMode(wantMode, true);
       frame();
@@ -173,16 +182,17 @@ if (!bail) {
       await sol.ready;
       report(0.8);
       if (dead) return;
+      // compile every program and upload the big buffers off screen, in slices, before the scene is shown: the first visible frame
+      // then compiles and uploads nothing new (the section shows its empty stage until then, as it did before ready)
+      try { await sol.warm(); } catch (_) { /* warm is best effort */ }
+      if (window.TFSolutions) window.TFSolutions.warmed = true;   // QA: the off-screen warm-up is over
+      report(1);
+      if (dead) return;
       ready = true;
       sol.setMode(wantMode, true);   // a tab click that landed during the import
       sync();
       void cv.offsetWidth;
       cv.style.opacity = '1';
-      // compile every program off screen before the section is visible, so no mode compiles mid-scroll
-      const idle = typeof requestIdleCallback === 'function' ? requestIdleCallback : fn => setTimeout(fn, 200);
-      // gated: warm now and count it (the loader covers it); else in an idle slot
-      const warm = () => Promise.resolve(dead ? 0 : sol.warm()).catch(() => { /* warm is best effort */ }).then(() => report(1));
-      if (gate) warm(); else idle(warm, { timeout: 2000 });
     } catch (err) { fail(err); }
   }
 
@@ -190,8 +200,10 @@ if (!bail) {
   // (on a phone the section can sit inside that margin at load: three and the scene then raced the loader for the hero)
   if (gate) boot();
   else {
-    const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); afterLoad(boot); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
+    const near = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { near.disconnect(); approached = true; if (pace) pace.polite = false; afterLoad(boot); } }, { rootMargin: `${Math.round(innerHeight * 1.5)}px 0px` });
     near.observe(root);
+    cleanups.push(() => near.disconnect());
+    if (ahead) afterLoad(() => (typeof requestIdleCallback === 'function' ? requestIdleCallback(boot, { timeout: 2000 }) : setTimeout(boot, 1500)));
   }
 }
 

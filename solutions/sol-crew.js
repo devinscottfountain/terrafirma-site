@@ -6,6 +6,7 @@
 // that a slot's model does not have (setBlade, setRipper, setSteer) are skipped, so any model with root, setDrive and
 // setOpacity still runs the loops.
 import { SITE, hD } from './sol-terrain.js';
+import { rand } from './sol-rand.js';
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const ease = t => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
@@ -88,8 +89,8 @@ export function createCrew({ field, slot, parts, MSCALE }) {
         L.spill = 0; const sx = -fz * 3.6, sz = fx * 3.6, v = Math.min(L.carry * 0.02, 0.08);
         field.raise(bx - fx * 0.6 + sx, bz - fz * 0.6 + sz, 0.9, v); field.raise(bx - fx * 0.6 - sx, bz - fz * 0.6 - sz, 0.9, v); L.carry -= 2 * v;
       }
-      if (Math.random() < 0.55) { const q = (Math.random() - 0.5) * 6.2; parts.emit(t, bx + fx * 0.5 - fz * q, gy + 0.3 + Math.random() * 1.2, bz + fz * 0.5 + fx * q, fx * 1.6 + (Math.random() - 0.5), 0.8 + Math.random() * 1.2, fz * 1.6 + (Math.random() - 0.5), 1.0, gy, 1); }
-      if (Math.random() < 0.12) parts.emit(t, bx, gy + 0.6, bz, (Math.random() - 0.5) * 0.8, 0.4, (Math.random() - 0.5) * 0.8, 2.4, -99, 0);
+      if (rand() < 0.55) { const q = (rand() - 0.5) * 6.2; parts.emit(t, bx + fx * 0.5 - fz * q, gy + 0.3 + rand() * 1.2, bz + fz * 0.5 + fx * q, fx * 1.6 + (rand() - 0.5), 0.8 + rand() * 1.2, fz * 1.6 + (rand() - 0.5), 1.0, gy, 1); }
+      if (rand() < 0.12) parts.emit(t, bx, gy + 0.6, bz, (rand() - 0.5) * 0.8, 0.4, (rand() - 0.5) * 0.8, 2.4, -99, 0);
     } else if (L.phase === 'lift') {   // drop the load at the pad edge, blade up
       if (L.carry > 0) { const fx = Math.cos(L.yaw), fz = -Math.sin(L.yaw), bx = L.x + fx * (BL + 1.2), bz = L.z + fz * (BL + 1.2); field.raise(bx, bz, 3.0, L.carry); field.relax(bx, bz, 4, 2); L.carry = 0; }
       L.lift = approach(L.lift, LIFT.carry, 0.35, dt); L.tilt = approach(L.tilt, 0, 0.1, dt);

@@ -9,6 +9,8 @@ await page.addInitScript(() => { const r = window.requestAnimationFrame.bind(win
   window.__gl = { buf: 0, tex: 0, alloc: 0 }; const P = WebGL2RenderingContext.prototype; for (const [n, k] of [['renderbufferStorage', 'alloc'], ['renderbufferStorageMultisample', 'alloc'], ['texStorage2D', 'alloc'], ['bufferData', 'buf']]) { const o = P[n]; P[n] = function (...a) { window.__gl[k]++; return o.apply(this, a); }; } });
 await page.goto(`${ORIGIN}/test/home.html?qa&demo=0&layout=phone`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.TFSolutions && window.TFSolutions.sol, null, { timeout: 180000 });
+await page.waitForFunction(() => window.TFSolutions.warmed !== false, null, { timeout: 180000 });   // the off-screen warm-up (all programs, one hidden draw) has finished (builds without the flag: undefined)
+await page.waitForTimeout(3000);   // settle: fonts, load, the first layout passes and (older builds) the idle warm-up, so every build starts the shots from the same state
 await page.evaluate(() => { const g = window.TFSolutions.sol.qa.gov; Object.defineProperty(g, 'real', { get: () => false, set() {} }); return window.TFSolutions.sol.ready; });
 await page.evaluate(() => document.getElementById('solutions-stage').scrollIntoView({ block: 'center' }));
 const R = await page.evaluate(async () => {
