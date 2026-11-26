@@ -26,6 +26,10 @@ const MSCALE = 1.4;      // machine scale (model metres -> world)
 const FLIGHT = 1.4;      // s, camera flight between the three shots
 const PR_MAX = Math.min(1.5, DPR_MAX);
 const INTRO_KEY = 'tf:sol-dig-intro';   // sessionStorage: the dig intro has played in this tab session
+// A/B switches for a real device (off by default, README "Diagnostic switches"): ?free=N seconds before the targets are freed after the scene stops (default 2.5, 'never' keeps them),
+// ?hudpr=N pixel ratio ceiling of the 2D HUD canvas (default 2), ?solhz=N frame cap (0 = every display frame; 60 on a 120 Hz display halves the work, the clock still runs in real time)
+const QS0 = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+const FREE_MS = QS0.get('free') === 'never' ? Infinity : QS0.get('free') != null && +QS0.get('free') >= 0 ? +QS0.get('free') * 1000 : 2500, HUD_PR = +QS0.get('hudpr') > 0 ? +QS0.get('hudpr') : 2, CAP_HZ = +QS0.get('solhz') > 0 ? +QS0.get('solhz') : 0;
 const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-topo] element (was .42 before #41)
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
@@ -135,7 +139,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none;touch-action:pan-y;-webkit-tap-highlight-color:transparent';
   if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
   host.appendChild(canvas);
-  const hud = createHud(host, words, pal, { phone: PH });
+  const hud = createHud(host, words, pal, { phone: PH, prMax: HUD_PR });
   const post = createPost(THREE, renderer, { low: LOW });
 
   const scene = new THREE.Scene(), skyScene = new THREE.Scene();
@@ -635,7 +639,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     dig.setArmed(mode === 1 && !fl, viewOK);
     dig.update(dt, clockT);
     crew.update(dt, clockT);
-    field.upload(dt);
+    field.upload(dt, renderer);
     parts.flush();
 
     // machines right in front of the lens fade out (the chase cam looks across the haul road)
@@ -854,10 +858,13 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       .catch(err => { console.warn('TerraFirma solutions: no shroud.', err); return null; });
     return shroudP;
   }
+  let capAcc = 0;   // ?solhz: time banked since the last frame that ran
+  const capSkip = dt => { if (!CAP_HZ) return false; capAcc += dt; if (capAcc < 1 / CAP_HZ - 0.0025) return true; return false; };
   function loop(ts) {
     raf = requestAnimationFrame(loop);
     if (document.hidden) { last = 0; return; }
-    const dt = last ? (ts - last) / 1000 : 0.016; last = ts;
+    let dt = last ? (ts - last) / 1000 : 0.016; last = ts;
+    if (capSkip(dt)) return; if (CAP_HZ) { dt = capAcc; capAcc = 0; }
     gov.real = true; frame(Math.min(0.05, dt)); if (dt < 0.25) governor(0); draw();
   }
   function allocate() { clearTimeout(freeT); if (!alloc) { alloc = true; setBuf(); } }
@@ -869,7 +876,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       for (let i = 0; i < 225; i++) { clockT += 1 / 15; dig.update(1 / 15, clockT); crew.update(1 / 15, clockT); }
       await new Promise(r => setTimeout(r, 0));
     }
-    field.tex.needsUpdate = true;
+    field.flushAll();   // the pre-aged ground goes up whole
   })();
 
   return {
@@ -903,13 +910,13 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     resize,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the scene runs its own rAF loop
     start(external = false) { allocate(); if (running) return; running = true; last = 0; if (!external) raf = requestAnimationFrame(loop); },
-    step(dt) { if (running) { gov.real = true; frame(Math.min(0.05, dt)); draw(); } },
+    step(dt) { if (!running || capSkip(dt)) return; if (CAP_HZ) { dt = capAcc; capAcc = 0; } gov.real = true; frame(Math.min(0.05, dt)); draw(); },
     stop() {
       running = false; cancelAnimationFrame(raf); hud.clear();
-      clearTimeout(freeT); freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, 2500);
+      clearTimeout(freeT); if (FREE_MS < Infinity) freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, FREE_MS);
     },
     // test hook: n fixed steps of dt, then draw once (headless screenshots, no frame timing involved)
-    renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); draw(); },
+    renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); field.upload(1, renderer); draw(); },   // upload: the ground the last steps wrote goes up before the one draw (a live frame uploads and draws in the same step)
     // compile every program now: all three looks, plan + exec lines, particles, motes, the sky and the post chain.
     // Hidden objects are made visible for one off-screen draw, then restored.
     warm() {

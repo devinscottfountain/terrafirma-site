@@ -117,6 +117,14 @@ export function createField(THREE) {
   const tex = new THREE.DataTexture(data, N, N, THREE.RGFormat, THREE.FloatType);
   tex.minFilter = tex.magFilter = THREE.NearestFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
   let dirty = false, upT = 0;
+  // dirty tiles (TILE x TILE texels): a write marks the tiles it touched and upload() sends only those (texSubImage2D of a few 8 KB tiles instead of
+  // the whole 800 KB texture). More than TMAX dirty tiles go up as one full upload.
+  const TILE = 32, TN = Math.ceil(N / TILE), tileD = new Uint8Array(TN * TN); let tilesN = 0, lw0 = 0, lw1 = -1, lh0 = 0, lh1 = -1;
+  const touch = (i0, i1, j0, j1) => {
+    for (let ty = Math.max(0, j0 >> 5); ty <= Math.min(TN - 1, j1 >> 5); ty++) for (let tx = Math.max(0, i0 >> 5); tx <= Math.min(TN - 1, i1 >> 5); tx++) if (!tileD[ty * TN + tx]) { tileD[ty * TN + tx] = 1; tilesN++; }
+    dirty = true;
+  };
+  const touchWin = () => touch(lw0, lw1, lh0, lh1);   // the window of the last each()
   const ci = x => (x - ox) / cell - 0.5, cj = z => (z - oz) / cell - 0.5;
   // bilinear sample of channel k
   function at(x, z, k = 0) {
@@ -128,6 +136,7 @@ export function createField(THREE) {
   // texel window around (x, z) with radius r, callback(index, dist)
   function each(x, z, r, fn) {
     const i0 = Math.max(1, Math.floor(ci(x - r))), i1 = Math.min(N - 2, Math.ceil(ci(x + r))), j0 = Math.max(1, Math.floor(cj(z - r))), j1 = Math.min(N - 2, Math.ceil(cj(z + r)));
+    lw0 = i0; lw1 = i1; lh0 = j0; lh1 = j1;
     for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const wx = ox + (i + 0.5) * cell - x, wz = oz + (j + 0.5) * cell - z, d = Math.sqrt(wx * wx + wz * wz);
       if (d <= r) fn(j * N + i, d, i, j);
@@ -142,12 +151,12 @@ export function createField(THREE) {
     if (g > tgt) { let cut = (g - tgt) * Math.min(1, w * 1.6); if (removed + cut * A > capV) cut = Math.max(0, (capV - removed) / A); data[k * 2] -= cut; removed += cut * A; }
   };
   // carve the ground under a bucket tip down to tipY (never below floor(x, z)), at most cap m3. Returns m3 removed.
-  function lower(x, z, r, y, floor, cap) { floorFn = floor; capV = cap; tipY = y; removed = 0; rad = r; each(x, z, r, lowerFn); if (removed > 0) dirty = true; return removed; }
+  function lower(x, z, r, y, floor, cap) { floorFn = floor; capV = cap; tipY = y; removed = 0; rad = r; each(x, z, r, lowerFn); if (removed > 0) touchWin(); return removed; }
   let addV = 0, addR = 1, wsum = 0;
   const wFn = (k, d) => { wsum += Math.exp(-(d * d) / (addR * addR * 0.5)); };
   const addFn = (k, d) => { data[k * 2] += (addV / (wsum * A)) * Math.exp(-(d * d) / (addR * addR * 0.5)); };
   // deposit vol m3 as a soft mound of radius r
-  function raise(x, z, r, vol) { if (vol <= 0) return; addR = r; addV = vol; wsum = 0; each(x, z, r, wFn); if (wsum > 0) { each(x, z, r, addFn); dirty = true; } }
+  function raise(x, z, r, vol) { if (vol <= 0) return; addR = r; addV = vol; wsum = 0; each(x, z, r, wFn); if (wsum > 0) { each(x, z, r, addFn); touchWin(); } }
   // angle of repose: move material downhill where a slope is steeper than maxSlope (local window, a few passes)
   function relax(x, z, r, passes = 2, maxSlope = 0.72) {
     const i0 = Math.max(1, Math.floor(ci(x - r))), i1 = Math.min(N - 2, Math.ceil(ci(x + r))), j0 = Math.max(1, Math.floor(cj(z - r))), j1 = Math.min(N - 2, Math.ceil(cj(z + r)));
@@ -159,7 +168,7 @@ export function createField(THREE) {
         if (dh > lim) { const m = (dh - lim) * 0.25; data[k * 2] -= m; data[n * 2] += m; } else if (-dh > lim) { const m = (-dh - lim) * 0.25; data[k * 2] += m; data[n * 2] -= m; }
       }
     }
-    dirty = true;
+    touch(i0, i1 + 1, j0, j1 + 1);   // a texel writes its +x and +y neighbour too
   }
   // remove up to vol m3 from a mound around (x, z) (the dozer's blade biting the pile). Returns m3 taken.
   let tkTot = 0, tkK = 0, tkR = 1;
@@ -168,16 +177,16 @@ export function createField(THREE) {
   function take(x, z, r, vol) {
     tkTot = 0; tkR = r; each(x, z, r, tkSum);
     if (tkTot <= 0) return 0; tkK = Math.min(1, vol / tkTot);
-    each(x, z, r, tkCut); dirty = true; return Math.min(vol, tkTot);
+    each(x, z, r, tkCut); touchWin(); return Math.min(vol, tkTot);
   }
   // pull the ground toward lvl(x, z) under a footprint (compactor drum): down at `down` m per call, up at `up`
   let flL = null, flR = 0, flD = 0, flU = 0;
   const flFn = (k, d, i, j) => { const g = base[k] + data[k * 2], t = flL(ox + (i + 0.5) * cell, oz + (j + 0.5) * cell) - g, w = 1 - sstep(flR * 0.6, flR, d); data[k * 2] += Math.max(-flD, Math.min(flU, t)) * w; data[k * 2 + 1] *= 1 - 0.5 * w; };
-  function flatten(x, z, r, lvl, down, up) { flL = lvl; flR = r; flD = down; flU = up; each(x, z, r, flFn); dirty = true; }
+  function flatten(x, z, r, lvl, down, up) { flL = lvl; flR = r; flD = down; flU = up; each(x, z, r, flFn); touchWin(); }
   let mkA = 0;
   const mkFn = (k, d) => { const v = data[k * 2 + 1] + mkA * (1 - d / (mkR + 1e-6)); data[k * 2 + 1] = v > 1 ? 1 : v; };
   let mkR = 0.4;
-  function mark(x, z, r, amt) { mkR = r; mkA = amt; each(x, z, r, mkFn); dirty = true; }
+  function mark(x, z, r, amt) { mkR = r; mkA = amt; each(x, z, r, mkFn); touchWin(); }
   // snapshot of the height channel (the phone demo digs a zone, then heals the ground back to this between cycles, so the
   // dug state never grows). Allocated on first use.
   let snap = null;
@@ -199,13 +208,30 @@ export function createField(THREE) {
       const w = 1 - sstep(m * 0.5, m, Math.hypot(dx, dz)); if (w <= 0) continue;
       const k = j * N + i; data[k * 2] += (snap[k] - data[k * 2]) * a * w;
     }
-    dirty = true;
+    touch(i0, i1, j0, j1);
   }
   // upload at most ~30 times a second, only when something changed
   let hz = 30;   // phones set 20: the 320 x 320 RG32F texture (800 KB) goes up that often while the work changes it
-  function upload(dt) { upT += dt; if (dirty && upT > 1 / hz) { tex.needsUpdate = true; dirty = false; upT = 0; } }
-  return { setRate(v) { hz = v; }, tex, data, N, cell, ox, oz, at, ground, lower, raise, relax, take, flatten, mark, upload, keep, kept, heal, get dirty() { return dirty; },
-    uniform: new THREE.Vector4(ox, oz, cell, N), dispose() { tex.dispose(); } };
+  // tiles go up through renderer.copyTextureToTexture (texSubImage2D of the scratch tile); more than TMAX dirty tiles is one full upload
+  const TMAX = 24, tileBuf = new Float32Array(TILE * TILE * 2), tileTex = new THREE.DataTexture(tileBuf, TILE, TILE, THREE.RGFormat, THREE.FloatType), at2 = new THREE.Vector2();
+  tileTex.minFilter = tileTex.magFilter = THREE.NearestFilter; tileTex.generateMipmaps = false;
+  function sendTiles(renderer) {
+    for (let t = 0; t < tileD.length; t++) {
+      if (!tileD[t]) continue; tileD[t] = 0;
+      const x0 = (t % TN) * TILE, y0 = ((t / TN) | 0) * TILE, w = Math.min(TILE, N - x0), h = Math.min(TILE, N - y0);
+      if (w !== TILE || h !== TILE) { tex.needsUpdate = true; continue; }   // N not a multiple of TILE: edge tiles go with a full upload
+      for (let j = 0; j < TILE; j++) tileBuf.set(data.subarray(((y0 + j) * N + x0) * 2, ((y0 + j) * N + x0 + TILE) * 2), j * TILE * 2);
+      renderer.copyTextureToTexture(at2.set(x0, y0), tileTex, tex);
+    }
+    tilesN = 0;
+  }
+  function upload(dt, renderer) {
+    upT += dt; if (!dirty || upT <= 1 / hz) return;
+    dirty = false; upT = 0;
+    if (!renderer || tilesN > TMAX) { tex.needsUpdate = true; tileD.fill(0); tilesN = 0; } else sendTiles(renderer);
+  }
+  return { setRate(v) { hz = v; }, flushAll() { tex.needsUpdate = true; tileD.fill(0); tilesN = 0; }, tex, data, N, cell, ox, oz, at, ground, lower, raise, relax, take, flatten, mark, upload, keep, kept, heal, get dirty() { return dirty; },
+    uniform: new THREE.Vector4(ox, oz, cell, N), dispose() { tex.dispose(); tileTex.dispose(); } };
 }
 
 // ------------------------------------------------------------------ the dot cloud geometry

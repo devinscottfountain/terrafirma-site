@@ -203,7 +203,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     }
     const pt = [0, 0, 0, 0];
     return {
-      len,
+      len, P,   // P: the pieces (line: s0, L, t = {ax, ay, bx, by, nx, ny}; arc: s0, L, c = [x, y, r], th0), packed into the track shader's uniforms
       at(s) {
         s = ((s % len) + len) % len; let i = 0; while (i < P.length - 1 && s >= P[i].s0 + P[i].L) i++;
         const p = P[i], u = s - p.s0;
@@ -214,6 +214,10 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     };
   }
   // shoes along a belt path (both sides), local x along the tangent, y outward. rib: grouser height
+  // The shoes are STATIC local geometry: each vertex carries its shoe index (aRig) and the vertex shader seats it on the belt at
+  // s = index * pitch + offset (RIG_VS below: the belt's pieces are in a uniform array, the offset is one number). Driving costs one
+  // uniform, not a re-posed, re-uploaded buffer pair (the dozer's was 135 KB every frame while it moved).
+  const RIG_MAX = 6;   // belt pieces the shader holds (lines + arcs: 3 wheels = 6)
   function makeTrack(path, w, zcs, yc, pitchWanted = 0.21, rib = 0.06) {
     const Pm = path.len, n = Math.round(Pm / pitchWanted), pitch = Pm / n;
     const shoe = new THREE.BoxGeometry(pitch * 0.82, 0.07, w).toNonIndexed(); shoe.translate(0, 0.035, 0);
@@ -223,33 +227,29 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     const edgeLocal = new Float32Array([...eg1.attributes.position.array, ...eg2.attributes.position.array]);
     shoe.dispose(); rb.dispose(); eg1.dispose(); eg2.dispose();
     const nz = zcs.length, sCnt = solidLocal.length / 3, eCnt = edgeLocal.length / 3;
-    const sPos = new Float32Array(n * nz * sCnt * 3), ePos = new Float32Array(n * nz * eCnt * 3);
-    const sGeo = new THREE.BufferGeometry(), eGeo = new THREE.BufferGeometry();
-    sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3).setUsage(THREE.DynamicDrawUsage));
-    eGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3).setUsage(THREE.DynamicDrawUsage));
-    const write = (out, local, cnt, base, px, py, nx, ny, zc) => {
-      const tx = ny, ty = -nx; // tangent
-      for (let v = 0; v < cnt; v++) {
-        const lx = local[v * 3], ly = local[v * 3 + 1], lz = local[v * 3 + 2], o = (base + v) * 3;
-        out[o] = px + lx * tx + ly * nx; out[o + 1] = yc + py + lx * ty + ly * ny; out[o + 2] = zc + lz;
-      }
+    // static buffers: local x, y and the side's z, plus the shoe index
+    const mkGeo = (local, cnt) => {
+      const pos = new Float32Array(n * nz * cnt * 3), id = new Float32Array(n * nz * cnt), g = new THREE.BufferGeometry();
+      for (let k = 0; k < n; k++) for (let j = 0; j < nz; j++) { const b0 = (k * nz + j) * cnt; for (let v = 0; v < cnt; v++) { const o = (b0 + v) * 3; pos[o] = local[v * 3]; pos[o + 1] = local[v * 3 + 1]; pos[o + 2] = zcs[j] + local[v * 3 + 2]; id[b0 + v] = k; } }
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('aRig', new THREE.BufferAttribute(id, 1)); return g;
     };
-    let last = NaN;
-    const update = off => {
-      if (off === last) return; last = off;
-      for (let k = 0; k < n; k++) {
-        const p = path.at(k * pitch + off), px = p[0], py = p[1], nx = p[2], ny = p[3];
-        for (let j = 0; j < nz; j++) {
-          const idx = k * nz + j;
-          write(sPos, solidLocal, sCnt, idx * sCnt, px, py, nx, ny, zcs[j]);
-          write(ePos, edgeLocal, eCnt, idx * eCnt, px, py, nx, ny, zcs[j]);
-        }
-      }
-      sGeo.attributes.position.needsUpdate = true; eGeo.attributes.position.needsUpdate = true;
-    };
-    update(0); sGeo.computeBoundingSphere(); eGeo.computeBoundingSphere();
-    sGeo.boundingSphere.radius += 1; eGeo.boundingSphere.radius += 1;
-    return { geo: sGeo, edges: eGeo, update, shoes: n * nz, dispose() { sGeo.dispose(); eGeo.dispose(); } };
+    const sGeo = mkGeo(solidLocal, sCnt), eGeo = mkGeo(edgeLocal, eCnt);
+    // bounds: the shoes seated at offset 0 (a belt loop covers the same ground at any offset), grown by a metre: culled exactly as the re-posed buffers were
+    for (const [g, cnt] of [[sGeo, sCnt], [eGeo, eCnt]]) {
+      const src = g.attributes.position.array, pos = new Float32Array(src.length), t = new THREE.BufferGeometry(); t.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      for (let k = 0; k < n; k++) { const p = path.at(k * pitch), px = p[0], py = p[1], nx = p[2], ny = p[3]; for (let j = 0; j < nz; j++) { const b0 = (k * nz + j) * cnt;
+        for (let v = 0; v < cnt; v++) { const o = (b0 + v) * 3, lx = src[o], ly = src[o + 1]; pos[o] = px + lx * ny + ly * nx; pos[o + 1] = yc + py - lx * nx + ly * ny; pos[o + 2] = src[o + 2]; } } }
+      t.computeBoundingSphere(); g.boundingSphere = t.boundingSphere.clone(); g.boundingSphere.radius += 1; t.dispose();
+    }
+    // uniforms: [0] = (belt length, pitch, offset, y centre); then 3 vec4 per piece: (s0, L, arc?, th0) (x, y, dx or r, dy) (nx, ny)
+    const rig = new Float32Array(4 * (1 + 3 * RIG_MAX)); rig.set([path.len, pitch, 0, yc], 0);
+    path.P.forEach((q, i) => { const o = 4 * (1 + 3 * i);
+      if (q.arc) rig.set([q.s0, q.L, 1, q.th0, q.c[0], q.c[1], q.c[2], 0, 0, 0, 0, 0], o);
+      else rig.set([q.s0, q.L, 0, 0, q.t.ax, q.t.ay, q.t.bx - q.t.ax, q.t.by - q.t.ay, q.t.nx, q.t.ny, 0, 0], o); });
+    let last = NaN; const U = { rig: { value: rig } };
+    const update = off => { if (off === last) return; last = off; rig[2] = off; };
+    update(0);
+    return { geo: sGeo, edges: eGeo, update, U, shoes: n * nz, dispose() { sGeo.dispose(); eGeo.dispose(); } };
   }
 
   // ------------------------------------------------------------------ materials per instance
@@ -266,10 +266,34 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     mat.customProgramCacheKey = () => (solid ? 'mclipS' : 'mclipL');
     return mat;
   };
+  // track shader: seats each shoe vertex on the belt from its shoe index (see makeTrack). Same look materials as the plain pair, one extra program each.
+  const RIG_VS = /* glsl */ `attribute float aRig; uniform vec4 uRig[${1 + 3 * RIG_MAX}];
+  vec3 rigPos(vec3 p){
+    vec4 H = uRig[0]; float s = mod(aRig*H.y + H.z, H.x);
+    vec4 A = uRig[1], B = uRig[2], C = uRig[3];
+    for (int i = 1; i < ${RIG_MAX}; i++) { vec4 a = uRig[1 + 3*i]; if (a.y > 0. && s >= a.x) { A = a; B = uRig[2 + 3*i]; C = uRig[3 + 3*i]; } }
+    float u = s - A.x; vec2 q, n;
+    if (A.z > .5) { float th = A.w - u / B.z; n = vec2(cos(th), sin(th)); q = B.xy + B.z*n; }
+    else { q = B.xy + B.zw*(A.y > 0. ? u / A.y : 0.); n = C.xy; }
+    return vec3(q.x + p.x*n.y + p.y*n.x, H.w + q.y - p.x*n.x + p.y*n.y, p.z);
+  }
+  `;
+  const rigged = (mat, solid, U) => {
+    const f = mat.onBeforeCompile;
+    mat.onBeforeCompile = sh => { f(sh); sh.uniforms.uRig = U.rig; sh.vertexShader = RIG_VS + sh.vertexShader.replace('#include <begin_vertex>', 'vec3 transformed = rigPos(position);'); };
+    mat.customProgramCacheKey = () => (solid ? 'mclipS_rig' : 'mclipL_rig');
+    return mat;
+  };
   function mats() {
-    const solid = clipped(new THREE.MeshBasicMaterial({ color: SOLID, polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 2 }), true);
-    const line = clipped(new THREE.LineBasicMaterial({ color: LINE, transparent: true, opacity: 0.92 }), false);
-    return { solid, line };
+    const mk = (solid, rigU) => {
+      const mat = solid ? new THREE.MeshBasicMaterial({ color: SOLID, polygonOffset: true, polygonOffsetFactor: 1.5, polygonOffsetUnits: 2 }) : new THREE.LineBasicMaterial({ color: LINE, transparent: true, opacity: 0.92 });
+      clipped(mat, solid); return rigU ? rigged(mat, solid, rigU) : mat;
+    };
+    const m = { solid: mk(true), line: mk(false), rigs: [],
+      // the pair for a moving belt (track shoes): follows the machine's opacity through opacityFn, freed with dispose()
+      rig(U) { const r = { solid: mk(true, U), line: mk(false, U) }; m.rigs.push(r); return r; },
+      dispose() { m.solid.dispose(); m.line.dispose(); for (const r of m.rigs) { r.solid.dispose(); r.line.dispose(); } } };
+    return m;
   }
   const node = (tpl, m) => {
     const g = new THREE.Group();
@@ -283,10 +307,12 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
   // so a machine crossfading in never darkens or cuts the zones under it
   const opacityFn = (root, m) => Object.assign(o => {
     root.visible = o > 0.004;
-    m.line.opacity = 0.92 * o;
     const so = Math.min(1, Math.max(0, (o - 0.8) / 0.2)), tr = so < 0.999; // occluder clears first: no black silhouette left behind
-    if (m.solid.transparent !== tr) { m.solid.transparent = tr; m.solid.needsUpdate = true; }
-    m.solid.opacity = so * so * so; m.solid.depthWrite = so > 0.9; m.solid.colorWrite = so > 0.004;
+    for (const [sm, lm] of [[m.solid, m.line], ...m.rigs.map(r => [r.solid, r.line])]) {
+      lm.opacity = 0.92 * o;
+      if (sm.transparent !== tr) { sm.transparent = tr; sm.needsUpdate = true; }
+      sm.opacity = so * so * so; sm.depthWrite = so > 0.9; sm.colorWrite = so > 0.004;
+    }
   }, { solid: m.solid });
 
   // parts mounted on a machine (the Cyber Shroud): geometry from the caller (shared, never freed here), the machine's own occluder
@@ -466,7 +492,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
     body.add(node(T.under, m));
     const track = makeTrack(belt([[-TL / 2, 0, TR + 0.02], [TL / 2, 0, TR + 0.02]]), TW + 0.06, [-TZ, TZ], TY);
-    const tm = new THREE.Mesh(track.geo, m.solid), tl = new THREE.LineSegments(track.edges, m.line); tm.renderOrder = 1; tl.renderOrder = 2; body.add(tm, tl);
+    const rm = m.rig(track.U), tm = new THREE.Mesh(track.geo, rm.solid), tl = new THREE.LineSegments(track.edges, rm.line); tm.renderOrder = 1; tl.renderOrder = 2; body.add(tm, tl);
     const turret = node(T.upper, m); turret.position.y = TY + 0.58; body.add(turret);
     const hyd = makeHyd(), hm = new THREE.Mesh(hyd.geo, m.solid), hl = new THREE.LineSegments(hyd.edges, m.line); hm.renderOrder = 1; hl.renderOrder = 2; turret.add(hm, hl);   // +2 draw calls: every cylinder and link
     const boom = node(T.boom, m); boom.position.set(EXC_PIN.P0[0], EXC_PIN.P0[1], ARMZ); turret.add(boom);
@@ -483,7 +509,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       drive(dist) { trackOff += dist; track.update(trackOff); },
       setDrive(d) { trackOff = d; track.update(d); },
       setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
-      dispose() { mt.clear(); track.dispose(); hyd.dispose(); m.solid.dispose(); m.line.dispose(); },
+      dispose() { mt.clear(); track.dispose(); hyd.dispose(); m.dispose(); },
     };
   }
 
@@ -572,7 +598,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       setArm(a1, a2, a3, sw) { swing.rotation.y = sw; boom.rotation.z = a1; stick.rotation.z = a2; bucket.rotation.z = a3; },
       setDrive(d) { for (const k of wheels) k.w.rotation.z = -d / k.r * k.flip; },
       setOpacity: opacityFn(root, m),
-      dispose() { m.solid.dispose(); m.line.dispose(); },
+      dispose() { m.dispose(); },
     };
   }
 
@@ -652,7 +678,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       setDrive(d) { drum.rotation.z = -d / T.DR; for (const t of tyres) t.w.rotation.z = -d / T.RWR * t.flip; },
       setArm() {},
       setOpacity: opacityFn(root, m),
-      dispose() { m.solid.dispose(); m.line.dispose(); },
+      dispose() { m.dispose(); },
     };
   }
 
@@ -791,7 +817,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
     body.add(node(T.body, m));
     const track = makeTrack(belt(DZ.wheels), DZ.shoe + 0.02, [-DZ.gauge / 2, DZ.gauge / 2], 0, 0.26, 0.09);
-    const tm = new THREE.Mesh(track.geo, m.solid), tl = new THREE.LineSegments(track.edges, m.line); tm.renderOrder = 1; tl.renderOrder = 2; body.add(tm, tl);
+    const rm = m.rig(track.U), tm = new THREE.Mesh(track.geo, rm.solid), tl = new THREE.LineSegments(track.edges, rm.line); tm.renderOrder = 1; tl.renderOrder = 2; body.add(tm, tl);
     const lift = new THREE.Group(); lift.position.set(DZ.trun[0], DZ.trun[1], 0); body.add(lift);
     const tilt = new THREE.Group(); tilt.position.set(DZ.tilt[0] - DZ.trun[0], DZ.tilt[1] - DZ.trun[1], 0); lift.add(tilt);
     tilt.add(node(T.blade, m));
@@ -814,7 +840,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       setDrive(d) { if (d !== trackOff) { trackOff = d; track.update(d); } },
       setArm() {},
       setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
-      dispose() { mt.clear(); track.dispose(); m.solid.dispose(); m.line.dispose(); },
+      dispose() { mt.clear(); track.dispose(); m.dispose(); },
     };
     api.setBlade(0.12); api.setRipper(0);
     return api;
@@ -986,7 +1012,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       setSteer(a) { front.rotation.y = a; },   // articulation, rad (+ turns the drum to the machine's left)
       setArm() {},
       setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
-      dispose() { mt.clear(); m.solid.dispose(); m.line.dispose(); },
+      dispose() { mt.clear(); m.dispose(); },
     };
   }
 

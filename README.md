@@ -177,6 +177,10 @@ Open issues: the Austin site ortho outputs are provisional (built from a downsca
 | `?dpr=N` | pixel ratio ceiling for the film, Solutions, footer and Mission (e.g. `?dpr=1` on a Windows 150% display). |
 | `?hz=N` | frame rate ceiling (15 to 240) for the footer and the Mission scene, default the display rate. `?hz=60` on a 120 / 144 / 160 Hz display halves their GPU work; at rest both move well under a pixel per frame. `pacer(HZ)` in `env.js` is the helper for any other loop. |
 | `?stage=off\|area` | how the film and the footer share frames while both are on screen. Default: strict alternation. `off`: both draw every frame (A/B on 120 Hz+ displays). `area`: the canvas covering more of the viewport gets more of the frames (a quarter at least each). |
+| `?dpr=N` | pixel ratio ceiling for the film, Solutions and footer (e.g. `?dpr=1` on a Windows 150% display). |
+| `?free=N` / `?free=never` | Solutions: seconds after the section scrolls away before its render targets and canvas are freed (default 2.5; `never` keeps them). Re-allocating on re-entry is a one-frame hitch, keeping them costs about 7 MB on a phone (`docs/perf-review-solutions.md` S9). |
+| `?hudpr=N` | Solutions: pixel ratio ceiling of the 2D HUD canvas (default 2). On a 3x phone `?hudpr=1.5` shrinks the canvas from 780 x 800 to 585 x 600. Text is a little softer. |
+| `?solhz=N` | Solutions: frame cap in Hz (default none: it renders at the display rate, 120 on ProMotion). `?solhz=60` halves its CPU and GPU work on a 120 Hz display; `?solhz=30` for a battery test. The clock still runs in real time. |
 | `?film=0` `?sol=0` `?foot=0` | scene off. `?sol=0&foot=0` leaves one live WebGL context (the film), `?film=0&foot=0` only Solutions. |
 
 The film governor tolerates quantised timers (`privacy.resistFingerprinting` rounds `performance.now()` to 16.67 or 100 ms): a zero interval switches it to the mean of 8 intervals, and a 100 ms quantum holds the tier. `node test/check-gov.mjs [older perf.js]` feeds it synthetic Firefox timestamps.
