@@ -16,7 +16,7 @@ Sorted by expected win. "Status" is Done (committed, verified), Proposal (needs 
 | S-03 | Excavator and dozer track shoes re-posed on the CPU each frame and uploaded as geometry | sol-machines.js makeTrack, `update(off)` | upload, CPU | all (phones: execution and planning tabs) | measured: dozer 135 KB per frame and excavator 144 KB per frame become one uniform (phone planning bufSub 138 KB to 17.6 KB) | M | none (float rounding, see below) | Done fd561c0 |
 | S-04 | Line sets (`lineSet.commit`) and dirt particles uploaded their whole buffers although only a prefix / a few slots change | sol-fx.js lineSet, particles, `markRange` | upload | all | measured: 25 to 40 KB per frame on phone, 22 to 95 KB on desktop | S | none | Done ccb5879 |
 | S-05 | HUD called `measureText` every redraw for strings whose width was never used | sol-hud.js `text()` | CPU (main thread) | all | measured: calls per frame desktop orchestration 14 to 10, planning 4 to 0, execution 12 to 3; phone 4 to 2.5, 2 to 0. Sub-0.1 ms each in this CPU, so a small win, but it is layout work that is slowest on phones | S | none | Done fd93c68 |
-| P-01 | `createSolutions` is one synchronous task started by a scroll-triggered IntersectionObserver 1.5 viewports before the section: dots 64 to 100 ms, contours 66 to 105 ms, field 19 ms, three machines 355 ms cold (about 118 ms each), plus the pre-age (5 tasks of 24 to 35 ms) | home3d.js:191 (trigger), solutions.js:168, :182 (kit), :874 (pre-age) | scroll hitch (main thread) | phones most | measured here: about 450 to 510 ms in one task plus 5 tasks of 24 to 35 ms. Estimate on a phone: 2 to 4x slower CPU (assumption, no device) so 1 to 2 s with no frame while the user scrolls | M | none if the output is identical | Proposal (needs the owner: restructure) |
+| S-06 (was P-01) | `createSolutions` was one synchronous task of 450 to 510 ms (dots 64 to 100, contours 66 to 105, field 19, three machines 355 cold) plus five pre-age tasks of 24 to 35 ms, started mid-scroll 1.5 viewports before the section | home3d.js trigger, solutions.js build | scroll hitch (main thread) | phones most | measured, phone layout, 4x CPU throttle: longest task before the scene is visible 998 ms down to 150 ms (3 s scroll) and 981 ms down to 120 ms (idle); at 1x 290 down to 58 ms and 405 down to 77 ms on desktop; programs compiled after the scene is visible 16 down to 0 | M | none (screenshots identical to the previous build) | Done f0ab8a3, dcb14ae, and the warm commit after it |
 | P-02 | Scene runs at the display refresh rate. On 120 to 160 Hz screens the GPU work per second is 2 to 2.7x that of 60 Hz for a slow blueprint scene | solutions.js:865 `loop`, governor thresholds 45 / 57 fps (absolute, solutions.js:790) | GPU, battery | 120 Hz phones, 144 Hz desktops | estimate: GPU time per second scales with frame count, so a 60 Hz cap halves it at 120 Hz (arithmetic only) | S | timing (motion cadence) | Switch `?solhz=60`, 8257e12 |
 | P-03 | MSAA 4x on a HalfFloat scene target on desktop high | sol-fx.js:321 | memory, fill | desktop high | estimate: 56 B per pixel (8 resolve + 32 colour samples + 16 depth samples) = 88 MB at 1440x1089, 198 MB at pr 1.5 (3.53 MP); 12 B per pixel without = 19 MB / 42 MB. Fill of the resolve scales with it | S | look (edges of lines and points) | Proposal, existing `?msaa=0\|2` to compare |
 | P-04 | Targets freed 2.5 s after `stop()` and reallocated on re-entry | solutions.js:916, `allocate` | scroll-time hitch, memory | phones, desktop | measured: `start` 1.6 ms + first step 6.9 ms of JS, 3 GL allocations each way; the GPU side is not measurable here. On a phone the freed memory is small (estimate: 0.35 MP x 12 B = 4.2 MB + bloom 0.35 MB + HUD 2.5 MB = about 7 MB) | S | none to timing | Switch `?free=N\|never`, a12ddb8 |
@@ -83,24 +83,47 @@ S-03 (tracks): the track mesh is now static local geometry carrying a shoe index
 
 `text()` no longer measures; a new `textW()` returns the width where one is used (readout row, tag layout) and caches label widths in a Map. Zone labels no longer measure. The approved UI change is a separate commit: the intro demo cursor sprite is 24 px tall (`CS = 24 / 17`, arrow, outline width, press ring and offset scaled together) 75607fa.
 
-### P-01: the scroll-time long task (largest unresolved phone issue)
+### S-06 (was P-01): the scroll-time long task (Done)
 
-What differs while scrolling on a phone: nothing in the Solutions loop itself. When the section is off screen the scene is stopped; when it is on screen the frame cost is small (JS 0.4 to 0.8 ms median, 26 to 57 draw calls, 30 KB uploads). The only Solutions work that lands in a scroll is the boot, and it lands there by design: home3d.js:191 starts `boot()` when the section is within 1.5 viewports, `import()` resolves, and `createSolutions` runs as one synchronous task (home3d.js:150 to 152).
+What differed while scrolling on a phone: nothing in the Solutions loop itself. The only Solutions work that landed in a scroll was the boot, started by home3d.js when the section came within 1.5 viewports. It is now sliced and, on phones, started ahead of the visitor.
 
-Measured with `/tmp/boottime.mjs` and `/tmp/boottime2.mjs` (Node, no GL, desktop CPU, cold then warm):
+What changed:
 
-| step | cold | warm |
-|---|---|---|
-| buildDots high (224,575) | 99.9 ms | 64.2 ms |
-| buildDots low (47,768) | 29.7 ms | 10.7 ms |
-| buildContours | 105.2 ms | 66.1 ms |
-| createField | 19.0 ms | |
-| kit + 3 machines | 355.5 ms (excavator 118, dozer 120, compactor 115) | second excavator 11.9 ms (templates cached) |
-| pre-age, 225 steps of dig + crew | 23 to 35 ms, five times (dig alone 6 to 9 ms) | |
+- `createSolutions` is async and yields between stages (new `solutions/sol-sched.js`). The yield is a macrotask hop (a MessageChannel; on phones building ahead of the visitor, an idle callback and then a hop). `scheduler.yield()` and back to back idle callbacks both showed up as one merged long task in the trace, so they are not used.
+- Generators with fine yield points: `dotsGen`, `contoursGen`, `fieldGen` (the old `buildDots`, `buildContours` and `createField` run the same generator to the end, so output and random stream are identical, checked by hash). Each machine type builds its shared geometry part by part (`kit.prepare.excavator / dozer / compactor`, yields after every `build()`), so the factory call that follows is 0.4 to 11 ms. The contour segment copy and the pre-age are generators too. Slice budget 6 ms.
+- Pre-age: the same 1125 steps. The first 225 run before `createSolutions` returns (as before: the page's first `setMode` starts the camera follow smoothing from where the excavator is then, and a different order moved the camera by 7 mm, which is 27% of the pixels of the first shot). The other 900 run in `sol.ready`, in slices.
+- Warm-up (`sol.warm()`, now async, runs before the scene is revealed): allocate the targets, compile per top-level object, also the transparent variants of the three machines (three keys the program on `opaque`; the first fade of the dozer or roller compiled 2 programs in the first live frame), wait for `isReady()` where the browser has `KHR_parallel_shader_compile`, render every object once on its own with frustum culling off, then one hidden frame in three steps (sky, scene, post), then the HUD once. The targets warm allocated stay until the scene has run once, so the first arrival allocates nothing (`stop()` frees them 2.5 s later only after that).
+- Trigger (home3d.js): desktop with the loader gate unchanged; desktop without it unchanged trigger, sliced build; phones without the gate start after `load` plus an idle callback (timeout 2 s) at low priority, paused while the visitor scrolls or touches (resumes 150 ms after the last scroll, touch or wheel event), and finish at normal priority when the section comes within 1.5 viewports; save-data and `deviceMemory <= 2` keep the on-approach trigger. `?solahead=0` restores the on-approach trigger everywhere, `?sol=0`, reduced motion and the bail rules are unchanged.
+- Random order: the sim's `Math.random` calls (sol-crew.js, sol-game.js) go through `solutions/sol-rand.js`. In production it is `Math.random` itself. `?solseed=N` gives a private seeded stream, which is what the harness uses, so the order in which the page's other scripts and the sim draw numbers no longer matters for screenshots. `?solslice=0` runs the same build with no yields, and the sliced build matched it pixel for pixel.
 
-So about 450 to 510 ms in one task on this CPU for a phone-tier build (dots low), then five tasks of 24 to 35 ms. A 4x slower phone CPU is an assumption, not a measurement: it would make the first task 1.8 to 2 s. Any frame of the page scroll in that window is lost (the main thread is blocked, so the compositor can still scroll but any JS-driven or sticky-pinned layer, such as the film's scroll-driven scenes, will stall).
+Long tasks from page load to "scene visible" (`test/perf-sol-boot.mjs`, headless Chrome, SwiftShader, CDP CPU throttling, phone layout 390x844 `?qa&layout=phone&demo=0`, desktop 1440x900; a CPU profile at 1 ms gives the cause). "Scroll" = load, then at once a scroll to the section at 400 px/s (desktop 800), "wait" = load, idle 5 s (10 s at 4x), then scroll, "none" = never scrolls.
 
-What I tried: slicing the pre-age into 45-step slices of at most 6 ms, yielded through a `MessageChannel`. The sim steps are identical (1125, same clock), but the harness then became non-deterministic (two runs of the same code differed by up to 205 levels in orchestration), because `sol-crew.js` and `sol-game.js` use `Math.random()` for particles and the page's other scripts share the seeded stream, so changing the interleaving changes who draws which number. Production is unaffected (particles are random anyway), but I could not meet the "screenshots identical" bar, so I reverted it rather than ship an unverified change. This is the cheap half of the fix (about 5 of the long tasks). The expensive half (the first task) needs `createSolutions` to build the second and third machine on idle (a placeholder group, the kit's templates and programs compiled before first draw so no compile lands mid-scroll). The machine build uses no `Math.random`, so it is verifiable by the same pixel diff. Effort M. It touches `solutions.js` and `sol-crew.js` consumers of `exc`, `loader`, `roller`.
+| case | build | scene visible (ms) | tasks over 50 ms before visible | longest (ms) | in the scroll |
+|---|---|---|---|---|---|
+| phone scroll 1x | old | 537 | 1 | 290 | 1 (290) |
+| | new | 813 | 1 | 58 | 1 (58) |
+| phone scroll 4x | old | 1715 | 5 | 998 | 5 (998) |
+| | new | 2438 | 8 | 150 | 8 (150) |
+| phone wait 1x | old | 527 | 1 | 280 | 0 |
+| | new | 860 | 2 | 187 | 0 |
+| phone wait 4x | old | 2042 | 6 | 981 | 0 |
+| | new | 2201 | 6 | 120 | 0 |
+| phone never scrolls 1x | old | 532 | 1 | 278 | 0 |
+| | new | 982 | 2 | 153 | 0 |
+| desktop scroll 1x | old | 784 | 1 | 405 | 1 (405) |
+| | new | 949 | 1 | 77 | 1 (77) |
+| desktop, loader gate 1x | old | 1528 | 3 | 596 | 0 |
+| | new | 1238 | 2 | 473 | 0 |
+
+The old build's longest tasks were `sol-machines.js build` (the machines, 142 to 171 ms of JS plus a GL context wait, in one 280 to 998 ms task), the pre-age steps, and the first draw (`onFirstUse`, program links). Loader gate progress (`window.tfGate`, solutions): old 0.1 at 60 ms, 0.5 at 788, 0.8 at 953, 1.0 at 1115 (that run); new 0.1 at 61, 0.5 at 481, 0.8 at 591, 1.0 at 763. Same meaning and order, the loader is released about 350 ms sooner. Without the gate, time to "visible" is longer for the new build (+0.3 to +0.45 s at 1x, +0.2 to +0.7 s at 4x) because the reveal now waits for the warm-up that used to run after it, and the slices yield; nothing is visible to the visitor in that time, and it happens while the page is idle.
+
+Programs compiled after the scene is visible: old 16 (at the moment of reveal 0 of 16 existed; all compiled in the first frames), new 0 (16 at reveal, 16 after visiting all three tabs; checked on every row above).
+
+What is left over 50 ms, and why it is not JS that can be sliced further. In this environment there is no `KHR_parallel_shader_compile`, so a program link blocks at its first use; SwiftShader also blocks the main thread at GL calls while it rasterizes. In the profile these are `onFirstUse`, `(program)` and the 1x `draw` self time of the first live frame (68 to 80 ms). The rows above that remain are: the WebGL context creation (about 55 ms at 1x, `(idle)`/`(program)`), the machine slices (the first part of the excavator, 34 ms cold at 1x, 150 ms at 4x), the 1 x pre-age slice with cold `hF` / `rrMask` (53 to 59 ms at 1x), the single-program first use in warm (156 ms at 1x on desktop, the dot cloud), and the first frames after the reveal. On a real device with the extension those waits are completed during the warm-up's wait loop and the first frames are small, but I could not measure that here. Target check: zero tasks over 50 ms at 1x during the scroll is not met (the 58 ms and 77 ms rows are GL context creation and one cold-JIT slice); none over about 200 ms at 4x is met for everything the build does in JS (longest slice 150 ms) and missed by 207 to 217 ms of GL waits right after the reveal.
+
+Verification: screenshots identical to the previous build (the merge of the shell branch, 3182b5d side) on all 9 phone and 13 desktop images (0 differing pixels, same protocol, `?solseed` makes the stream independent of timing). Against 0b06303 under the same protocol the differences are the tracks rounding (S-03) only: phone worst 371 px (0.238%), 1 px over 2 levels; desktop worst 642 px (0.041%), 56 px over 2 levels (max 169). The five checks pass; no page errors in any run. A QA hook: `window.TFSolutions.warmed` (false until the warm-up is over), and the harnesses wait for it plus a 3 s settle (without the settle the first orchestration shot depends on timers that fire during the first seconds).
+
+Visible differences for a visitor: none in the scene. Behaviour: on phones the scene may exist (about 7 MB of targets, the dot cloud and the field) before the visitor reaches it, from about 1 to 2 s after load, unless save-data or a 2 GB device; the section shows its empty stage until the warm-up ends, which on a slow phone can now be a little later than the old reveal (the poster path is unchanged); the first live frame no longer compiles or allocates.
 
 ### P-02: 120 to 160 Hz
 
@@ -128,7 +151,7 @@ Start level 3 on desktop and 1 on phones; the phone ladder is `PHONE_PR = [0.75,
 
 ## What I would do next, in order
 
-1. Decide on P-01: build the loader and roller on idle (and slice the pre-age), so no 450 ms task lands in a phone scroll. Biggest remaining phone item; effort M; needs the owner to accept a restructure of `createSolutions`.
+1. Done: S-06 (sliced build, ahead-of-visitor start on phones). Next, check it on a real phone: Safari Web Inspector timeline while scrolling a cold load, and `?solahead=0` as the A/B.
 2. Put `?solhz=60` through one look on a 120 Hz display and a battery check on a ProMotion phone; if good, make 60 the desktop default (P-02).
 3. Compare `?msaa=2` and `?msaa=0` on a retina display (P-03); if 2x is acceptable, desktop high saves about 40% of the target memory (estimate: 56 to 36 B per pixel).
 4. A/B `?free=never` and `?free=10` on a phone while scrolling back and forth over the section (P-04), and `?hudpr=1.5` (P-06). Pick phone defaults from the numbers, not from this document.
@@ -139,7 +162,7 @@ Start level 3 on desktop and 1 on phones; the phone ladder is `PHONE_PR = [0.75,
 
 ## Not verified
 
-- Any GPU time, frame time or battery effect (software GL only).
+- Any GPU time, frame time or battery effect (software GL only). The S-06 long-task numbers are main-thread numbers in SwiftShader without `KHR_parallel_shader_compile`; on a device with it the program waits are finished in the warm-up.
 - Real-device scroll behaviour on iOS Safari and Android Chrome, including the long-task estimate in P-01 (the 2 to 4x phone CPU factor is an assumption).
 - Memory figures are format arithmetic, not driver readouts.
 - Firefox and Safari behaviour of `copyTextureToTexture` (S-02) in real browsers. It is the supported r160 path (texSubImage2D) and falls back to a full upload when no renderer is passed, but I only ran Chrome.
