@@ -57,7 +57,16 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
   };
 
   // ---------------------------------------------------------------- composer
+  // ?hdr=rg11b10 (off by default): colour targets use R11F_G11F_B10F (4 B/px instead of 8, no alpha, unsigned) through texture.internalFormat. Data targets
+  // (exposure, AO, the half-res DOF with its weight in alpha) stay HalfFloat. Banding in dark skies cannot be judged on software GL: look at it on a GPU first
+  const HDR11 = new URLSearchParams(location.search).get('hdr') === 'rg11b10';
+  const hdr = rt => { if (HDR11) rt.texture.internalFormat = 'R11F_G11F_B10F'; return rt; };
+  if (HDR11) { // r160 has no RGB texture format, and R11F_G11F_B10F only accepts format RGB: fix the combination at the one call that allocates render-target storage
+    const gl = renderer.getContext(), tex = gl.texImage2D;
+    gl.texImage2D = function () { if (arguments.length >= 9 && arguments[2] === gl.R11F_G11F_B10F && arguments[6] === gl.RGBA) arguments[6] = gl.RGB; return tex.apply(gl, arguments); };
+  }
   const composer = new EffectComposer(renderer);
+  hdr(composer.renderTarget1); hdr(composer.renderTarget2);
   // the cine chain always renders the scene into scenePass.rt (its own depth texture); the composer's ping-pong pair only ever holds colour, so
   // their default depth renderbuffers (2 x 24 bit at full size, 23 MB at 2160 x 1350) are never written or read. Set before the first draw allocates them
   composer.renderTarget1.depthBuffer = composer.renderTarget2.depthBuffer = false;
@@ -67,7 +76,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
   class ScenePass extends Pass {
     constructor() {
       super(); this.needsSwap = false; this.useRT = false; this.jx = 0; this.jy = 0; // jx/jy: TAA sub-pixel jitter (cine only), px
-      this.rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H) });
+      this.rt = hdr(new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H) }));
     }
     render(r, write, read) {
       const old = r.autoClear; r.autoClear = false;
@@ -216,10 +225,10 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     }
     draw(r, m, target) { this.fsQuad.material = m; r.setRenderTarget(target); this.fsQuad.render(r); }
     alloc() {
-      const mk = (w, h, filt) => new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: filt, magFilter: filt });
+      const mk = (w, h, filt, col = true) => { const t = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: filt, magFilter: filt }); return col ? hdr(t) : t; };
       const hw = Math.max(1, this.w >> 1), hh = Math.max(1, this.h >> 1);
       if ((trails.enabled || this.taa) && !this.hist) { this.hist = [mk(this.w, this.h, THREE.LinearFilter), mk(this.w, this.h, THREE.LinearFilter)]; this.histOk = false; }
-      if (ao.enabled && !this.aoA) { this.aoA = mk(hw, hh, THREE.NearestFilter); this.aoB = mk(hw, hh, THREE.NearestFilter); }
+      if (ao.enabled && !this.aoA) { this.aoA = mk(hw, hh, THREE.NearestFilter, false); this.aoB = mk(hw, hh, THREE.NearestFilter, false); }
       if (ao.enabled && (trails.enabled || this.taa || this.blur) && !this.tmp) this.tmp = mk(this.w, this.h, THREE.LinearFilter);
     }
     render(r, write) {
@@ -397,7 +406,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
       gl_FragColor=vec4(col,1.); }`
   });
   if (!cine) composer.addPass(lens);
-  const C = cine ? createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low }) : null;
+  const C = cine ? createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low, hdr }) : null;
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
@@ -546,9 +555,9 @@ const CINE_LIVE = new Set();
 // governor hook: applies to every live cine post (0 = cheapest .. 3 = best)
 export function setPostQuality(level) { for (const c of CINE_LIVE) c.setQuality(level); }
 
-function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low = false }) {
+function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, tonePass, smaa, bloom, FS_VERT, low = false, hdr = t => t }) {
   const HF = THREE.HalfFloatType, LIN = THREE.LinearFilter;
-  const mk = () => new THREE.WebGLRenderTarget(1, 1, { type: HF, depthBuffer: false, minFilter: LIN, magFilter: LIN, generateMipmaps: false });
+  const mk = (col = true) => { const t = new THREE.WebGLRenderTarget(1, 1, { type: HF, depthBuffer: false, minFilter: LIN, magFilter: LIN, generateMipmaps: false }); return col ? hdr(t) : t; };
   const fsq = new FullScreenQuad(null);
   const mat = (frag, uniforms) => new THREE.ShaderMaterial({ uniforms, vertexShader: FS_VERT, fragmentShader: frag, depthTest: false, depthWrite: false });
   const draw = (m, target) => { fsq.material = m; renderer.setRenderTarget(target); fsq.render(renderer); };
@@ -578,7 +587,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   // ---------------------------------------------------------------- bloom + streak (half / quarter res)
   // DOF at half res (governor levels below the top): the bokeh taps run into a half-size target whose alpha is the blur weight (tap reach in px / 1.5),
   // then a cheap full-res composite blends it over the sharp frame by that weight, so pixels at the focus plane stay at full resolution
-  const rtDof = mk(); let dofHalf = false; dof.uniforms.uW = { value: 1 };
+  const rtDof = mk(false); let dofHalf = false; dof.uniforms.uW = { value: 1 };
   const mDofHalf = new THREE.ShaderMaterial({ uniforms: dof.uniforms, defines: { ...dof.materialBokeh.defines }, vertexShader: FS_VERT, depthTest: false, depthWrite: false,
     fragmentShader: BokehShader.fragmentShader.replace('uniform float aspect;', 'uniform float aspect; uniform float uW;')
       .replace(/gl_FragColor = col \/ 41\.0;\s*gl_FragColor\.a = 1\.0;/, 'gl_FragColor = vec4( col.rgb / 41.0, clamp( dofblur.x * 0.4 * uW / 1.5, 0.0, 1.0 ) );') });
