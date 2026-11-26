@@ -27,9 +27,9 @@ const FLIGHT = 1.4;      // s, camera flight between the three shots
 const PR_MAX = Math.min(1.5, DPR_MAX);
 const INTRO_KEY = 'tf:sol-dig-intro';   // sessionStorage: the dig intro has played in this tab session
 // A/B switches for a real device (off by default, README "Diagnostic switches"): ?free=N seconds before the targets are freed after the scene stops (default 2.5, 'never' keeps them),
-// ?hudpr=N pixel ratio ceiling of the 2D HUD canvas (default 2)
+// ?hudpr=N pixel ratio ceiling of the 2D HUD canvas (default 2), ?solhz=N frame cap (0 = every display frame; 60 on a 120 Hz display halves the work, the clock still runs in real time)
 const QS0 = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
-const FREE_MS = QS0.get('free') === 'never' ? Infinity : QS0.get('free') != null && +QS0.get('free') >= 0 ? +QS0.get('free') * 1000 : 2500, HUD_PR = +QS0.get('hudpr') > 0 ? +QS0.get('hudpr') : 2;
+const FREE_MS = QS0.get('free') === 'never' ? Infinity : QS0.get('free') != null && +QS0.get('free') >= 0 ? +QS0.get('free') * 1000 : 2500, HUD_PR = +QS0.get('hudpr') > 0 ? +QS0.get('hudpr') : 2, CAP_HZ = +QS0.get('solhz') > 0 ? +QS0.get('solhz') : 0;
 const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-topo] element (was .42 before #41)
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
@@ -858,10 +858,13 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
       .catch(err => { console.warn('TerraFirma solutions: no shroud.', err); return null; });
     return shroudP;
   }
+  let capAcc = 0;   // ?solhz: time banked since the last frame that ran
+  const capSkip = dt => { if (!CAP_HZ) return false; capAcc += dt; if (capAcc < 1 / CAP_HZ - 0.0025) return true; return false; };
   function loop(ts) {
     raf = requestAnimationFrame(loop);
     if (document.hidden) { last = 0; return; }
-    const dt = last ? (ts - last) / 1000 : 0.016; last = ts;
+    let dt = last ? (ts - last) / 1000 : 0.016; last = ts;
+    if (capSkip(dt)) return; if (CAP_HZ) { dt = capAcc; capAcc = 0; }
     gov.real = true; frame(Math.min(0.05, dt)); if (dt < 0.25) governor(0); draw();
   }
   function allocate() { clearTimeout(freeT); if (!alloc) { alloc = true; setBuf(); } }
@@ -907,7 +910,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     resize,
     // start(true): the page drives frames through step(dt) (gsap.ticker); otherwise the scene runs its own rAF loop
     start(external = false) { allocate(); if (running) return; running = true; last = 0; if (!external) raf = requestAnimationFrame(loop); },
-    step(dt) { if (running) { gov.real = true; frame(Math.min(0.05, dt)); draw(); } },
+    step(dt) { if (!running || capSkip(dt)) return; if (CAP_HZ) { dt = capAcc; capAcc = 0; } gov.real = true; frame(Math.min(0.05, dt)); draw(); },
     stop() {
       running = false; cancelAnimationFrame(raf); hud.clear();
       clearTimeout(freeT); if (FREE_MS < Infinity) freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, FREE_MS);
