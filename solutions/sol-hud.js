@@ -19,8 +19,11 @@ export function createHud(host, words, pal, { phone = false } = {}) {
     cv.width = Math.max(1, Math.round(w * pr)); cv.height = Math.max(1, Math.round(h * pr)); blank = false;
   }
   function text(s, x, y, size, color, { font = FONT_MONO, align = 'left', weight = 400 } = {}) {
-    g.font = `${weight} ${size}px ${font}`; g.textAlign = align; g.fillStyle = color; g.fillText(s, x, y); return g.measureText(s).width;
+    g.font = `${weight} ${size}px ${font}`; g.textAlign = align; g.fillStyle = color; g.fillText(s, x, y);
   }
+  // the same, returning the drawn width (only the readout row and the tag layout need it: most texts never use it, so they skip the measure)
+  function textW(s, x, y, size, color, o) { text(s, x, y, size, color, o); return g.measureText(s).width; }
+  const lw = new Map();   // tag label widths per font size and text (the labels never change; the numbers beside them do, so they are measured)
 
   const DASH = [5, 5], DASH_S = [3, 4], NODASH = [];
   // click markers: a ring on the ground where the visitor clicked. Dig = cut colour, solid ring with four ticks pointing in;
@@ -137,11 +140,12 @@ export function createHud(host, words, pal, { phone = false } = {}) {
     {
       const cr = k => rgba(A, a * k);
       let x = x0;
-      const item = (label, val) => { x += text(label.toUpperCase(), x, ty, sz, cr(phone ? 0.65 : 0.5), { font: sans, weight: 500 }) + 6; x += text(val, x, ty, sz, cr(0.92)) + (small ? 12 : 22); };
+      const item = (label, val) => { x += textW(label.toUpperCase(), x, ty, sz, cr(phone ? 0.65 : 0.5), { font: sans, weight: 500 }) + 6; x += textW(val, x, ty, sz, cr(0.92)) + (small ? 12 : 22); };
       const blink = T.auto ? 0.55 + 0.45 * Math.sin(s.t * 4) : 1;
       g.fillStyle = cr(0.9 * blink); g.beginPath(); g.arc(x + 3, ty - 3.5, 3, 0, Math.PI * 2); g.fill(); x += 12;
-      const wA = text((T.auto ? words.auto : words.manual).toUpperCase(), x, ty, sz, cr(0.92), { font: sans, weight: 600 });
-      x += Math.max(wA, g.measureText((T.auto ? words.manual : words.auto).toUpperCase()).width) + (small ? 12 : 22);   // same slot for both words: the values never shift
+      const wA = textW((T.auto ? words.auto : words.manual).toUpperCase(), x, ty, sz, cr(0.92), { font: sans, weight: 600 });
+      const kO = sz + '|' + (T.auto ? words.manual : words.auto); let wO = lw.get(kO); if (wO === undefined) { wO = g.measureText((T.auto ? words.manual : words.auto).toUpperCase()).width; lw.set(kO, wO); }   // the other word's width: cached (same font as the line above)
+      x += Math.max(wA, wO) + (small ? 12 : 22);   // same slot for both words: the values never shift
       if (!phone || W >= 420) item(words.swing, pad(T.swing, 3, 1) + '°');   // phones: Swing is the low-value field, it goes before any text shrinks
       item(words.reach, T.reach.toFixed(2).padStart(5, '0') + ' m');
       if (!small) item(words.depth, pad(T.grade, 1, 2) + ' m');
@@ -185,7 +189,7 @@ export function createHud(host, words, pal, { phone = false } = {}) {
       const T = list[i];
       if (!T || !T.p || T.a < 0.01) continue;
       const k = a * T.a, [x, y] = T.p, small = W < 600, fs = phone ? 12 : small ? 10.5 : 11.5;
-      g.font = `600 ${fs}px ${sans}`; const w1 = g.measureText(T.label).width; g.font = `400 ${phone ? fs : fs - 1}px ${FONT_MONO}`; const w2 = g.measureText(T.value).width;
+      g.font = `600 ${fs}px ${sans}`; const kL = fs + '|' + T.label; let w1 = lw.get(kL); if (w1 === undefined) { w1 = g.measureText(T.label).width; lw.set(kL, w1); } g.font = `400 ${phone ? fs : fs - 1}px ${FONT_MONO}`; const w2 = g.measureText(T.value).width;
       const tw = w1 + 8 + w2 + 12, flip = x + 18 + tw > W - 12;
       let ly = y - (small ? 26 : 34), lx = flip ? x - 18 : x + 18;
       const bx = flip ? lx - tw : lx;
@@ -208,9 +212,8 @@ export function createHud(host, words, pal, { phone = false } = {}) {
     for (const Z of list) {
       if (!Z || Z.a < 0.01) continue;
       const k = a * Z.a, [x, y] = Z.p;
-      const fz = phone ? 12 : 10.5, w1 = text(Z.label.toUpperCase(), x, y, fz, rgba(Z.color, 0.95 * k), { font: sans, weight: 600, align: 'center' });
+      const fz = phone ? 12 : 10.5; text(Z.label.toUpperCase(), x, y, fz, rgba(Z.color, 0.95 * k), { font: sans, weight: 600, align: 'center' });
       text(Z.value, x, y + (phone ? 16 : 15), fz, rgba(pal.accent, 0.75 * k), { align: 'center' });
-      void w1;
     }
   }
 
