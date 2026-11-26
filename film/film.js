@@ -804,23 +804,33 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   document.fonts?.ready.then(() => { LAY = null; });
   const relayout = () => { LAY = null; };
   addEventListener('load', relayout);
-  // opt-in pacing (off unless ?fps=N and/or ?idle=N): render every Nth callback, N from the measured display interval so the cadence stays even
-  // (160 Hz, ?fps=80 -> every 2nd). ?idle=N is the cap while the scroll has not moved for 400 ms. The clock gets the whole accumulated dt, so
-  // grain, machines and spin run at the same speed; the governor sees the display interval, not the paced one
-  const PQ = new URLSearchParams(location.search), FPS_CAP = Math.max(0, +PQ.get('fps') || 0), IDLE_CAP = Math.max(0, +PQ.get('idle') || 0);
-  let pAcc = 0, pN = 0, pEma = 0, pY = -1, pYT = 0, pSkip = 0;
+  // frame pacing. Default: on a display above 90 Hz (median of the last 30 raw intervals, re-read every 15 frames so a throttled first second
+  // corrects itself) the film renders every 2nd callback: 120 -> 60, 144 -> 72, 160 -> 80, 165 -> 82. Only from 110 Hz up: 2 x 10 ms at 100 Hz is 20 ms,
+  // exactly the governor's MISS line, so a 100 Hz panel stays uncapped. ?fps=0 uncaps, ?fps=N forces a cap (every Nth callback, N = round(1 / (interval x cap))),
+  // ?idle=N adds a cap while the scroll has been still for 400 ms. While the footer shares the screen stage.js already alternates the two canvases, so no cap
+  // is added then. Scroll is still sampled every rAF (Lenis runs on its own ticker; mount.js keeps calling step). The clock gets the whole elapsed time, the
+  // governor the real interval between rendered frames (not the display's), so a cap is never read as load and 30 Hz detection stays out of it
+  const PQ = new URLSearchParams(location.search), FPSQ = PQ.get('fps'), FPS_FORCE = FPSQ == null ? -1 : Math.max(0, +FPSQ || 0), IDLE_CAP = Math.max(0, +PQ.get('idle') || 0);
+  const pRing = new Float32Array(31), pTmp = new Float32Array(31); let pAcc = 0, pN = 0, pI = 0, pCnt = 0, pMed = 0, pY = -1, pYT = 0, pSkip = 0;
+  function paceN(dt, now) { // callbacks per rendered frame (1 = render now)
+    if (dt > 0 && dt < 0.1) { pRing[pI++ % 31] = dt; if (++pCnt >= 30 && pCnt % 15 === 0) { pTmp.set(pRing); pMed = pTmp.sort()[15]; } }
+    const sy = scrollY; if (sy !== pY) { pY = sy; pYT = now; }
+    const idle = IDLE_CAP && now - pYT > 400 ? IDLE_CAP : 0;
+    let cap = FPS_FORCE >= 0 ? FPS_FORCE : (pMed > 0 && 1 / pMed >= 110 ? 1 / (2 * pMed) : 0);
+    if (idle && (!cap || idle < cap)) cap = idle;
+    return cap && pMed > 0 ? Math.max(1, Math.round(1 / (pMed * cap))) : 1;
+  }
   function step(dt) {
     if (!running || !booted || dead) return;
     dt = Math.max(0, dt || 0);
-    if ((FPS_CAP || IDLE_CAP) && !snapNext) {
-      const now = performance.now(), sy = scrollY; if (sy !== pY) { pY = sy; pYT = now; }
-      pEma = pEma ? pEma + (Math.min(dt, 0.1) - pEma) * 0.05 : dt; pAcc += dt; pN++;
-      const cap = IDLE_CAP && now - pYT > 400 ? (FPS_CAP ? Math.min(FPS_CAP, IDLE_CAP) : IDLE_CAP) : FPS_CAP;
-      if (cap && pEma > 0 && ++pSkip < Math.round(1 / (pEma * cap))) return;
-      pSkip = 0; const n = pN; dt = pAcc; pAcc = 0; pN = 0; // dt: everything since the last render
+    if (!overlap && !snapNext) {
+      const now = performance.now(), n = paceN(dt, now); pAcc += dt; pN++;
+      if (++pSkip < n) return;
+      pSkip = 0; dt = pAcc; pAcc = 0; pN = 0; // dt: everything since the last rendered frame
       if (!freeze) tEl += Math.min(dt, 1 / 15);
-      gov.frame(dt * 1000 / n / (overlap ? 2 : 1));
+      if (!(IDLE_CAP && now - pYT > 400)) gov.frame(dt * 1000); // the real rendered-frame interval; at-rest idle frames say nothing about throughput
     } else {
+      pAcc = 0; pN = 0; pSkip = 0;
       if (!freeze) tEl += Math.min(dt, 1 / 15); // a long stall (tab switch, GC) never jumps the clock
       gov.frame(dt * 1000 / (overlap ? 2 : 1)); // overlapping, the film draws every other vsync by design: judge it on its share
     }
@@ -841,6 +851,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     // seam: display rgb (0..1) the lower edge fades into, from the footer scene; null falls back to the next section's background
     setSeam(c) { seamCol = c && c.length >= 3 ? c : null; },
     snap() { snapNext = true; },
+    get pace() { return { hz: pMed ? +(1 / pMed).toFixed(1) : 0, every: Math.max(1, pCnt < 30 ? 1 : paceN(0, performance.now())) }; }, // QA: the detected display rate and the current callbacks per rendered frame
     tune, look: LOOK, // the live look object and its shipped defaults (look.json.js)
     get freeze() { return freeze; }, set freeze(v) { freeze = !!v; },
     // track px for a film clock value v: -2..-1 runs the Austin leg (first frame to the Earth frame), -1..P_END is S (dial scrub)
