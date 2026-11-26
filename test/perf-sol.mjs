@@ -13,6 +13,7 @@ const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 8
 await serve(ctx);
 const page = await ctx.newPage(); const errs = []; page.on('pageerror', e => errs.push(e.message)); page.on('console', m => { if (m.type() === 'error') errs.push('console: ' + m.text()); });
 await page.addInitScript(() => {
+  { const r = window.requestAnimationFrame.bind(window); window.requestAnimationFrame = f => (f.name === 'loop' ? 0 : r(f)); }   // the scene's own rAF loop never runs (frames are stepped by hand below)
   const H = window.__hist = {}; const C = window.__gl = { bufferData: [0, 0], bufferSubData: [0, 0], texImage2D: [0, 0], texSubImage2D: [0, 0], draws: 0, ro: 0, io: 0, measure: 0 };
   const P = WebGL2RenderingContext.prototype, wrap = (name, f) => { const o = P[name]; P[name] = function (...a) { f(a); return o.apply(this, a); }; };
   const len = v => (v == null ? 0 : typeof v === 'number' ? v : v.byteLength != null ? v.byteLength : 0);

@@ -26,6 +26,10 @@ const MSCALE = 1.4;      // machine scale (model metres -> world)
 const FLIGHT = 1.4;      // s, camera flight between the three shots
 const PR_MAX = Math.min(1.5, DPR_MAX);
 const INTRO_KEY = 'tf:sol-dig-intro';   // sessionStorage: the dig intro has played in this tab session
+// A/B switches for a real device (off by default, README "Diagnostic switches"): ?free=N seconds before the targets are freed after the scene stops (default 2.5, 'never' keeps them),
+// ?hudpr=N pixel ratio ceiling of the 2D HUD canvas (default 2)
+const QS0 = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+const FREE_MS = QS0.get('free') === 'never' ? Infinity : QS0.get('free') != null && +QS0.get('free') >= 0 ? +QS0.get('free') * 1000 : 2500, HUD_PR = +QS0.get('hudpr') > 0 ? +QS0.get('hudpr') : 2;
 const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-topo] element (was .42 before #41)
 
 // Words (client-facing) come from data-sol-* attributes on the section or the mount; these are only fallbacks.
@@ -135,7 +139,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
   canvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none;touch-action:pan-y;-webkit-tap-highlight-color:transparent';
   if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
   host.appendChild(canvas);
-  const hud = createHud(host, words, pal, { phone: PH });
+  const hud = createHud(host, words, pal, { phone: PH, prMax: HUD_PR });
   const post = createPost(THREE, renderer, { low: LOW });
 
   const scene = new THREE.Scene(), skyScene = new THREE.Scene();
@@ -906,7 +910,7 @@ export function createSolutions({ THREE, host, root = host, quality = 'high', in
     step(dt) { if (running) { gov.real = true; frame(Math.min(0.05, dt)); draw(); } },
     stop() {
       running = false; cancelAnimationFrame(raf); hud.clear();
-      clearTimeout(freeT); freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, 2500);
+      clearTimeout(freeT); if (FREE_MS < Infinity) freeT = setTimeout(() => { if (!running && alloc) { alloc = false; szKey = ''; renderer.setSize(1, 1, false); setBuf(); } }, FREE_MS);
     },
     // test hook: n fixed steps of dt, then draw once (headless screenshots, no frame timing involved)
     renderNow(dt = 1 / 60, n = 1) { allocate(); gov.real = false; for (let i = 0; i < n; i++) frame(dt); field.upload(1, renderer); draw(); },   // upload: the ground the last steps wrote goes up before the one draw (a live frame uploads and draws in the same step)

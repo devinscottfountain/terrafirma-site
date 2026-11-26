@@ -2,7 +2,7 @@
 // pointer-events none). Numbers are live data; every word comes from `words` (data-* attributes, see README).
 const FONT_MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace';
 
-export function createHud(host, words, pal, { phone = false } = {}) {
+export function createHud(host, words, pal, { phone = false, prMax = 2 } = {}) {
   const cv = document.createElement('canvas');
   cv.setAttribute('aria-hidden', 'true');
   cv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none';
@@ -14,7 +14,7 @@ export function createHud(host, words, pal, { phone = false } = {}) {
   const pad = (v, n, d) => { const s = Math.abs(v).toFixed(d); return (v < 0 ? '-' : '+') + s.padStart(n + (d ? d + 1 : 0), '0'); };
 
   function resize(w, h, dpr) {
-    const p = Math.min(2, dpr || 1); if (w === W && h === H && p === pr && !blank0) return;   // same size: keep the canvas (re-allocating it clears it and costs a frame)
+    const p = Math.min(prMax, dpr || 1); if (w === W && h === H && p === pr && !blank0) return;   // same size: keep the canvas (re-allocating it clears it and costs a frame)
     blank0 = false; W = w; H = h; pr = p;
     cv.width = Math.max(1, Math.round(w * pr)); cv.height = Math.max(1, Math.round(h * pr)); blank = false;
   }
