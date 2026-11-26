@@ -943,7 +943,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     // finish linking with compileAsync), render each top-level object once on its own (uniform tables, buffers and textures go up), then one
     // full hidden draw. The first visible frame then compiles, links, uploads and allocates nothing new.
     async warm() {
-      const all = []; scene.traverse(o => all.push([o, o.visible]));
+      const all = [], fc = []; scene.traverse(o => { all.push([o, o.visible]); fc.push([o, o.frustumCulled]); o.frustumCulled = false; });   // not culled: the camera is not at its real pose yet, and a culled object never uses its program
       const bl = post.bloomOn; post.bloomOn = true;
       let t = performance.now();
       const pace = async () => { if (performance.now() - t > P.slice) { await P.step(); t = performance.now(); } };
@@ -978,7 +978,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
         await P.step(); renderer.render(scene, camera);
         await P.step(); post.end(clockT); if (!shroudQ) { shroudQ = true; idle(loadShroud); }
         await P.step(); hud.draw(hudState); hud.clear();
-      } finally { for (const [o, v] of all) o.visible = v; post.bloomOn = bl; renderer.setRenderTarget(null); }
+      } finally { for (const [o, v] of all) o.visible = v; for (const [o, v] of fc) o.frustumCulled = v; post.bloomOn = bl; renderer.setRenderTarget(null); }
       return null;
     },
     get canvas() { return canvas; },
