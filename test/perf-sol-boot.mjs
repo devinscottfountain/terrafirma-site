@@ -20,7 +20,7 @@ await page.addInitScript(({ gate }) => {
   window.__gateLog = [];
   if (gate) window.tfGate = { set(n, p) { window.__gateLog.push([+performance.now().toFixed(0), n, p]); }, get() { return 0; } };
   window.__vis = 0;   // time the scene became visible (canvas opacity 1)
-  const poll = setInterval(() => { const c = window.TFSolutions && window.TFSolutions.sol && window.TFSolutions.sol.canvas; if (c && c.style.opacity === '1') { window.__vis = performance.now(); clearInterval(poll); } }, 20);
+  const poll = setInterval(() => { const c = window.TFSolutions && window.TFSolutions.sol && window.TFSolutions.sol.canvas; if (c && c.style.opacity === '1') { window.__vis = performance.now(); window.__progAtVis = window.TFSolutions.sol.qa.renderer.info.programs.length; window.__progNamesVis = window.TFSolutions.sol.qa.renderer.info.programs.map(p => p.id + ':' + String(p.cacheKey).slice(0, 160)); clearInterval(poll); } }, 20);
 }, { gate });
 const cdp = await ctx.newCDPSession(page);
 await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 1000 });
@@ -44,7 +44,7 @@ const info = await page.evaluate(async () => {
   const q = s.qa, prog = () => q.renderer.info.programs.length, p0 = prog(), out = {};
   s.stop(); const per = {};
   for (const tab of ['orchestration', 'planning', 'execution', 'orchestration']) { document.querySelector(`button[data-tab="${tab}"]`).click(); s.renderNow(1 / 60, 20); await new Promise(r => setTimeout(r, 50)); per[tab] = prog(); }
-  return { built: true, vis: window.__vis, gateLog: window.__gateLog, lt: window.__lt, programsBefore: p0, programsAfterTabs: per };
+  return { built: true, progAtVis: window.__progAtVis, namesVis: window.__progNamesVis, namesEnd: q.renderer.info.programs.map(p => p.id + ':' + String(p.cacheKey).slice(0, 160)), vis: window.__vis, gateLog: window.__gateLog, lt: window.__lt, programsBefore: p0, programsAfterTabs: per };
 });
 const prof = (await cdp.send('Profiler.stop')).profile;
 // profile clock -> performance.now(): the profile starts at nowAtStart (+- a few ms)
@@ -58,6 +58,6 @@ const tasks = (info.lt || []).filter(([, d]) => d > 50).map(([s, d]) => {
   return { start: Math.round(s), dur: Math.round(d), cause: top };
 });
 const res = { label, phone, gate, scenario, throttle: thr, errs, loadMs: Math.round(loadedAt), scrollWindow: scroll && scroll.map(Math.round), sceneVisibleMs: info.vis ? Math.round(info.vis) : null, built: info.built,
-  longTasksOver50: tasks, nLong: tasks.length, maxTask: tasks.reduce((m, t) => Math.max(m, t.dur), 0), gateLog: info.gateLog, programsBefore: info.programsBefore, programsAfterTabs: info.programsAfterTabs };
+  longTasksOver50: tasks, nLong: tasks.length, maxTask: tasks.reduce((m, t) => Math.max(m, t.dur), 0), gateLog: info.gateLog, programsAtReveal: info.progAtVis, namesVis: info.namesVis, namesEnd: info.namesEnd, programsBefore: info.programsBefore, programsAfterTabs: info.programsAfterTabs };
 fs.writeFileSync(`${OUT}boot-${label}.json`, JSON.stringify(res, null, 1)); console.log(JSON.stringify(res, null, 1));
 await browser.close();

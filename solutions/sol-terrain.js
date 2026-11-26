@@ -110,10 +110,11 @@ export function rectPoly(P) {
 }
 
 // ------------------------------------------------------------------ edit field: R = height delta (m), G = track marks (0..1)
-export function createField(THREE) {
+export const createField = THREE => drain(fieldGen(THREE));
+export function* fieldGen(THREE) {
   const F = SITE.field, N = F.n, cell = F.size / N, ox = F.x - F.size / 2, oz = F.z - F.size / 2;
   const data = new Float32Array(N * N * 2), base = new Float32Array(N * N);
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) base[j * N + i] = hF(ox + (i + 0.5) * cell, oz + (j + 0.5) * cell);
+  for (let j = 0; j < N; j++) { if ((j & 15) === 0) yield; for (let i = 0; i < N; i++) base[j * N + i] = hF(ox + (i + 0.5) * cell, oz + (j + 0.5) * cell); }
   const tex = new THREE.DataTexture(data, N, N, THREE.RGFormat, THREE.FloatType);
   tex.minFilter = tex.magFilter = THREE.NearestFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
   let dirty = false, upT = 0;

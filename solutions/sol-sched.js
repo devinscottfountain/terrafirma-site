@@ -25,7 +25,7 @@ export function createPacer({ polite = false, slice = 6, quiet = 150 } = {}) {
     set polite(v) { polite = !!v; if (polite) attach(); else detach(); },
     async step() {
       if (NO_SLICE) return;
-      if (!polite) { await (globalThis.scheduler?.yield ? globalThis.scheduler.yield() : hop()); return; }
+      if (!polite) { await hop(); return; }   // a macrotask hop (scheduler.yield() continuations can run back to back and show up as one long task)
       await idle(); await hop();   // the hop ends the idle callback's task: consecutive slices never merge into one long task
       while (polite && performance.now() - lastInput < quiet) await sleep(40);
     },

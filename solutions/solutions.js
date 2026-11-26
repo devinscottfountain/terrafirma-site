@@ -6,7 +6,7 @@
 //   Execution (mode 2)     = breadth: high and wide, three machines on three jobs, live paths, tags, data links.
 // The ground is a procedural survey point cloud lit by a low sun; the dig edits a persistent height field that the dots
 // and every machine read, so the hole stays for the page session and shows in all three views. No asset downloads.
-import { SITE, hF, hD, createField, dotsGen, contoursGen, rectPoly } from './sol-terrain.js';
+import { SITE, hF, hD, fieldGen, dotsGen, contoursGen, rectPoly } from './sol-terrain.js';
 import { createPacer } from './sol-sched.js';
 import { seedRand } from './sol-rand.js';
 export { createPacer };
@@ -174,7 +174,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
 
   // ------------------------------------------------------------------ ground: edit field + dot cloud
   await P.step();
-  const field = createField(THREE);
+  const field = await P.run(fieldGen(THREE));
   U.uField.value = field.tex; U.uFieldT.value = field.uniform;
   const dots = await P.run(dotsGen(THREE, { low: LOW }));
   const dotMat = dotMaterial(THREE, U, { cull: PH });
@@ -953,6 +953,11 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
         renderer.setRenderTarget(post.rt); t = performance.now();
         const mats = new Set();   // every material compiled here: wait for the driver to finish linking them (KHR_parallel_shader_compile) before the first use
         for (const c of scene.children) { for (const m of renderer.compile(c, camera, scene)) mats.add(m); await pace(); }
+        // a machine that fades in or out is transparent, and three keys the program on that: compile that variant too (else it compiles in the first frame the dozer or roller fades)
+        const mach = [exc, loader, roller];
+        for (const m of mach) m.setOpacity(0.5);
+        for (const m of mach) { for (const x of renderer.compile(m.root, camera, scene)) mats.add(x); await pace(); }
+        for (const m of mach) m.setOpacity(1);
         for (const m of renderer.compile(skyScene, camera)) mats.add(m);
         for (const m of post.warm()) mats.add(m);
         for (let k = 0; mats.size && k < 600; k++) {   // at most about 6 s, then the first use blocks as it always did
@@ -964,8 +969,14 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
         for (const [o] of all) o.visible = false; scene.visible = true;
         renderer.setRenderTarget(post.rt); renderer.setClearColor(0x000000, 0); renderer.clear(true, true, true); renderer.render(skyScene, camera);
         for (const c of scene.children) { c.traverse(o => { o.visible = true; }); renderer.render(scene, camera); c.traverse(o => { o.visible = false; }); await pace(); }
+        for (const m of mach) m.setOpacity(0.5);   // the transparent variants, rendered once each
+        for (const m of mach) { m.root.traverse(o => { o.visible = true; }); renderer.render(scene, camera); m.root.traverse(o => { o.visible = false; }); await pace(); }
+        for (const m of mach) m.setOpacity(1);
         for (const [o] of all) o.visible = true;
-        await P.step(); draw();
+        // the full hidden frame, in three steps (sky, scene, post chain), then the HUD once (fonts, label widths)
+        await P.step(); renderer.info.reset(); post.begin(); renderer.render(skyScene, camera);
+        await P.step(); renderer.render(scene, camera);
+        await P.step(); post.end(clockT); if (!shroudQ) { shroudQ = true; idle(loadShroud); }
         await P.step(); hud.draw(hudState); hud.clear();
       } finally { for (const [o, v] of all) o.visible = v; post.bloomOn = bl; renderer.setRenderTarget(null); }
       return null;
