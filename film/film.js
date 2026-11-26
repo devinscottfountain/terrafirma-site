@@ -111,6 +111,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
     const pr = Math.min(devicePixelRatio || 1, PR_MAX, PHONE ? PHONE_PR[lv] : q.pr);
     if (renderer.getPixelRatio() !== pr) { renderer.setPixelRatio(pr); post.setSize(W, H); post.resetMotion(); }
     post.setQuality(Math.min(HIGH ? q.post : Math.min(q.post, 1), POST_MAX ?? 3));
+    post.setDofHalf(HIGH && lv < 5); // the top level keeps full-res DOF; every step below runs it at half res
     trailsOK = q.trails; shadowEvery = q.every; partKeep = q.keep; gt.reset(); // GPU samples from the old level say nothing about the new one
     const sh = sunLight.shadow, sx = HIGH ? q.shadow : Math.min(q.shadow, 2048);
     if (sh.mapSize.x !== sx) { sh.mapSize.set(sx, sx / 2); if (sh.map) { sh.map.dispose(); sh.map = null; } forceShadow = true; } // new size, same programs

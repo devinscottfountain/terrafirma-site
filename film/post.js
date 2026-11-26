@@ -6,6 +6,7 @@
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+import { BokehShader } from 'three/addons/shaders/BokehShader.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
@@ -400,6 +401,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
 
   // ---------------------------------------------------------------- per-frame state (no allocations)
   const curVP = new THREE.Matrix4(), prevVP = new THREE.Matrix4(), invRel = new THREE.Matrix4(), toCam = new THREE.Matrix4(), _t = new THREE.Matrix4(), _o = new THREE.Vector3(), lastPos = new THREE.Vector3(), lastQuat = new THREE.Quaternion();
+  const DOF_MIN_PX = 1;
   const POSTPR = new URLSearchParams(location.search).get('postpr') !== '0'; // post targets follow renderer.getPixelRatio() (the governor's pr steps); ?postpr=0 restores the construct-time ratio
   let have = false, lastDt = 1 / 60, resetNext = false, bufW = W;
 
@@ -448,8 +450,8 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     mbPass.blur = on; mbPass.taa = taaOn;
     const fx = on || trails.enabled || ao.enabled || taaOn;   // depth target + FX pass only when something needs them
     motion.active = on; trails.active = trails.enabled; ao.active = ao.enabled;
-    // DOF taps reach 0.4 * maxblur of the width; under half a pixel the pass is invisible, so skip it
-    const dofOn = 0.4 * dof.uniforms.maxblur.value * bufW >= 0.5;
+    // DOF taps reach 0.4 * maxblur of the width; under DOF_MIN_PX (device pixels) the widest circle of confusion is within what AA already does, so skip the pass
+    const dofOn = 0.4 * dof.uniforms.maxblur.value * bufW >= DOF_MIN_PX;
     mbPass.enabled = fx; dof.enabled = dofOn; scenePass.useRT = fx || dofOn || !!C;
     if (C) C.jitter(taaOn);
     prevVP.copy(curVP); lastPos.copy(cam.position); lastQuat.copy(cam.quaternion); have = true; resetNext = false;
@@ -496,7 +498,7 @@ export function createPost({ THREE, renderer, scene, cam, cine = true, low = fal
     getExposure,
     // cine only (D6.1): live lens knobs, look tunables, quality ladder 0..3 (see createCine)
     cine: !!C, fx: C ? C.fx : null, look: C ? C.look : null, grade: C ? C.grade : null, lensFrame: C ? o => C.lensFrame(o) : () => {}, scrim: C ? (cx, cy, rx, ry, k) => C.scrim(cx, cy, rx, ry, k) : () => {}, edge: C ? (k, col, h, glow) => C.edge(k, col, h, glow) : () => {},
-    setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
+    setDofHalf: C ? on => C.setDofHalf(on) : () => {}, setQuality: C ? l => C.setQuality(l) : () => {}, setPostQuality: C ? l => C.setQuality(l) : () => {}, getQuality: () => (C ? C.level : -1),
     gpuTimes: C ? () => C.gpuTimes() : () => null
   };
 }
@@ -572,6 +574,14 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   let level = -1, Q = QL[3], explicit = false, frame = 0;
 
   // ---------------------------------------------------------------- bloom + streak (half / quarter res)
+  // DOF at half res (governor levels below the top): the bokeh taps run into a half-size target whose alpha is the blur weight (tap reach in px / 1.5),
+  // then a cheap full-res composite blends it over the sharp frame by that weight, so pixels at the focus plane stay at full resolution
+  const rtDof = mk(); let dofHalf = false; dof.uniforms.uW = { value: 1 };
+  const mDofHalf = new THREE.ShaderMaterial({ uniforms: dof.uniforms, defines: { ...dof.materialBokeh.defines }, vertexShader: FS_VERT, depthTest: false, depthWrite: false,
+    fragmentShader: BokehShader.fragmentShader.replace('uniform float aspect;', 'uniform float aspect; uniform float uW;')
+      .replace(/gl_FragColor = col \/ 41\.0;\s*gl_FragColor\.a = 1\.0;/, 'gl_FragColor = vec4( col.rgb / 41.0, clamp( dofblur.x * 0.4 * uW / 1.5, 0.0, 1.0 ) );') });
+  const mDofComp = new THREE.ShaderMaterial({ uniforms: { tSharp: { value: null }, tBlur: { value: null } }, vertexShader: FS_VERT, depthTest: false, depthWrite: false,
+    fragmentShader: 'uniform sampler2D tSharp, tBlur; varying vec2 vUv; void main(){ vec4 b = texture2D(tBlur, vUv); gl_FragColor = vec4(mix(texture2D(tSharp, vUv).rgb, b.rgb, b.a), 1.); }' });
   const rtPre = mk(), rtT = [], rtL = [], rtS = [mk(), mk()];
   for (let i = 0; i < 5; i++) { rtT.push(mk()); rtL.push(mk()); }
   const mPre = mat(`
@@ -723,6 +733,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   function setSize() {
     w = composer.renderTarget1.width; h = composer.renderTarget1.height; lensU.res.value.set(w, h);
     bw = Math.max(1, w >> Q.div); bh = Math.max(1, h >> Q.div);
+    rtDof.setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
     rtPre.setSize(bw, bh); mPre.uniforms.uTexel.value.set(0.5 * (1 << Q.div) / w, 0.5 * (1 << Q.div) / h); // 4 taps at source-texel corners of the 2^div block
     let sw = bw, sh = bh;
     for (let i = 0; i < 5; i++) { const dw = Math.max(1, i ? sw >> 1 : sw), dh = Math.max(1, i ? sh >> 1 : sh); rtT[i].setSize(dw, dh); rtL[i].setSize(dw, dh); sw = dw; sh = dh; }
@@ -780,7 +791,11 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
     e = tBeg('dof');
     if (dof.enabled) {
       const u = dof.uniforms, tg = other(cur); u.tColor.value = cur; u.tDepth.value = scenePass.rt.depthTexture; u.nearClip.value = cam.near; u.farClip.value = cam.far;
-      r.setRenderTarget(tg); dof.fsQuad.render(r); cur = tg.texture;
+      if (dofHalf || force) { // force (the boot warm-up) runs both variants so neither compiles mid-scroll
+        u.uW.value = w; draw(mDofHalf, rtDof); mDofComp.uniforms.tSharp.value = cur; mDofComp.uniforms.tBlur.value = rtDof.texture; draw(mDofComp, tg);
+      }
+      if (!dofHalf || force) { r.setRenderTarget(tg); dof.fsQuad.render(r); }
+      cur = tg.texture;
     }
     tEnd(e);
     // bloom chain (+ streak), half or quarter res
@@ -826,7 +841,7 @@ function createCine({ THREE, renderer, cam, composer, scenePass, mbPass, dof, to
   const api = {
     fx, look, grade, level, time: 0,
     taaOn: () => (level < 0 ? !low : Q.aa === 3),
-    jitter, render, setSize, setQuality,
+    jitter, render, setSize, setQuality, setDofHalf(on) { dofHalf = !!on; },
     profile(on = true) { profiling = !!on && !!tq; return profiling; },
     // scrim(cx, cy, rx, ry, k): darken a soft ellipse (uv, y up) by up to k behind copy that sits over a busy frame; k 0 = off
     scrim(cx, cy, rx, ry, k) { lensU.scrim.value.set(cx, cy, Math.max(1e-3, rx), Math.max(1e-3, ry)); lensU.scrimK.value = Math.max(0, k); },
