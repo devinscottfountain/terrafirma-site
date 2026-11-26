@@ -429,6 +429,7 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
   let over = 0, overV = 0, gS = 0, gL = 0; // launch overrun past the track end (g), its rate; the scroll and launch colony clocks
   let shadowEvery = 1;                        // colony shadow refresh while something casting moves: every Nth frame (governor)
   let overlap = false, seamCol = null;        // the footer canvas is on screen too (stage.js); its seam colour for the lower edge
+  const CRANE_SHADOW = 3;                     // idle colony (nothing but the cranes moving): the shadow map refreshes every 3rd frame
   const OVERLAP_SHADOW = 3;                   // while overlapping: the launch light's shadow redraws at most every 3rd film frame
   const edge = { k: 0, col: [0, 0, 0], el: null }; // CTA hand-off: how far the next section has risen, its background (display rgb 0..1)
   const shakeV = new THREE.Vector3(), shakeR = new THREE.Vector3(), shakeU = new THREE.Vector3();
@@ -641,7 +642,10 @@ export function createFilm({ THREE, host, section, scenes, sol, quality, files }
       // overlapping the footer (the launch past the track end, mostly under the fade): the plume light moves every frame, so its
       // shadow would redraw every frame. A few frames' lag is invisible there; a forced redraw (new set, new size) still goes now.
       const every = overlap ? Math.max(shadowEvery, OVERLAP_SHADOW) : shadowEvery;
-      if (forceShadow || ((built || cranesUp()) && shadowFrame % every === 0) || (!overlap && built)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; }
+      // built = the build state or the shadow light moved this frame (scroll moving, launch plume): that keeps the per-frame rule above. Otherwise only the
+      // crane jibs turn (0.15 rad/s, 0.0075 rad per 3 frames): refresh every CRANE_SHADOW-th frame and reuse the map in between
+      const craneOnly = !built && cranesUp(), ev = craneOnly ? Math.max(every, CRANE_SHADOW) : every;
+      if (forceShadow || ((built || craneOnly) && shadowFrame % ev === 0) || (!overlap && built)) { renderer.shadowMap.needsUpdate = true; forceShadow = false; }
     }
     else { sunLight.target.position.set(0, 0, 0); sunLight.position.copy(sunDir).multiplyScalar(100); }
     // operator layer: only a faint handheld drift
