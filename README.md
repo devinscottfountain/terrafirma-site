@@ -186,6 +186,9 @@ Open issues: the Austin site ortho outputs are provisional (built from a downsca
 | `?idle=N` | extra cap while the scroll has been still for 400 ms (160 Hz: `?idle=30` renders every 5th). The lower cap wins; those frames feed the governor nothing. TAA and grain keep running at the lower rate. |
 | `?tonemerge=0` | keep tone mapping and the lens as two passes. Default: one pass when no FXAA or SMAA follows and no heat shimmer is on (levels 0, 3, 4, 5). |
 | `?hdr=rg11b10` | colour render targets (scene, composer pair, TAA history, bloom chain) on R11F_G11F_B10F, half the memory and bandwidth of HalfFloat, no alpha. Off by default: look at skies for banding on a real GPU first. |
+| `?solahead=0` | Solutions on phones: build the scene after load in idle slices, paused while scrolling or touching, instead of when the section comes within 1.5 viewports. `?solahead=0` restores the on-approach trigger (save-data and 2 GB devices always use it). The build is sliced either way (`solutions/sol-sched.js`). |
+| `?solslice=0` | Solutions QA: no yields in the build, so it runs as one task again (screenshots must match the sliced build exactly). |
+| `?solseed=N` | Solutions QA: a private seeded random stream for the sim (`solutions/sol-rand.js`). The build is sliced, so the order in which other scripts and the sim draw from `Math.random` depends on timing; the seed makes screenshots comparable. |
 | `?film=0` `?sol=0` `?foot=0` | scene off. `?sol=0&foot=0` leaves one live WebGL context (the film), `?film=0&foot=0` only Solutions. |
 
 The film governor tolerates quantised timers (`privacy.resistFingerprinting` rounds `performance.now()` to 16.67 or 100 ms): a zero interval switches it to the mean of 8 intervals, and a 100 ms quantum holds the tier. `node test/check-gov.mjs [older perf.js]` feeds it synthetic Firefox timestamps.

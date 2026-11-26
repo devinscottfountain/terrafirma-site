@@ -13,8 +13,10 @@ await serve(ctx, { det: true });
 const page = await ctx.newPage(); const errs = []; page.on('pageerror', e => errs.push(e.message));
 await page.addInitScript(() => { { const r = window.requestAnimationFrame.bind(window); window.requestAnimationFrame = f => (f.name === 'loop' ? 0 : r(f)); }   // the scene's own rAF loop never runs: the sim only advances through renderNow
   let a = 0x9e3779b9; Math.random = () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; });
-await page.goto(`${ORIGIN}/test/home.html?qa&demo=0${phone ? '&layout=phone' : ''}${extra}`, { waitUntil: 'load' });
+await page.goto(`${ORIGIN}/test/home.html?qa&demo=0&solseed=2654435769${process.env.SOLQS || ''}${phone ? '&layout=phone' : ''}${extra}`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.TFSolutions && window.TFSolutions.sol, null, { timeout: 180000 });
+await page.waitForFunction(() => window.TFSolutions.warmed !== false, null, { timeout: 180000 });   // the off-screen warm-up (all programs, one hidden draw) has finished (builds without the flag: undefined)
+await page.waitForTimeout(3000);   // settle: fonts, load, the first layout passes and (older builds) the idle warm-up, so every build starts the shots from the same state
 await page.evaluate(() => { const g = window.TFSolutions.sol.qa.gov; Object.defineProperty(g, 'real', { get: () => false, set() {} }); const s = window.TFSolutions.sol; s.stop(); return s.ready; });
 await page.evaluate(async () => { await window.TFSolutions.sol.qa.loadShroud(); });   // the shroud loads on idle (high tier): load it now so snapshots are deterministic
 await page.evaluate(() => document.getElementById('solutions-stage').scrollIntoView({ block: 'center' }));

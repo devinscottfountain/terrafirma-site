@@ -363,6 +363,8 @@ export function createPost(THREE, renderer, { low = false } = {}) {
   return {
     rt, P,
     setSize,
+    // compile the three pass programs without blocking (each against the target it renders to: a different target can mean a different program)
+    warm() { const out = []; for (const [m, t] of [[mDown, bA], [mBlur, bB], [mComp, null]]) { quad.material = m; renderer.setRenderTarget(t); for (const x of renderer.compile(quad, cam)) out.push(x); } return out; },
     set bloomOn(v) { bloomOn = v && POST_MAX !== 0; }, get bloomOn() { return bloomOn; },
     // render the scene in, then out to the canvas
     begin() { renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear(true, true, true); },

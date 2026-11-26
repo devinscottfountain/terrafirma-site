@@ -110,10 +110,11 @@ export function rectPoly(P) {
 }
 
 // ------------------------------------------------------------------ edit field: R = height delta (m), G = track marks (0..1)
-export function createField(THREE) {
+export const createField = THREE => drain(fieldGen(THREE));
+export function* fieldGen(THREE) {
   const F = SITE.field, N = F.n, cell = F.size / N, ox = F.x - F.size / 2, oz = F.z - F.size / 2;
   const data = new Float32Array(N * N * 2), base = new Float32Array(N * N);
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) base[j * N + i] = hF(ox + (i + 0.5) * cell, oz + (j + 0.5) * cell);
+  for (let j = 0; j < N; j++) { if ((j & 15) === 0) yield; for (let i = 0; i < N; i++) base[j * N + i] = hF(ox + (i + 0.5) * cell, oz + (j + 0.5) * cell); }
   const tex = new THREE.DataTexture(data, N, N, THREE.RGFormat, THREE.FloatType);
   tex.minFilter = tex.magFilter = THREE.NearestFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
   let dirty = false, upT = 0;
@@ -240,7 +241,11 @@ export function createField(THREE) {
 // drawing fewer points (adaptive density) drops an even sample. Heights, slopes and terrain shadows are computed on the
 // GPU from the same height field (the CPU only lays out x and z).
 // Per point: position = (x, 0, z), aD = (spacing, rank 0..1, unused, random).
-export function buildDots(THREE, { low = false } = {}) {
+// Both builders are generators (yield at fine grain, never inside a hot inner loop) so the page can run them in small slices
+// (sol-sched.js); buildDots / buildContours run the same generator to the end, so the output and the random stream are identical.
+const drain = g => { let r; while (!(r = g.next()).done); return r.value; };
+export const buildDots = (THREE, o) => drain(dotsGen(THREE, o));
+export function* dotsGen(THREE, { low = false } = {}) {
   const s0 = low ? 0.3 : 0.2, G = low ? 1.8 : 1.62, R0 = 14, LV = 6, cx = SITE.dots.x, cz = SITE.dots.z;
   let seed = 11; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
   let cap = 1 << 16, X = new Float32Array(cap), Z = new Float32Array(cap), Sp = new Float32Array(cap), n = 0;
@@ -250,18 +255,19 @@ export function buildDots(THREE, { low = false } = {}) {
   };
   for (let l = 0; l < LV; l++) {
     const s = s0 * Math.pow(G, l), Ro = R0 * (1 << l), Rp = R0 * (1 << Math.max(0, l - 1)), Ri = l ? Rp * 0.72 : 0, m = Math.ceil(Ro / s);
-    for (let a = -m; a <= m; a++) for (let b = -m; b <= m; b++) {
+    for (let a = -m; a <= m; a++) { yield; for (let b = -m; b <= m; b++) {
       const x = cx + (a + (rnd() - 0.5) * 0.62) * s, z = cz + (b + (rnd() - 0.5) * 0.62) * s, r = Math.hypot(x - cx, z - cz), u = rnd();
       if (r > Ro || r < Ri) continue;
       if (l < LV - 1 && r > Ro * 0.72 && u < (r - Ro * 0.72) / (Ro * 0.28)) continue;   // fine ring fades out
       if (l > 0 && r < Rp && u > (r - Ri) / (Rp - Ri)) continue;                         // coarse ring fades in
       push(x, z, s);
-    }
+    } }
   }
   const ord = new Uint32Array(n); for (let i = 0; i < n; i++) ord[i] = i;
-  for (let i = n - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)), t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
+  for (let i = n - 1; i > 0; i--) { if ((i & 8191) === 0) yield; const j = Math.floor(rnd() * (i + 1)), t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
   const pos = new Float32Array(n * 3), aD = new Float32Array(n * 4);
   for (let k = 0; k < n; k++) {
+    if ((k & 8191) === 0) yield;
     const i = ord[k];
     pos[k * 3] = X[i]; pos[k * 3 + 2] = Z[i];
     aD[k * 4] = Sp[i]; aD[k * 4 + 1] = (k + 0.5) / n; aD[k * 4 + 3] = rnd();
@@ -275,14 +281,15 @@ export function buildDots(THREE, { low = false } = {}) {
 
 // ------------------------------------------------------------------ design contours (marching squares, static)
 // Returns segment endpoints [x0, y0, z0, x1, y1, z1, t, major] where t = 0..1 distance from the plan centre (draw-on order).
-export function buildContours({ cx = SITE.centre.x, cz = SITE.centre.z, half = 50, step = 0.8, interval = 0.5 } = {}) {
+export const buildContours = o => drain(contoursGen(o));
+export function* contoursGen({ cx = SITE.centre.x, cz = SITE.centre.z, half = 50, step = 0.8, interval = 0.5 } = {}) {
   const n = Math.round((2 * half) / step) + 1, H = new Float32Array(n * n), X = i => cx - half + i * step, Z = j => cz - half + j * step;
-  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) H[j * n + i] = hD(X(i), Z(j));
+  for (let j = 0; j < n; j++) { yield; for (let i = 0; i < n; i++) H[j * n + i] = hD(X(i), Z(j)); }
   const out = []; let lo = 1e9, hi = -1e9; for (const v of H) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   const lerpP = (a, b, va, vb, L) => a + (b - a) * ((L - va) / (vb - va));
   for (let L = Math.ceil(lo / interval) * interval; L <= hi; L += interval) {
     const major = Math.abs(L / (interval * 4) - Math.round(L / (interval * 4))) < 1e-3 ? 1 : 0;
-    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+    for (let j = 0; j < n - 1; j++) { if ((j & 15) === 0) yield; for (let i = 0; i < n - 1; i++) {
       const a = H[j * n + i], b = H[j * n + i + 1], c = H[(j + 1) * n + i + 1], d = H[(j + 1) * n + i];
       const code = (a > L ? 1 : 0) | (b > L ? 2 : 0) | (c > L ? 4 : 0) | (d > L ? 8 : 0);
       if (code === 0 || code === 15) continue;
@@ -293,7 +300,7 @@ export function buildContours({ cx = SITE.centre.x, cz = SITE.centre.z, half = 5
         const [ax, az] = e[p], [bx, bz] = e[q], t = Math.min(1, Math.hypot((ax + bx) / 2 - cx, (az + bz) / 2 - cz) / (half * 1.2));
         out.push(ax, L + 0.05, az, bx, L + 0.05, bz, t, major);
       }
-    }
+    } }
   }
   return out;
 }

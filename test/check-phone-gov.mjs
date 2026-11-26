@@ -10,6 +10,7 @@ if (!port) await serve(ctx);
 const page = await ctx.newPage(); page.on('pageerror', e => console.log('PAGEERR', e.message));
 await page.goto(`${port ? 'http://localhost:' + port : ORIGIN}/test/home.html?qa&layout=phone&demo=0`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.TFSolutions && window.TFSolutions.sol, null, { timeout: 120000 });
+await page.waitForFunction(() => window.TFSolutions.warmed !== false, null, { timeout: 120000 });
 const res = await page.evaluate(async () => {
   const s = window.TFSolutions.sol, q = s.qa; await s.ready; s.stop();
   const run = (sec, f, ph = 0) => { const lv = []; const n = Math.round(sec * 60); let t = 0; for (let i = 0; i < n; i++) { const dt = f(i, t); t += dt; q.govTick(dt); if (i % 30 === 0) lv.push(q.gov.level); } return { level: q.gov.level, trace: lv.join(''), steps: q.gov.steps, ceil: q.gov.ceil, capped: q.gov.capped }; };
