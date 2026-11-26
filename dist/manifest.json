@@ -1,16 +1,16 @@
 {
   "home3d.js": {
     "file": "home3d.js",
-    "bytes": 4430,
+    "bytes": 4845,
     "static": [],
     "dynamic": [
       {
-        "file": "chunks/mount-KV65QR7X.js",
+        "file": "chunks/mount-YQYEEIGU.js",
         "bytes": 4827
       },
       {
-        "file": "chunks/chunk-BCFVIYFK.js",
-        "bytes": 858
+        "file": "chunks/chunk-GZLHJ37Q.js",
+        "bytes": 1145
       },
       {
         "file": "chunks/chunk-FCTCDFK5.js",
@@ -21,20 +21,20 @@
         "bytes": 7429
       },
       {
-        "file": "chunks/film-4FDAWCYA.js",
-        "bytes": 322414
+        "file": "chunks/film-YWSLVKAV.js",
+        "bytes": 326243
       },
       {
-        "file": "chunks/chunk-E5WEMQM4.js",
-        "bytes": 3070
+        "file": "chunks/chunk-76JC7EWI.js",
+        "bytes": 3228
       },
       {
-        "file": "chunks/chunk-PSG3CONO.js",
-        "bytes": 22636
+        "file": "chunks/chunk-LM5OH3CR.js",
+        "bytes": 22684
       },
       {
-        "file": "chunks/chunk-5SWZIP3G.js",
-        "bytes": 506
+        "file": "chunks/chunk-SKKE744E.js",
+        "bytes": 616
       },
       {
         "file": "chunks/chunk-TAKKMMN3.js",
@@ -53,19 +53,19 @@
         "bytes": 2090
       },
       {
-        "file": "chunks/chunk-VSEMZT6Q.js",
-        "bytes": 6450
+        "file": "chunks/chunk-IPFIGNCI.js",
+        "bytes": 6517
       },
       {
-        "file": "chunks/foot-model-kit-2C76GDRH.js",
+        "file": "chunks/foot-model-kit-OAHIXROD.js",
         "bytes": 326
       },
       {
-        "file": "chunks/foot-model-starship-KKNUMIYN.js",
+        "file": "chunks/foot-model-starship-NEVPLWKG.js",
         "bytes": 184
       },
       {
-        "file": "chunks/chunk-BX3MNU2D.js",
+        "file": "chunks/chunk-XOKNSYMG.js",
         "bytes": 4948
       },
       {
@@ -89,22 +89,22 @@
         "bytes": 3511
       },
       {
-        "file": "chunks/foot-model-XXPDE2VV.js",
-        "bytes": 31910
+        "file": "chunks/foot-model-CUFJHQLA.js",
+        "bytes": 32158
       },
       {
-        "file": "chunks/solutions-BS6EHUV4.js",
-        "bytes": 140214
+        "file": "chunks/solutions-Q4MQPKHX.js",
+        "bytes": 147033
       }
     ]
   },
   "careers.js": {
     "file": "careers.js",
-    "bytes": 6131,
+    "bytes": 6166,
     "static": [
       {
-        "file": "chunks/chunk-BCFVIYFK.js",
-        "bytes": 858
+        "file": "chunks/chunk-GZLHJ37Q.js",
+        "bytes": 1145
       },
       {
         "file": "chunks/chunk-FCTCDFK5.js",
@@ -113,8 +113,8 @@
     ],
     "dynamic": [
       {
-        "file": "chunks/mission3d-5BN6QUAB.js",
-        "bytes": 24502
+        "file": "chunks/mission3d-RN3WJXQQ.js",
+        "bytes": 24973
       },
       {
         "file": "chunks/chunk-TAKKMMN3.js",
@@ -133,6 +133,10 @@
         "bytes": 2090
       },
       {
+        "file": "chunks/chunk-SKKE744E.js",
+        "bytes": 616
+      },
+      {
         "file": "chunks/meshopt_decoder.module-W4SD2QBE.js",
         "bytes": 22421
       },
@@ -141,16 +145,12 @@
         "bytes": 44839
       },
       {
-        "file": "chunks/footer3d-54LSDFZL.js",
+        "file": "chunks/footer3d-3YPXT7HA.js",
         "bytes": 136
       },
       {
-        "file": "chunks/chunk-PSG3CONO.js",
-        "bytes": 22636
-      },
-      {
-        "file": "chunks/chunk-5SWZIP3G.js",
-        "bytes": 506
+        "file": "chunks/chunk-LM5OH3CR.js",
+        "bytes": 22684
       },
       {
         "file": "chunks/foot-tex-PXDMWWA5.js",
@@ -161,20 +161,20 @@
         "bytes": 3511
       },
       {
-        "file": "chunks/foot-model-XXPDE2VV.js",
-        "bytes": 31910
+        "file": "chunks/foot-model-CUFJHQLA.js",
+        "bytes": 32158
       },
       {
-        "file": "chunks/chunk-E5WEMQM4.js",
-        "bytes": 3070
+        "file": "chunks/chunk-76JC7EWI.js",
+        "bytes": 3228
       },
       {
-        "file": "chunks/chunk-BX3MNU2D.js",
+        "file": "chunks/chunk-XOKNSYMG.js",
         "bytes": 4948
       },
       {
-        "file": "chunks/chunk-VSEMZT6Q.js",
-        "bytes": 6450
+        "file": "chunks/chunk-IPFIGNCI.js",
+        "bytes": 6517
       }
     ]
   }
