@@ -43,18 +43,18 @@ Kind: M memory, G GPU (estimate), C compile/boot, P pacing, J JS/CPU. Status: do
 
 | id | Finding | Evidence | Kind | Who benefits | Expected win | Effort | Visual risk | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| F1 | Composer keeps its construct-time pixel ratio; governor pr steps never reach the post targets | post.js:405-409 (`composer.setSize` only), film.js:111 | G, M | hi-DPI Firefox (starts level 3, pr 1.0, post at 1.5) and phones | Measured: composer RT stays 960x540 while canvas is 640x360 / 480x270 (dpr 2 test). Estimate: Firefox 2x pr 1.5 vs 1.0 = 2.25x post pixels; 2.916 Mpx vs 1.296 Mpx at 1440x900 | S | medium (look changes at lower tiers on hi-DPI) | flag `?postpr=1`, prop default ON |
+| F1 | Composer keeps its construct-time pixel ratio; governor pr steps never reach the post targets | post.js:405-409 (`composer.setSize` only), film.js:111 | G, M | hi-DPI Firefox (starts level 3, pr 1.0, post at 1.5) and phones | Measured: composer RT stays 960x540 while canvas is 640x360 / 480x270 (dpr 2 test). Estimate: Firefox 2x pr 1.5 vs 1.0 = 2.25x post pixels; 2.916 Mpx vs 1.296 Mpx at 1440x900 | S | medium (look changes at lower tiers on hi-DPI) | done 47ebbea, default ON, `?postpr=0` off |
 | F2 | Warm-up compiled programs for doubled light counts | film.js `compileIn`, three r160 `compile` gathers lights from scene and again from root | C | everyone (boot, first colony swap) | Measured: programs 161 -> 107 at colony done, 66 -> 53 at ready; 57 of 157 programs were never-drawn twins | S | none | done 5681305 |
 | F3 | Composer ping-pong targets carry unused depth buffers | post.js:60-62, cine renders into `scenePass.rt` | M | every user | Estimate: 2 x 2.916 Mpx x 4 B = 23 MB at 2160x1350 (11.7 MB each) | S | none | done 60198fd |
-| F4 | Crane-only shadow redraw runs every frame in the colony; code comment says every 3rd | film.js colony shadow rule (`every` is 1 at levels 2 to 5) | G | colony segment, S .75 to 1.12 | Measured: 86 calls and 369k tris per shadow frame at S .85 while scroll is idle. Estimate: every 3rd frame cuts that to about a third in the crane-only case | S | low (crane shadow lags up to 2 frames) | prop |
-| F5 | DOF runs almost always on high | post.js DOF skip rule `0.4*maxblur*bufW >= 0.5` | G | high tier | Estimate: 41 taps x 2.916 Mpx = 120M fetches / frame at level 3 | M | medium (look) | prop |
-| F6 | Tone and lens are two full-res passes | post.js tone + lens | G | high tier | Estimate: one HalfFloat write + read removed, 2.916 Mpx x 8 B x 2 = 47 MB / frame | M | none to low (grain order) | prop |
+| F4 | Crane-only shadow redraw runs every frame in the colony; code comment says every 3rd | film.js colony shadow rule (`every` is 1 at levels 2 to 5) | G | colony segment, S .75 to 1.12 | Measured: 86 calls and 369k tris per shadow frame at S .85 while scroll is idle. Estimate: every 3rd frame cuts that to about a third in the crane-only case | S | low (crane shadow lags up to 2 frames) | done e5621dc |
+| F5 | DOF runs almost always on high | post.js DOF skip rule `0.4*maxblur*bufW >= 0.5` | G | high tier | Estimate: 41 taps x 2.916 Mpx = 120M fetches / frame at level 3 | M | medium (look) | done c859e50 |
+| F6 | Tone and lens are two full-res passes | post.js tone + lens | G | high tier | Estimate: one HalfFloat write + read removed, 2.916 Mpx x 8 B x 2 = 47 MB / frame | M | none to low (grain order) | done f62bda7 |
 | F7 | Colony geometry volume: terrain 353k tris (5 `terrH` evaluations per vertex), hab pad/frame 310k, shells and glass about 270k; pads and panels cast about 40% of shadow tris | colony.js, census at S .85 | G | colony segment | Estimate only: shadow pass `custom|inst` 182k + habdepth-shell 111k of 369k; a coarser caster LOD for pads and panels could remove about 180k | M | low | prop |
-| F8 | No frame pacing: a 160 Hz display runs the film at up to 160 fps | film.js `step`, mount.js tick | P | 120 to 165 Hz owners | Estimate: 160 -> 80 fps is half the GPU and JS work per second; measured pacing result in section 4 | S | low | flag `?fps=N` / `?idle=N` |
-| F9 | HalfFloat (RGBA16F) HDR targets everywhere | post.js targets | M, G | high tier | Estimate: R11G11B10F halves 8 B/px to 4 B/px; scene RT 23.3 MB -> 11.7 MB, TAA history x2 46.7 MB -> 23.3 MB | M | medium (banding in dark skies) | prop |
+| F8 | No frame pacing: a 160 Hz display runs the film at up to 160 fps | film.js `step`, mount.js tick | P | 120 to 165 Hz owners | Estimate: 160 -> 80 fps is half the GPU and JS work per second; measured pacing result in section 4 | S | low | done 54cdb3a, default on from 110 Hz, `?fps=0` uncaps |
+| F9 | HalfFloat (RGBA16F) HDR targets everywhere | post.js targets | M, G | high tier | Estimate: R11G11B10F halves 8 B/px to 4 B/px; scene RT 23.3 MB -> 11.7 MB, TAA history x2 46.7 MB -> 23.3 MB | M | medium (banding in dark skies) | flag `?hdr=rg11b10` d05f151, off by default |
 | F10 | Colony swap long task (165 ms) is one synchronous chunk: PMREM env, program compiles, throwaway draw, texture uploads | film.js `warmColony`, habitat.js populate | C | first colony arrival | not measured here (SwiftShader inflates it); F2 removes the compile share | M | none | prop (split across idle slices) |
-| F11 | Governor steps reallocate all targets and dispose the shadow map mid-scroll | perf.js, film.js:111 | P | any tier change | not measured; hitch size is GPU-allocation dependent | M | none | prop (pre-allocate, resize only on `hold()`) |
-| F12 | Small items: `checkShaderErrors = false` after warm-up; always-on PointLight `fire` (intensity 0 idle) adds a per-fragment light to every colony material; mars.webp 4096x2048 is the largest texture (about 45 MB); per-rover array literal in `machines.js` update | film.js, rockets.js, machines.js | J, G, M | everyone | Estimates: error-check round trips only (boot getProgramInfoLog is a link-wait, not extra work); fire light cost = one extra light term per fragment on 65 physical programs while idle | S | none to low | prop |
+| F11 | Governor steps reallocate all targets and dispose the shadow map mid-scroll | perf.js, film.js:111 | P | any tier change | not measured; hitch size is GPU-allocation dependent | M | none | done 30eb72a (deferral; shadow map not pre-allocated) |
+| F12 | Small items: `checkShaderErrors = false` after warm-up; always-on PointLight `fire` (intensity 0 idle) adds a per-fragment light to every colony material; mars.webp 4096x2048 is the largest texture on high (about 45 MB; low already uses 2048x1024); per-rover array literal in `machines.js` update | film.js, rockets.js, machines.js | J, G, M | everyone | Estimates: error-check round trips only (boot getProgramInfoLog is a link-wait, not extra work); fire light cost = one extra light term per fragment on 65 physical programs while idle | S | none to low | no change needed: low tier already ships a 2048x1024 mars.webp (see F12) |
 
 Texture memory (estimate, RGBA8 + mips, my arithmetic): about 166 MB total on high: mars 4096x2048 44.7 MB, ortho-km8 2048^2 22.4, earth/clouds/earthLights 11.2 each, marsNorm 11.2, ortho-lot and ortho-site 12.6 each, bump maps 5.6 each.
 
@@ -99,7 +99,7 @@ In order: `scheduleColony` idle build, `warmColony` (compile with `compileIn`, t
 `apply()` on every level change resizes all post targets and, on a shadow-size change, disposes the shadow map (4096x2048 RGBA8 + depth is about 67 MB, estimate). Proposal: allocate the largest shadow size once and use viewport/scissor for lower levels, and do pr changes only when `hold()` is true or the scroll is idle. Not measurable here.
 
 ### F12 small items
-`checkShaderErrors = false` after warm-up skips `getProgramParameter`/info-log round trips for later compiles (none are expected after F2). `fire` PointLight is always visible at intensity 0 when idle; keeping it out of `visible` until the launch would change the light count and force a recompile, so it needs a warm path. `mars.webp` 4096x2048 could drop to 2048x1024 on low. Allocation per frame is negligible (0.12 to 2.2 KB/frame, heap sampling), `yard.js` costs 42 us per frame (measured 10,000 frames in 414 ms), so caching it is not worth the complexity. DOM reads (`rectOf(section)` per frame, two rects for the Austin H2 scrim, `rectOf(tG.h2)` and `rectOf(host)` during the title beat, `coverage()` in mount.js) are cheap while layout is clean; measure on the real page before touching them (JS per step measured 0.3 to 2.4 ms median).
+`checkShaderErrors = false` after warm-up skips `getProgramParameter`/info-log round trips for later compiles (none are expected after F2). `fire` PointLight is always visible at intensity 0 when idle; keeping it out of `visible` until the launch would change the light count and force a recompile, so it needs a warm path. `the low tier already ships a 2048x1024 `low/mars.webp` (manifest.json), so nothing to do; only the high tier loads the 4096x2048 file (about 45 MB on the GPU). Allocation per frame is negligible (0.12 to 2.2 KB/frame, heap sampling), `yard.js` costs 42 us per frame (measured 10,000 frames in 414 ms), so caching it is not worth the complexity. DOM reads (`rectOf(section)` per frame, two rects for the Austin H2 scrim, `rectOf(tG.h2)` and `rectOf(host)` during the title beat, `coverage()` in mount.js) are cheap while layout is clean; measure on the real page before touching them (JS per step measured 0.3 to 2.4 ms median).
 
 ## 4. Post chain cost by level (estimates, arithmetic shown)
 
@@ -125,14 +125,13 @@ Screenshots at fixed states (clock -1.5, S 0.1, 0.85, 1.12; 640x360; `shot.mjs`,
 
 ## 6. What I would do next, in order
 
-1. Turn `?postpr=1` on by default after one owner look at levels 0 to 3 on a hi-DPI display (F1); it makes the governor ladder real and fixes the Firefox start.
-2. Ship F2 and F3 (done) and re-measure boot on a real GPU: programs 157 -> about 100, memory minus 23 MB.
-3. Crane shadow cadence every 3rd frame (F4); the biggest measured per-frame GPU item that has no visual downside beyond crane shadow lag.
-4. Take pads and panels out of the shadow casters or use the far LOD in the shadow pass (F7), then re-census.
-5. Decide DOF cost (F5): raise the skip threshold or half-res DOF; do it with the look owner.
-6. Merge tone and lens (F6).
-7. Split the colony swap into idle slices (F10) and make governor steps hold-aware (F11); measure both on a real GPU first.
-8. Offer `?fps=80` / `?idle=30` to 120 to 165 Hz owners; keep uncapped as the default (F8).
+1. Check the whole set on the owner's 160 Hz hi-DPI display with `?gov=log` (level changes, deferral, pacing, merged pass) and a GPU trace of the DOF and tone passes.
+2. Look at skies with `?hdr=rg11b10` on a GPU; if there is no banding make it the default (about 58 MB, estimate).
+3. Take pads and panels out of the shadow casters or use the far LOD in the shadow pass (F7), then re-census.
+4. Split the colony swap into idle slices (F10) after a real-hardware trace says which part of the 165 ms is the biggest.
+5. Check `footer/` and `solutions/` for the same stale pixel ratio and the same uncapped 120 to 165 Hz behaviour (they are not in this area).
+6. Pre-allocate or reuse the shadow map across levels if the deferral still leaves a visible step on a real device.
+7. Re-tune the DOF threshold and half-res weight divisor (1.5 px) on real hardware if the focus plane looks soft.
 
 ## 7. Could not verify here
 
@@ -141,3 +140,25 @@ GPU timings of any pass, the 165 ms colony swap long task, real compile cost (so
 ## 8. Other-area files worth a look (read only, not edited)
 
 `stage.js` alternates film and footer frames when both are visible (the overlap path halves the film's cadence by design; combined with `?fps` the governor feed assumes `overlap` is set correctly). `env.js` parses the shared query flags once; `?postpr`, `?fps` and `?idle` are read in `film/` instead, so they are not in the env switch table. `footer/` shares the same governor ideas and was not reviewed for the stale pixel-ratio issue (F1); worth a check there too.
+
+## 9. Round 2 (owner-approved changes, all committed)
+
+| Item | Commit | What it does | Metric |
+| --- | --- | --- | --- |
+| F1 post pixel ratio default ON | 47ebbea | `composer.setPixelRatio` in `post.setSize`; `?postpr=0` restores the old behaviour | Targets match the governor at dpr 1, 1.5, 2 and levels 5,4,3,2,1,0,3,5 (640x360: 960x540 at level 5, 800x450 at 4, 640x360 at 3 to 1, 480x270 at 0); TAA history valid again one frame after the resize; no page errors. Estimate: level 3 post pixels 2.25x fewer on a 1.5 base |
+| F4 crane shadows | e5621dc | when only cranes turn (`built` false) the map redraws every 3rd frame; while scroll or the launch plume moves (`built` true) the old per-frame rule holds | shadow draws per 30 frames at S .85 idle: 30 -> 10 (60 -> 20 per second); screenshots identical at `?post=2` |
+| F5 DOF | c859e50 | skip under 1 device px of reach (was 0.5); half-res taps + 2-fetch composite at governor levels 0 to 4, full res at level 5 | Frames still running DOF (samples along the track, bufW 2160 / 1440): Austin 19/19 -> 0/19 / 0/19 -> 0/19; Earth + space 75/75 -> 72/75 / 73/75 -> 70/75; colony 32/32 -> 32/32 both. Half-res cost estimate 36M vs 120M fetches at 2.916 Mpx; diff full vs half at S .85 mean 1.75/255 (noise floor 0.29) |
+| F8 pacing | 54cdb3a | default every 2nd frame from 110 Hz | 120 -> 60, 144 -> 72, 165 -> 82 rendered frames per second, 60 and 75 Hz unchanged, clock exact, governor sees 16.67 / 13.89 / 12.12 ms |
+| F11 safe steps | 30eb72a | heavy governor changes wait for 300 ms of still scroll, a hold window, 1 s of 40 ms frames, or 3 s; urgent steps (emergency, stalls, pin, start) go at once | 30 ms frames while scrolling: pr change about 1.5 s after the level step; 45 ms frames (emergency): same step |
+| F6 tone + lens | f62bda7 | one pass where no FXAA or SMAA follows and no heat is on (levels 0, 3, 4, 5); `?tonemerge=0` off | 19 -> 18 passes at level 3; 47 MB per frame at 2.916 Mpx less traffic (estimate); max 1/255 diff where the scene is deterministic |
+| F9 R11G11B10F | d05f151 | `?hdr=rg11b10` only | about 58 MB less at 2.916 Mpx (estimate); max diff 4 to 10 per channel in deterministic states |
+| F12 mars.webp | none | the low tier already ships 2048x1024 `low/mars.webp` | nothing to do |
+| F7, F10 | none | left as proposals: neither is small and risk-free (caster set and colony swap slicing both change what is drawn or when) | |
+
+Screenshots (in /tmp/p2film, not in the repo): `shots-final/{base,new}-{clock-1.5,S0.1,S0.85,S1.12}.png` (TAA on, 640x360, base 0b06303 vs HEAD) and `shots-final/cmp-S0.85-taa-on.png` side by side; TAA-off pairs `shot-f4b-*`/`shot-f4n-*` (F4, identical), `dof-t3-{full,half,full2}-*` (F5), `m-a-*`/`m-off-*` (F6), `m-hdr-*`/`m-hdrref-*` (F9), `shot-f1-{off,on}-*` (F1, dpr 2 level 3: differs by design).
+
+Diff method: per-channel max and mean absolute difference of PNG screenshots. Level 3 TAA is not deterministic across runs (the render counter that picks the jitter sample differs with timing), so TAA-off or zeroed TAA weights plus a pinned counter (`post.frame = 8`) are used wherever a pixel comparison is stated.
+
+Pacing caveat: from 110 Hz, not "above 90". At 100 Hz every 2nd frame is 20 ms, the governor's MISS line, so a 100 Hz display would read the cap as load. If the owner wants 91 to 109 Hz capped as well, the governor's MISS and capped rules need to learn the display interval first.
+
+stage.js: no change needed. The film cap is bypassed while `overlap` is true and stage.js alternation (film on even frames, footer on odd) still produces film frames at half the display rate there. The footer's own canvas is not capped when it is alone on screen at 120 to 165 Hz; if the owner wants that, `footer/` needs the same median-of-30 detector. env.js: no change needed (the new flags are read in `film/`).
