@@ -85,6 +85,20 @@ export const EXC_LIMITS = (() => {
 // inside the barrel at Lmax (checked in test/check-arm.mjs).
 export const EXC_HYD = { dead: 0.14, lip: 0.12, guide: 0.06 };
 
+// ------------------------------------------------------------------ articulated hauler dimensions (pure: the haul planner and the tests read them)
+// CAT 745 class at the excavator's 0.88 build scale (x 0.85 here: 745 length 11.2, width 3.45, cab roof 3.86, 29.5R25 tyres 1.85 dia).
+// Model metres; the scene scales every machine by MSCALE. Tractor origin: front axle centre on the ground (x forward, z right). Trailer
+// origin: the articulation pin on the ground. lf: front axle to the pin, lr: pin to the bogie centre, bs: half the bogie spacing.
+// box: footprints [x0, x1, half width] in each unit's frame (tyres, fenders, mirrors, bed rails). top: highest metal per unit (the cab
+// roof with the shroud on it; the bed's front lip). bed: the inside of the body in the trailer frame (floor height, rail top, half width).
+export const HAUL = {
+  lf: 1.9, lr: 4.4, bs: 0.85, tr: 0.78, tw: 0.62, tz: 1.12, art: 45 * Math.PI / 180,
+  box: { tractor: [-2.05, 1.8, 1.56], trailer: [-6.5, 0.12, 1.6] },
+  top: { tractor: 3.8, trailer: 3.28 },
+  hinge: [-5.75, 1.32], tip: 52 * Math.PI / 180,
+  bed: { x0: -6.05, x1: -0.78, floor: 1.5, rail: 2.97, z: 1.42 },
+};
+
 // opts.line: line art colour (any THREE.Color input), opts.solid: the hidden-line occluder colour
 const drain = g => { let r; while (!(r = g.next()).done); return r.value; };
 
@@ -219,7 +233,7 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
   // The shoes are STATIC local geometry: each vertex carries its shoe index (aRig) and the vertex shader seats it on the belt at
   // s = index * pitch + offset (RIG_VS below: the belt's pieces are in a uniform array, the offset is one number). Driving costs one
   // uniform, not a re-posed, re-uploaded buffer pair (the dozer's was 135 KB every frame while it moved).
-  const RIG_MAX = 6;   // belt pieces the shader holds (lines + arcs: 3 wheels = 6)
+  const RIG_MAX = 6;   // belt pieces the shader holds (lines + arcs: 3 wheels = 6); the last vec4 holds the left side's offset (z < 0)
   function makeTrack(path, w, zcs, yc, pitchWanted = 0.21, rib = 0.06) {
     const Pm = path.len, n = Math.round(Pm / pitchWanted), pitch = Pm / n;
     const shoe = new THREE.BoxGeometry(pitch * 0.82, 0.07, w).toNonIndexed(); shoe.translate(0, 0.035, 0);
@@ -243,13 +257,14 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
         for (let v = 0; v < cnt; v++) { const o = (b0 + v) * 3, lx = src[o], ly = src[o + 1]; pos[o] = px + lx * ny + ly * nx; pos[o + 1] = yc + py - lx * nx + ly * ny; pos[o + 2] = src[o + 2]; } } }
       t.computeBoundingSphere(); g.boundingSphere = t.boundingSphere.clone(); g.boundingSphere.radius += 1; t.dispose();
     }
-    // uniforms: [0] = (belt length, pitch, offset, y centre); then 3 vec4 per piece: (s0, L, arc?, th0) (x, y, dx or r, dy) (nx, ny)
-    const rig = new Float32Array(4 * (1 + 3 * RIG_MAX)); rig.set([path.len, pitch, 0, yc], 0);
+    // uniforms: [0] = (belt length, pitch, offset of the right side (z > 0), y centre); then 3 vec4 per piece: (s0, L, arc?, th0) (x, y, dx or r, dy) (nx, ny);
+    // last: (offset of the left side (z < 0), 0, 0, 0)
+    const LO = 4 * (1 + 3 * RIG_MAX), rig = new Float32Array(LO + 4); rig.set([path.len, pitch, 0, yc], 0);
     path.P.forEach((q, i) => { const o = 4 * (1 + 3 * i);
       if (q.arc) rig.set([q.s0, q.L, 1, q.th0, q.c[0], q.c[1], q.c[2], 0, 0, 0, 0, 0], o);
       else rig.set([q.s0, q.L, 0, 0, q.t.ax, q.t.ay, q.t.bx - q.t.ax, q.t.by - q.t.ay, q.t.nx, q.t.ny, 0, 0], o); });
-    let last = NaN; const U = { rig: { value: rig } };
-    const update = off => { if (off === last) return; last = off; rig[2] = off; };
+    let last = NaN, lastL = NaN; const U = { rig: { value: rig } };
+    const update = (off, offL = off) => { if (off === last && offL === lastL) return; last = off; lastL = offL; rig[2] = off; rig[LO] = offL; };
     update(0);
     return { geo: sGeo, edges: eGeo, update, U, shoes: n * nz, dispose() { sGeo.dispose(); eGeo.dispose(); } };
   }
@@ -269,9 +284,9 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     return mat;
   };
   // track shader: seats each shoe vertex on the belt from its shoe index (see makeTrack). Same look materials as the plain pair, one extra program each.
-  const RIG_VS = /* glsl */ `attribute float aRig; uniform vec4 uRig[${1 + 3 * RIG_MAX}];
+  const RIG_VS = /* glsl */ `attribute float aRig; uniform vec4 uRig[${2 + 3 * RIG_MAX}];
   vec3 rigPos(vec3 p){
-    vec4 H = uRig[0]; float s = mod(aRig*H.y + H.z, H.x);
+    vec4 H = uRig[0]; float s = mod(aRig*H.y + (p.z < 0. ? uRig[${1 + 3 * RIG_MAX}].x : H.z), H.x);
     vec4 A = uRig[1], B = uRig[2], C = uRig[3];
     for (int i = 1; i < ${RIG_MAX}; i++) { vec4 a = uRig[1 + 3*i]; if (a.y > 0. && s >= a.x) { A = a; B = uRig[2 + 3*i]; C = uRig[3 + 3*i]; } }
     float u = s - A.x; vec2 q, n;
@@ -511,6 +526,8 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
       setArm(a1, a2, a3, sw) { turret.rotation.y = sw; boom.rotation.z = a1; stick.rotation.z = a2; bucket.rotation.z = a3; hyd.update(a1, a2, a3); },
       drive(dist) { trackOff += dist; track.update(trackOff); },
       setDrive(d) { trackOff = d; track.update(d); },
+      // each track on its own (model m of belt travel): they counter-rotate when the machine turns on the spot. left = the -z side
+      setTracks(dl, dr) { trackOff = dr; track.update(dr, dl); },
       setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
       dispose() { mt.clear(); track.dispose(); hyd.dispose(); m.dispose(); },
     };
@@ -1021,12 +1038,125 @@ export function createMachineKit(THREE, { line = 0xffffff, solid = 0x000000, pho
     };
   }
 
+  // ================================================================== ARTICULATED HAULER (CAT 745 class, see HAUL)
+  // Two units on an articulation pin: the tractor (cab, engine, front axle) and the trailer (frame, bogie, body). The cab sits up front
+  // with a clear roof for the Cyber Shroud. Moving nodes: tractor, front axle, trailer, two bogie axles, the body (tips about its hinge),
+  // the hoist rams (only drawn while the body is up).
+  let haT = null;
+  const haTemplate = () => drain(haTemplateG());
+  function* haTemplateG() {
+    if (haT) return haT;
+    const H = HAUL;
+    // tractor: frame, hitch, sloped hood, bumper, fenders, cab with glass, roof slab (the shroud sits on it), steps, stack, mirrors
+    const c = part();
+    c.bx(-1.8, 0.7, -0.44, 1.3, 1.22, 0.44);                     // frame
+    c.bx(-2.02, 0.55, -0.34, -1.62, 1.48, 0.34);                  // front half of the articulation hitch
+    c.cyl(0.12, 1.15, -1.9, 1.02, 0, 12, 'y');                    // hitch pin
+    c.ext([[-0.1, 1.15], [1.42, 1.15], [1.62, 1.38], [1.56, 1.78], [1.18, 2.04], [-0.1, 2.14]], 1.46, -0.73);   // hood, falling to the nose
+    for (let k = 0; k < 6; k++) c.line([[1.63, 1.42 + k * 0.06, -0.55], [1.63, 1.42 + k * 0.06, 0.55]]);     // grille
+    for (const z of [-0.36, 0.36]) c.line([[1.2, 2.06, z], [0.0, 2.14, z]]);                                   // hood panel breaks
+    c.bx(1.5, 0.6, -1.02, 1.8, 1.02, 1.02);                        // bumper
+    for (const z of [-0.82, 0.82]) c.box(0.06, 0.12, 0.2, 1.83, 0.92, z);   // lamps
+    for (const s of [-1, 1]) {
+      const w = H.tw + 0.14;                                       // fenders over the front tyres
+      c.extShape(sh => { sh.absarc(0, H.tr, H.tr + 0.17, 0.15, Math.PI - 0.15, false); sh.absarc(0, H.tr, H.tr + 0.09, Math.PI - 0.15, 0.15, true); }, w, s * H.tz - w / 2, 14);
+      c.bx(-1.15, 1.18, s * 0.44, -0.35, 1.24, s * 1.42);          // deck beside the cab
+    }
+    const x0 = -1.2, x1 = 0.14, z0 = -0.8, z1 = 0.8, y0 = 1.98, y1 = 3.28;
+    c.bx(x0, 1.22, -0.72, x1, y0, 0.72);                           // cab plinth
+    c.bx(x0 - 0.03, y0, z0 - 0.03, x1 + 0.03, y0 + 0.06, z1 + 0.03);   // sill
+    for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) c.bx(x - 0.05, y0, z - 0.05, x + 0.05, y1, z + 0.05);
+    for (const z of [z0, z1]) c.bx(x0 + 0.06, y0 + 0.08, z - 0.01, x1 - 0.06, y1 - 0.06, z + 0.01);   // side glass
+    c.box(0.03, y1 - y0 - 0.16, z1 - z0 - 0.12, x1 + 0.02, (y0 + y1) / 2, 0, 0, 0, -0.06);              // windscreen
+    c.bx(x0 - 0.01, y0 + 0.08, z0 + 0.06, x0 + 0.01, y1 - 0.06, z1 - 0.06);                            // rear glass
+    c.line([[-0.95, y0 + 0.08, z0 - 0.015], [-0.3, y0 + 0.08, z0 - 0.015], [-0.3, y1 - 0.08, z0 - 0.015], [-0.95, y1 - 0.08, z0 - 0.015], [-0.95, y0 + 0.08, z0 - 0.015]]);   // door (left)
+    c.bx(x0 - 0.08, y1, z0 - 0.07, x1 + 0.1, y1 + 0.1, z1 + 0.07);  // roof, top face 3.38: left clear for the Cyber Shroud
+    for (const s of [-1, 1]) { c.rod([x1 + 0.02, y1 - 0.2, s * 0.78], [x1 + 0.34, y1 - 0.5, s * 1.02], 0.02, 6); c.box(0.05, 0.26, 0.15, x1 + 0.37, y1 - 0.64, s * 1.05); }   // mirrors
+    for (let k = 0; k < 3; k++) c.bx(-0.75, 0.42 + k * 0.28, -1.5, -0.35, 0.45 + k * 0.28, -1.22);   // steps (left)
+    c.rod([-0.3, 1.24, -1.4], [-0.3, 2.2, -0.9], 0.022, 6);       // grab rail
+    c.rod([-1.4, 1.22, 0.55], [-1.4, 3.05, 0.55], 0.06, 8); c.cyl(0.08, 0.05, -1.4, 3.06, 0.55, 8, 'y');   // exhaust stack
+    c.bx(-1.75, 1.22, -0.7, -1.3, 1.72, 0.3);                      // tanks behind the cab
+    const tractor = c.build(); yield;
+    // tyres, one axle each: front, bogie (two)
+    const wt = part();
+    for (const s of [-1, 1]) wheel(wt, H.tr, H.tw, { z0: s * H.tz, side: s, lugs: 16, rim: 0.6, lugD: 0.06, lugW: 0.12 });
+    wt.cyl(0.09, 2 * H.tz - H.tw, 0, 0, 0, 10);                    // axle
+    const axle = wt.build(); yield;
+    // trailer: hitch collar, frame rails and cross members, bogie walking beams, hoist lugs, tail lamps
+    const t = part(), bA = -H.lr + H.bs, bB = -H.lr - H.bs;
+    t.bx(-0.32, 0.55, -0.3, 0.12, 1.48, 0.3); t.cyl(0.16, 0.5, -0.1, 1.02, 0, 12, 'y');   // rear half of the hitch
+    for (const s of [-1, 1]) t.bx(-6.05, 0.8, s * 0.55 - 0.12, -0.25, 1.22, s * 0.55 + 0.12);   // frame rails
+    for (const x of [-0.6, -2.3, -4.4, -5.9]) t.bx(x - 0.1, 0.84, -0.55, x + 0.1, 1.18, 0.55);   // cross members
+    for (const s of [-1, 1]) {
+      t.bx(bB - 0.3, 0.52, s * 0.66 - 0.08, bA + 0.3, 0.92, s * 0.66 + 0.08);   // walking beam
+      t.cyl(0.14, 0.2, -H.lr, 0.72, s * 0.66, 12);                            // its pivot
+      t.bx(-2.55, 0.85, s * 0.55 - 0.08, -2.25, 1.2, s * 0.55 + 0.08);       // hoist ram base lug
+      for (const x of [bA, bB]) { t.extShape(sh => { sh.absarc(x, H.tr, H.tr + 0.14, 0.2, Math.PI - 0.2, false); sh.absarc(x, H.tr, H.tr + 0.07, Math.PI - 0.2, 0.2, true); }, H.tw + 0.1, s * H.tz - (H.tw + 0.1) / 2, 12); }   // mudguards
+    }
+    for (const s of [-1, 1]) t.box(0.05, 0.12, 0.2, -6.1, 1.0, s * 0.45);   // tail lamps
+    const trailer = t.build(); yield;
+    // body: floor with the tail upsweep, side plates, top rails, ribs, front wall and its spill guard, hinge lugs. Built in the trailer
+    // frame, then moved to the hinge (the node turns about it)
+    const b = part(), B = H.bed, zb = B.z;
+    b.ext([[B.x0 - 0.32, 1.82], [B.x0, B.floor - 0.08], [B.x1, B.floor - 0.08], [B.x1, B.floor], [B.x0 + 0.03, B.floor], [B.x0 - 0.27, 1.9]], 2 * zb, -zb);   // floor plate
+    for (const s of [-1, 1]) {
+      b.ext([[B.x0 - 0.32, 1.82], [B.x0 - 0.22, B.rail], [B.x1, B.rail], [B.x1, B.floor - 0.08], [B.x0, B.floor - 0.08]], 0.07, s > 0 ? zb : -zb - 0.07);   // side plate
+      b.bx(B.x0 - 0.24, B.rail - 0.02, s * zb - 0.08, B.x1 + 0.05, B.rail + 0.1, s * zb + 0.1);   // top rail
+      for (let k = 0; k < 5; k++) { const x = B.x0 + 0.5 + k * 1.1; b.bar([x, B.floor - 0.06, s * (zb + 0.09)], [x + 0.08, B.rail - 0.02, s * (zb + 0.09)], 0.08, 0.06); }   // ribs
+      b.bx(B.x0 + 0.2, 1.24, s * 0.55 - 0.1, B.x1, B.floor - 0.08, s * 0.55 + 0.1);   // longitudinal beam (rests on the frame)
+      b.cyl(0.1, 0.24, H.hinge[0], H.hinge[1], s * 0.55, 12);   // hinge lug
+      b.bx(-2.1, 1.12, s * 0.55 - 0.07, -1.8, B.floor - 0.08, s * 0.55 + 0.07);   // hoist ram lug
+    }
+    b.bx(B.x1, B.floor - 0.08, -zb - 0.07, B.x1 + 0.1, 3.08, zb + 0.07);   // front wall
+    b.ext([[B.x1, 3.06], [B.x1 + 0.1, 3.06], [B.x1 + 0.46, 3.24], [B.x1 + 0.4, 3.28]], 2 * zb, -zb);   // spill guard over the hitch
+    for (let k = 1; k < 4; k++) b.line([[B.x1 - 0.012, B.floor + k * 0.36, -zb + 0.05], [B.x1 - 0.012, B.floor + k * 0.36, zb - 0.05]]);   // front wall ribs (inside)
+    const body = b.build(); body.geo.translate(-H.hinge[0], -H.hinge[1], 0); body.edges.translate(-H.hinge[0], -H.hinge[1], 0); yield;
+    // hoist rams (both sides), drawn along +x from the base pin at rest length HOIST.L0; the node turns and stretches with the body
+    const L0 = Math.hypot(HOIST.b[0] - HOIST.a[0], HOIST.b[1] - HOIST.a[1]), hc = part();
+    for (const s of [-1, 1]) { hc.rod([0.04, 0, s * 0.55], [L0 * 0.95, 0, s * 0.55], 0.09, 10); hc.cyl(0.12, 0.16, 0, 0, s * 0.55, 10); }
+    const hoist = hc.build(); yield;
+    haT = { tractor, axle, trailer, body, hoist, L0 };
+    return haT;
+  }
+  const HOIST = { a: [-2.4, 1.02], b: [-1.95, 1.3] };   // ram base pin (trailer frame), its top pin on the body (trailer frame, body down)
+
+  function hauler() {
+    const T = haTemplate(), m = mats(), H = HAUL;
+    const root = new THREE.Group();
+    const tractor = node(T.tractor, m); root.add(tractor);
+    const fa = node(T.axle, m); fa.position.set(0, H.tr, 0); tractor.add(fa);
+    const trailer = node(T.trailer, m); root.add(trailer);
+    const ba = node(T.axle, m); ba.position.set(-H.lr + H.bs, H.tr, 0); trailer.add(ba);
+    const bb = node(T.axle, m); bb.position.set(-H.lr - H.bs, H.tr, 0); trailer.add(bb);
+    const bed = node(T.body, m); bed.position.set(H.hinge[0], H.hinge[1], 0); trailer.add(bed);
+    const hoist = node(T.hoist, m); hoist.position.set(HOIST.a[0], HOIST.a[1], 0); hoist.visible = false; trailer.add(hoist);
+    const fade = opacityFn(root, m), mt = mounts(tractor, fade);
+    const rx = HOIST.b[0] - H.hinge[0], ry = HOIST.b[1] - H.hinge[1];
+    let tip = 0;
+    return {
+      root, tractor, trailer, bed, kind: 'hauler', line: m.line,
+      // cab roof in the tractor's space (model metres): top face and centre
+      ROOF: { y: 3.38, x: -0.53, z: 0, len: 1.5, wid: 1.74 },
+      // a: body tip angle (rad, 0 = down); the rams follow it and only draw while it is up
+      setBed(a) {
+        if (a === tip) return; tip = a; bed.rotation.z = a;   // the front of the body rises
+        const c = Math.cos(a), s = Math.sin(a), px = H.hinge[0] + rx * c - ry * s - HOIST.a[0], py = H.hinge[1] + rx * s + ry * c - HOIST.a[1];
+        hoist.visible = a > 0.01; hoist.rotation.z = Math.atan2(py, px); hoist.scale.x = Math.hypot(px, py) / T.L0;
+      },
+      // wheel roll from the distance each unit has travelled (model m)
+      setRoll(df, dr) { fa.rotation.z = -df / H.tr; ba.rotation.z = bb.rotation.z = -dr / H.tr; },
+      setDrive() {}, setArm() {},
+      setOpacity: mt.setOpacity, mount: mt.mount, unmount: mt.unmount,
+      dispose() { mt.clear(); m.dispose(); },
+    };
+  }
+
   function disposeAll() {
-    for (const T of [excT, bhT, rlT, dzT, cpT]) if (T) for (const k in T) if (T[k] && T[k].geo) { T[k].geo.dispose(); T[k].edges.dispose(); }
-    excT = bhT = rlT = dzT = cpT = null;
+    for (const T of [excT, bhT, rlT, dzT, cpT, haT]) if (T) for (const k in T) if (T[k] && T[k].geo) { T[k].geo.dispose(); T[k].edges.dispose(); }
+    excT = bhT = rlT = dzT = cpT = haT = null;
   }
 
   // generators that build a machine type's shared geometry in slices (yield between parts); the factory call after it is then cheap
-  const prepare = { excavator: function* () { yield* excTemplateG(); yield; hydTemplate(); }, dozer: dzTemplateG, compactor: cpTemplateG };
-  return { excavator, backhoe, roller, dozer, compactor, prepare, disposeAll, clip };
+  const prepare = { excavator: function* () { yield* excTemplateG(); yield; hydTemplate(); }, dozer: dzTemplateG, compactor: cpTemplateG, hauler: haTemplateG };
+  return { excavator, backhoe, roller, dozer, compactor, hauler, prepare, disposeAll, clip };
 }

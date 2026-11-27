@@ -13,6 +13,7 @@ export { createPacer };
 import { PALETTE, dotMaterial, lineMaterial, lineSet, motes, particles, skyMaterial, createPost } from './sol-fx.js';
 import { createMachineKit } from './sol-machines.js';
 import { createDig } from './sol-game.js';
+import { createHaul } from './sol-haul.js';
 import { createCrew } from './sol-crew.js';
 import { createHud } from './sol-hud.js';
 import { buildShroud } from './sol-shroud.js';
@@ -39,7 +40,8 @@ const TOPO_A = 0.2;      // contour strength in Planning without a [data-sol-top
 const WORDS = {
   hint: ['hint-zone', 'Click the ground to mark a dig'], hintPoint: ['hint-point', 'Keep clicking to outline it'], hintClose: ['hint-close', 'Click the first point to start digging'],
   hintCancel: ['hint-cancel', 'Esc to cancel'], zone: ['label-zone', 'Zone'],
-  hintDrag: ['hint-drag', 'Press and drag to mark a dig'], hintClick: ['hint-click', 'Click the ground to dig a patch there'],   // ?dig=drag / ?dig=click only
+  hintBox: ['hint-box', 'or drag a box'], hintRelease: ['hint-release', 'Release to start digging'],   // the box drag: a note beside the first hint, and the hint while a box is dragged
+  hintClick: ['hint-click', 'Click the ground to dig a patch there'],   // ?dig=click only
   dig: ['tag-dig', 'Excavator 01'], haul: ['tag-haul', 'Dozer 02'], grade: ['tag-grade', 'Roller 03'],
   auto: ['hud-auto', 'Autopilot'], manual: ['hud-manual', 'Manual'], swing: ['hud-swing', 'Swing'], reach: ['hud-reach', 'Reach'],
   depth: ['hud-depth', 'To grade'], load: ['hud-load', 'Load'], grade_: ['hud-grade', 'Grade'],
@@ -197,6 +199,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   await P.run(kit.prepare.excavator()); const exc = mk(SLOT.dig);
   await P.run(kit.prepare.dozer()); const loader = mk(SLOT.haul);   // loader / roller: the haul and grade slots
   await P.run(kit.prepare.compactor()); const roller = mk(SLOT.grade);
+  await P.run(kit.prepare.hauler()); const trucks = [mk(kit.hauler), mk(kit.hauler)];   // two articulated haulers the excavator loads
   await P.step();
 
   // ------------------------------------------------------------------ the dig and the crew
@@ -206,9 +209,11 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   const qs = new URLSearchParams(typeof location !== 'undefined' ? location.search : ''), mq = q => typeof matchMedia === 'function' && matchMedia(q).matches;
   let introSeen = false; try { introSeen = sessionStorage.getItem(INTRO_KEY) === '1'; } catch (_) { /* private mode: it plays every visit */ }
   const introOn = interactive && qs.get('demo') !== '0' && (qs.get('demo') === '1' || (!introSeen && mq('(pointer: fine)'))) && !mq('(prefers-reduced-motion: reduce)');
-  const dig = createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock, gesture: qs.get('dig') || '',
-    intro: { on: introOn, done() { try { sessionStorage.setItem(INTRO_KEY, '1'); } catch (_) { /* fine */ } } } });
   const crew = createCrew({ field, slot: { haul: loader, grade: roller }, parts, MSCALE });
+  const ZONES = machineZones(crew);   // working zones (plan view; the trucks keep off the dozer's and the roller's)
+  const haul = createHaul({ THREE, trucks, field, parts, MSCALE, statics: [ZONES[1], ZONES[2]] });
+  const dig = createDig({ THREE, exc, field, camera, canvas, interactive, MSCALE, parts, clock, haul, gesture: qs.get('dig') || '',
+    intro: { on: introOn, done() { try { sessionStorage.setItem(INTRO_KEY, '1'); } catch (_) { /* fine */ } } } });
 
   // ------------------------------------------------------------------ plan graphics (lines)
   const L = (color, width, maxSeg, opts) => { const s = lineSet(THREE, lineMaterial(THREE, RES, PRU, TU, color, { width, ...opts }), maxSeg); s.mesh.renderOrder = 4; scene.add(s.mesh); return s; };
@@ -259,7 +264,6 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   }
   const foot = L(col(pal.accent), 1, 96);   // machine footprints (live)
   // working zones (plan): where each machine's body goes. They never overlap (see SITE in sol-terrain.js).
-  const ZONES = machineZones(crew);
   const zoneL = [L(col(pal.cut), 1, 120), L(col(pal.accent), 1, 120), L(col(pal.fill), 1, 120)];
   ZONES.forEach((z, j) => zoneL[j].commit(dashed(zoneL[j], 0, z)));
 
@@ -268,7 +272,18 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   const gY = (x, z) => field.ground(x, z) + 0.25;
   { let i = 0; for (const p of crew.paths()) i = polyline(pathL, i, p.pts, false, p.t0, p.t1, 1, gY, 1); pathL.commit(i); }
   { let i = 0; const n = crew.lanes.length; for (let k = 0; k < n; k++) { const a = crew.rollPath[k * 2], b = crew.rollPath[k * 2 + 1]; i = polyline(pathR, i, [a, b], false, k / n, (k + 1) / n, 1, gY, 12); } pathR.commit(i); }
-  { const pts = []; for (let k = 0; k <= 24; k++) { const sw = lerp(0.5, SITE.pileSw, k / 24), a = SITE.E.yaw + sw, r = lerp(8.4, SITE.pileR, k / 24); pts.push([SITE.E.x + Math.cos(a) * r, SITE.E.z - Math.sin(a) * r]); } polyline(pathE, 0, pts, false, 0, 1, 1, gY, 1); pathE.commit(24); }
+  // the excavator's swing from the dig to the truck bay (rebuilt when the bay moves); before there is a bay, toward where it will be
+  let pathEBay = undefined, bayBrg = SITE.E.yaw + 1.83;
+  const pathEPts = Array.from({ length: 25 }, () => [0, 0]);
+  function pathEBuild() {
+    const B = dig.site.bay, E = dig.body; if (B === pathEBay) return; pathEBay = B;
+    const a0 = E.yaw + (dig.op.user && dig.job.n > 2 ? Math.atan2(-(dig.job.cz - E.z), dig.job.cx - E.x) - E.yaw : 0.2);
+    let a1 = B ? Math.atan2(-(B.bz - E.z), B.bx - E.x) : bayBrg; bayBrg = a1;
+    a1 = a0 + Math.atan2(Math.sin(a1 - a0), Math.cos(a1 - a0));
+    for (let k = 0; k <= 24; k++) { const a = lerp(a0, a1, k / 24), r = lerp(8.4, B ? Math.hypot(B.bx - E.x, B.bz - E.z) + 1.4 : 9.6, k / 24); pathEPts[k][0] = E.x + Math.cos(a) * r; pathEPts[k][1] = E.z - Math.sin(a) * r; }
+    polyline(pathE, 0, pathEPts, false, 0, 1, 1, gY, 1); pathE.commit(24);
+  }
+  pathEBuild();
   links.commit(3);
   const PATHS = [pathL, pathR, pathE];
 
@@ -546,8 +561,8 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   const tel = { swing: 0, reach: 0, grade: 0, load: 0, auto: true, ground: 0 };
   const v3 = new THREE.Vector3(), v4 = new THREE.Vector3(), pin = new THREE.Vector3(), bend = new THREE.Vector3();
   let planT = 0, scanT = 3, lastPlanVis = false, hintA = 0, hintP = -1, viewT = 0, viewOK = true;
-  const HINT_PULSE = 1.2, HINT_PULSES = 3;   // the first hint breathes 3 times (1.2 s each), then holds steady
-  const tipXY = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PHS = [0, 0, 0];
+  const HINT_PULSE = 1.2, HINT_PULSES = 2;   // the first hint breathes twice (1.2 s each), then holds steady
+  const tipXY = [0, 0], tipXY2 = [0, 0], ANCH = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], PHS = [0, 0, 0];
   const LAB = [tagWords.dig, tagWords.haul, tagWords.grade], TCOL = [pal.cut, pal.accent, pal.fill];
   const MRK = 28, GHOST = 18;   // points per marker ring, per ghost path
   const hudState = { wDig: 0, wPlan: 0, wExec: 0, tip: [0, 0], tipOn: false, tel, safeTop: 0.2, safeBottom: 0.3, hint: 0, hintText: words.hint, t: 0, tags: [{}, {}, {}], zones: [{}, {}],
@@ -557,7 +572,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     mbox: [new Float32Array(4), new Float32Array(4), new Float32Array(4)],
     // the zone being drawn (corners on screen, snap, cursor) and the closed zone's tag (what it has dug)
     zone: { n: 0, pts: new Float32Array(dig.MAXV * 2), ok: new Uint8Array(dig.MAXV), snap: false, hov: false, h: [0, 0], pulse: 0 },
-    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '', hintPulse: 0,
+    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '', hintPulse: 0, hov: { a: 0, p: [0, 0], ok: true, r: 12 },
     cur: { a: 0, ok: false, p: [0, 0], pa: 99 } };   // the intro's cursor sprite (screen point, alpha, seconds since a press)
   const MRK_R = 1.6, pp = [0, 0], EXC_BOX = { hx: 3, hz: 3, off: 0 };
   // project the click markers and the ghost path (no allocation: straight into the preallocated arrays)
@@ -655,12 +670,13 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     dig.setArmed(mode === 1 && !fl, viewOK);
     dig.update(dt, clockT);
     crew.update(dt, clockT);
+    haul.update(dt, clockT);
     field.upload(dt, renderer);
     parts.flush();
 
     // machines right in front of the lens fade out (the chase cam looks across the haul road)
     { const dE = camera.position.distanceTo(exc.root.position), fade = m => m.setOpacity(lerp(1, clamp01((camera.position.distanceTo(m.root.position) - dE * 0.9) / (dE * 0.35)), wD));
-      fade(loader); fade(roller); }
+      fade(loader); fade(roller); for (const t of trucks) fade(t); }
 
     // dots: look + transition pulse + idle scan + heat patch
     U.uCamP.value.copy(camera.position);
@@ -687,6 +703,11 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
       const Lr = crew.L, Rr = crew.R;
       setBox(2, Lr.x + Math.cos(Lr.yaw) * 0.4, Lr.z - Math.sin(Lr.yaw) * 0.4, Lr.yaw, 5.0, 2.6, 5.4, 0.7);
       setBox(3, Rr.x - Math.cos(Rr.yaw) * 0.6, Rr.z + Math.sin(Rr.yaw) * 0.6, Rr.yaw, 3.6, 1.6, 4.2, 0.7);
+      for (let j = 0; j < 2; j++) {   // the haul trucks: one box over both units, along the trailer
+        const p = trucks[j] && haul.trucks[j].p; if (!p) continue;
+        const D = haul.D, hx = p.fx - Math.cos(p.yf) * D.LF, hz = p.fz + Math.sin(p.yf) * D.LF, c = Math.cos(p.yr), sn = Math.sin(p.yr), a = D.R[0], b = D.LF + D.T[1];
+        const mid = (a + b) / 2; setBox(4 + j, hx + c * mid, hz - sn * mid, p.yr, (b - a) / 2, D.R[2], 4.4, trucks[j].root.visible ? 0.7 : 0);
+      }
     }
 
     // plan graphics
@@ -702,11 +723,18 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
       i = rectFoot(foot, i, E.x, E.z, E.yaw, F.dig.hx, F.dig.hz); i = rectFoot(foot, i, E.x, E.z, E.yaw + sw, F.house.hx, F.house.hz);
       i = rectFoot(foot, i, crew.L.x + Math.cos(crew.L.yaw) * F.haul.off, crew.L.z - Math.sin(crew.L.yaw) * F.haul.off, crew.L.yaw, F.haul.hx, F.haul.hz);
       i = rectFoot(foot, i, crew.R.x + Math.cos(crew.R.yaw) * F.grade.off, crew.R.z - Math.sin(crew.R.yaw) * F.grade.off, crew.R.yaw, F.grade.hx, F.grade.hz);
+      for (const t of haul.trucks) {   // each truck as its two units
+        const p = t.p, D = haul.D, hx = p.fx - Math.cos(p.yf) * D.LF, hz = p.fz + Math.sin(p.yf) * D.LF, cf = Math.cos(p.yf), sf = Math.sin(p.yf), cr = Math.cos(p.yr), sr = Math.sin(p.yr);
+        const mt = (D.T[0] + D.T[1]) / 2, mr = (D.R[0] + D.R[1]) / 2;
+        i = rectFoot(foot, i, p.fx + cf * mt, p.fz - sf * mt, p.yf, (D.T[1] - D.T[0]) / 2, D.T[2]);
+        i = rectFoot(foot, i, hx + cr * mr, hz - sr * mr, p.yr, (D.R[1] - D.R[0]) / 2, D.R[2]);
+      }
       foot.commit(i);
     }
     // exec graphics: live paths with a bright head where each machine is, data links pulsing between the machines
     const ev = clamp01((wE - 0.3) / 0.7);
-    PHS[0] = crew.L.t; PHS[1] = crew.R.t; PHS[2] = clamp01((tel.swing * DEG - 0.5) / (SITE.pileSw - 0.5));
+    PHS[0] = crew.L.t; PHS[1] = crew.R.t; { const E = dig.body, a = E.yaw + tel.swing * DEG, a0 = Math.atan2(-(pathEPts[0][1] - E.z), pathEPts[0][0] - E.x), a1 = Math.atan2(-(pathEPts[24][1] - E.z), pathEPts[24][0] - E.x); PHS[2] = clamp01(wrap(a - a0) / (wrap(a1 - a0) || 1)); }
+    if (ev > 0.004) pathEBuild();
     for (let j = 0; j < 3; j++) {
       const s = PATHS[j]; s.mesh.visible = ev > 0.004; s.mat.uniforms.uOpacity.value = ev; s.mat.uniforms.uFlow.value.set(0.25, 4, 0.5, 0.45); s.mat.uniforms.uHead.value.set(PHS[j], 1.6, 0.25, 0.45);
     }
@@ -728,12 +756,17 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     hudState.wDig = wD * (fl ? 0 : 1) + (fl ? Math.max(0, wTo.y * (k - 0.75) * 4) : 0); hudState.wPlan = clamp01((wP - 0.6) / 0.4); hudState.wExec = clamp01((wE - 0.6) / 0.4);
     hudState.safeTop = SAFE.top; hudState.safeBottom = SAFE.bottom; hudState.t = clockT;
     hudState.tip = project(tip.x, tip.y, tip.z, tipXY) ? tipXY : null;
+    { // hover reticle on the ground under the pointer: a ring the size of a ~2.2 m patch (14 to 34 px), muted with a bar where a click can't dig
+      const Hv = dig.hover, R = hudState.hov, on = interactive && mode === 1 && !fl && Hv.on && project(Hv.x, Hv.y, Hv.z, R.p);
+      if (on) { R.ok = Hv.ok; project(Hv.x + 2.2, Hv.y, Hv.z, tipXY2); R.r = Math.max(14, Math.min(34, Math.hypot(tipXY2[0] - R.p[0], tipXY2[1] - R.p[1]))); project(Hv.x, Hv.y, Hv.z, R.p); }
+      R.a += ((on ? 1 : 0) - R.a) * (1 - Math.exp(-dt * 14));
+    }
     // hint: what a click does next (start a zone / add corners / close it on the first corner). It stays up the whole time
     // the dig view is on (busy or not, #43); a change of text swaps in place. It only fades with the tab change.
     const want = interactive && mode === 1 && !fl ? dig.hint : '';
-    if (want) { hudState.hintText = want === 'close' ? words.hintClose : want === 'point' ? words.hintPoint : dig.gesture === 'drag' ? words.hintDrag : dig.gesture === 'click' ? words.hintClick : words.hint; hudState.hintSub = want === 'zone' ? '' : words.hintCancel; }
+    if (want) { hudState.hintText = want === 'close' ? words.hintClose : want === 'point' ? words.hintPoint : want === 'box' ? words.hintRelease : dig.gesture === 'click' ? words.hintClick : words.hint; hudState.hintSub = want === 'zone' ? (dig.gesture ? '' : words.hintBox) : words.hintCancel; }
     hintA += ((want ? 1 : 0) - hintA) * (1 - Math.exp(-dt * (want ? 3 : 8))); hudState.hint = hintA;
-    // the first hint of the page (after the intro hands over, or at once without one) pulses 3 times, once
+    // the first hint of the page (after the intro hands over, or at once without one) pulses twice, once
     if (hintP < 0 && want === 'zone' && hintA > 0.3) hintP = 0;
     if (hintP >= 0 && hintP < HINT_PULSE * HINT_PULSES) { hintP += dt; const ph = (hintP % HINT_PULSE) / HINT_PULSE, sn = Math.sin(Math.PI * ph); hudState.hintPulse = hintP < HINT_PULSE * HINT_PULSES ? sn * sn : 0; } else hudState.hintPulse = 0;
     // the readout (Autopilot / Manual + telemetry) is always on in the dig view too; only its values change (sol-hud.js)
@@ -867,7 +900,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
         if (!kit) return null;
         if (dead) { kit.dispose(); return null; }
         shroudKit = kit;
-        const g = [exc, loader, roller].map(m => kit.mount(m, color));
+        const g = [exc, loader, roller, ...trucks].map(m => kit.mount(m, color));
         shroud = g[0]; shroud.userData.all = g; shroud.userData.size = kit.size;
         return shroud;
       })
@@ -891,7 +924,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   // The same 1125 steps, in slices (a generator step per 8 sim steps, a yield per 6 ms), so no task is longer than a few ms. The first 225 run
   // before createSolutions returns, as they always did: the page's first setMode (which starts the camera's follow smoothing from where the
   // excavator is at that moment) then sees the same state, so the look of the first shots is unchanged. The rest run in `ready`.
-  const age = (a, b) => (function* () { for (let n = a; n < b; n++) { clockT += 1 / 15; dig.update(1 / 15, clockT); crew.update(1 / 15, clockT); if ((n & 1) === 1) yield; } })();
+  const age = (a, b) => (function* () { for (let n = a; n < b; n++) { clockT += 1 / 15; dig.update(1 / 15, clockT); crew.update(1 / 15, clockT); haul.update(1 / 15, clockT); if ((n & 1) === 1) yield; } })();
   await P.run(age(0, 225));
   const ready = (async () => {
     await P.step();
@@ -954,7 +987,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
         const mats = new Set();   // every material compiled here: wait for the driver to finish linking them (KHR_parallel_shader_compile) before the first use
         for (const c of scene.children) { for (const m of renderer.compile(c, camera, scene)) mats.add(m); await pace(); }
         // a machine that fades in or out is transparent, and three keys the program on that: compile that variant too (else it compiles in the first frame the dozer or roller fades)
-        const mach = [exc, loader, roller];
+        const mach = [exc, loader, roller, ...trucks];
         for (const m of mach) m.setOpacity(0.5);
         for (const m of mach) { for (const x of renderer.compile(m.root, camera, scene)) mats.add(x); await pace(); }
         for (const m of mach) m.setOpacity(1);
@@ -988,7 +1021,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     },
     // QA: camera pose (position + forward), the dig, the crew and the field
     camState() { camera.getWorldDirection(v4); return { p: camera.position.toArray(), d: v4.toArray(), fov: camera.fov }; },
-    qa: { dig, crew, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, loader, roller, camera, refit() { refit(); }, govTick(dt) { gov.real = true; clockT += dt; governor(dt); },
+    qa: { dig, crew, haul, trucks, field, SAFE, base, gov, hudState, hud, renderer, project, SHOT, TUNE, U, ZONES, exc, loader, roller, camera, refit() { refit(); }, govTick(dt) { gov.real = true; clockT += dt; governor(dt); },
       get shroud() { return shroud; }, loadShroud: () => { shroudQ = true; return loadShroud(); }, camHold(o) { camOv = o || null; },
       setLevel(l) { gov.level = l; applyLevel(); },
       // dots the vertex shader works on in this view: submitted, inside the (margin 1.75) cull box. CPU estimate with the existing height only
@@ -1004,7 +1037,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
       for (const s of [contours, zCut, zFill, zAcc, foot, pathL, pathR, pathE, links, zDraw, zJob, ...zoneL]) s.mat.dispose();
       fillMat.dispose();
       dotMat.dispose(); sky.geometry.dispose(); sky.material.dispose();
-      for (const m of [exc, loader, roller]) m.dispose();
+      haul.dispose(); for (const m of [exc, loader, roller, ...trucks]) m.dispose();
       if (shroudKit) shroudKit.dispose();
       kit.disposeAll();
       if (ownPacer) P.dispose();
