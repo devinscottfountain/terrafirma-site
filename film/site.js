@@ -10,7 +10,7 @@ import { loadShroud, lod } from '../kit/shroud.js';
 import { sunAt } from './austin.js';
 import { snapShadow } from './util.js';
 import { loadTex } from '../kit/bitmap.js';
-import { createYard, NW } from './yard.js';
+import { createYard, NW, TOWERS } from './yard.js';
 export const AUSTIN = { lat: 30.250453, lon: -97.719913 }; // a real 2019 dirt site by Lady Bird Lake, East Austin
 // the lot's long axis runs 17 deg south of east, so the local frame is turned to it; the photo stays north-up
 export const SITE_ROT = 17 * Math.PI / 180;
@@ -360,7 +360,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
         col*=1.-.5*k*max(cov(abs(jn.x-8.)-.06,w),cov(abs(p.y)-.06,w)); }
     }
     // pools of work light at night
-    vec2 LT[4]; LT[0]=vec2(-60.,-42.); LT[1]=vec2(60.,-42.); LT[2]=vec2(-60.,42.); LT[3]=vec2(20.,30.);
+    vec2 LT[4]; ${TOWERS.map(([x, z], i) => `LT[${i}]=vec2(${x}.,${z}.);`).join(' ')}
     for(int i=0;i<4;i++){ float d=length(p-LT[i]); E+=col*vec3(1.,.93,.8)*.25*exp(-d*d/700.)*uWork; }
     lA=col; lR=rough; lE=E;
     diffuseColor.rgb=lA;`, 'roughnessFactor=lR;', 'totalEmissiveRadiance+=lE;',
@@ -401,7 +401,7 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   workLights[0].position.set(-30, 14, -10); workLights[1].position.set(30, 14, 10); workLights.forEach(l => group.add(l));
 
   // ---------------------------------------------------------------- machines, crew, light towers, site furniture (machines.js: CAT 336s, tri-axle dumps, D6, boom pump, mixers, flat-top crane)
-  const { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, roofs } = createMachines({ THREE, group, D });
+  const { exA, exB, trucks, dozer, pump, mixers, crane, crew, towers, roofs } = createMachines({ THREE, group, D, towers: TOWERS });
   const Y = createYard(), YM = Y.M; // machine paths, keep-out zones and crew as plain numbers (yard.js); the meshes below just copy them
   // building: 40 columns, two cores, then the first deck's forms
   const COLS = []; for (let x = -28; x <= 28; x += 8) for (let z = -16; z <= 16; z += 8) COLS.push([x, z]);
@@ -412,8 +412,6 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
   // ---------------------------------------------------------------- clocks: scroll gives build progress g and the hour, t (film clock, s) runs the machines
   const sunO = {}, sunL = new THREE.Vector3(), skyC = new THREE.Color(), gndC = new THREE.Color(), lampBase = towers[0].material.color.clone();
   const SUN_Q = THREE.MathUtils.degToRad(0.1), SUN_MIN = THREE.MathUtils.degToRad(2.5); // light direction quantum, lowest elevation the light takes
-  // machine rates (real time): boom pump sweep, crane slew (the yard's own rates live in yard.js)
-  const PUMP_W = 0.45, SLEW_W = 0.09;
   const sd = new THREE.Vector3(), X1 = new THREE.Vector3(1, 0, 0);
   const seg = (m, a, b) => { sd.subVectors(b, a); const L = sd.length(); m.position.copy(a).add(b).multiplyScalar(0.5); m.scale.set(L, 1, 1); m.quaternion.setFromUnitVectors(X1, sd.normalize()); };
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
@@ -447,33 +445,26 @@ export function createSite({ THREE, scene, renderer, sunLight, hemi, ORIGIN, ear
     oak.instanceMatrix.needsUpdate = true;
     // machine paths and keep-out zones for (t, prog): yard.js (pure numbers); here they only move the meshes
     Y.machines(t, prog);
-    // excavators: dig, swing, dump, swing back (EX_CYCLE s); they ride the dig face, which scroll moves
-    [[exA, -1], [exB, 1]].forEach(([e, s], i) => {
-      const m = YM.ex[i], ph = m.ph, sw = m.sw; e.g.visible = m.on;
-      e.up.rotation.y = sw * s * 1.9;
-      e.boom.rotation.z = THREE.MathUtils.lerp(0.35 - sstep(ph, 0, 0.3) * 0.55, 0.62, sw);
-      e.stick.rotation.z = -THREE.MathUtils.lerp(1.05 + sstep(ph, 0.05, 0.33) * 0.9, 0.9 - sstep(ph, 0.55, 0.68) * 0.5, sw);
-      e.g.position.set(m.x, m.y, m.z); e.g.rotation.y = 0;
-    });
-    // haul trucks loop through the gates; loaded on the way out
-    trucks.forEach((tr, i) => { const m = YM.tr[i]; tr.g.visible = m.on; tr.g.position.set(m.x, 0, m.z); tr.g.rotation.y = m.yaw; tr.load.visible = m.load; });
-    // dozer: strips the lot, grades the pit floor, then fine grades the yard (one pass per period, next lane each pass)
+    // excavators: dig, swing, dump, swing back (EX_CYCLE s): out to the truck in their bay, or in to cast when none stands there
+    for (let i = 0; i < 2; i++) { const e = i ? exB : exA, m = YM.ex[i]; e.g.visible = m.on;
+      e.up.rotation.y = m.slew; e.boom.rotation.z = m.boom; e.stick.rotation.z = m.stick; e.g.position.set(m.x, m.y, m.z); e.g.rotation.y = 0; }
+    // haul trucks on the haul road and their bay lanes (yard.js timetable); the load heap rises a step per bucket
+    for (let i = 0; i < 4; i++) { const tr = trucks[i], m = YM.tr[i]; tr.g.visible = m.on; tr.g.position.set(m.x, 0, m.z); tr.g.rotation.y = m.yaw; tr.load.visible = m.load; tr.load.scale.y = 0.6 + 0.4 * m.fill; }
+    // dozer: its own pads (yard.js)
     { const m = YM.dz; dozer.visible = m.on; if (m.on) { dozer.position.set(m.x, m.y, m.z); dozer.rotation.y = m.yaw; } }
-    // pours: pump parks on the north edge opposite the active bay, two mixers queue behind it
-    const bay = YM.bay, pouring = YM.pouring;
-    pump.g.visible = pouring; mixers.forEach(m => (m.g.visible = pouring));
+    // pours: pump parks on the north edge opposite the active bay, two mixers queue behind it; the hose point comes from yard.js
+    const pouring = YM.pouring;
+    pump.g.visible = pump.s1.visible = pump.s2.visible = pump.hose.visible = mixers[0].g.visible = mixers[1].g.visible = pouring;
     if (pouring) {
-      const bx = YM.pump.bx, bz = bay % 2 ? 9.5 : -9.5;
-      pump.g.position.set(bx, 0, -29); A.set(bx, 3.2, -29); C.set(bx + Math.sin(t * PUMP_W) * 3, -D + 3.5, bz + Math.cos(t * PUMP_W * 0.8) * 2); B.copy(A).lerp(C, 0.45); B.y = 16;
+      const bx = YM.pump.bx, P = YM.pump.C;
+      pump.g.position.set(bx, 0, -29); A.set(bx, 3.2, -29); C.set(P[0], P[1], P[2]); B.copy(A).lerp(C, 0.45); B.y = 16;
       seg(pump.s1, A, B); seg(pump.s2, B, C); seg(pump.hose, C, tv.copy(C).setY(-D + 0.2));
-      [pump.s1, pump.s2, pump.hose].forEach(m => (m.visible = true));
-      mixers.forEach((m, i) => { m.g.position.set(bx + 12 + i * 11, 0, -29); m.d.rotation.x = t * 3 + i; });
-    } else [pump.s1, pump.s2, pump.hose].forEach(m => (m.visible = false));
-    // crane: mast climbs in with the build, then the jib slews between picks
-    { const up = sstep(prog, 0.4, 0.47), Hm = 40 * up + 0.01; crane.g.visible = up > 0.01; crane.mast.scale.y = Hm; crane.top.position.y = Hm;
-      crane.top.visible = up > 0.95; const sw = t * SLEW_W; crane.top.rotation.y = Math.sin(sw) * 1.6 + Math.sin(sw * 2.3) * 0.7;
-      const tr = 12 + (Math.sin(t * 0.13) * 0.5 + 0.5) * 36, drop = 10 + (Math.sin(t * 0.21) * 0.5 + 0.5) * 22; crane.trolley.position.x = tr;
-      crane.line.scale.y = drop; crane.line.position.y = -0.8 - drop / 2; crane.hook.position.y = -1.2 - drop; }
+      for (let i = 0; i < 2; i++) { const m = mixers[i]; m.g.position.set(YM.mix[i].x, 0, YM.mix[i].z); m.d.rotation.x = t * 3 + i; }
+    }
+    // crane: mast climbs in with the build, then the jib slews between picks, over the south side only (clear of the pump boom, yard.js)
+    { const up = YM.up, Hm = 40 * up + 0.01, K = YM.crane; crane.g.visible = up > 0.01; crane.mast.scale.y = Hm; crane.top.position.y = Hm;
+      crane.top.visible = up > 0.95; crane.top.rotation.y = K.slew; crane.trolley.position.x = K.tr;
+      crane.line.scale.y = K.drop; crane.line.position.y = -0.8 - K.drop / 2; crane.hook.position.y = -1.2 - K.drop; }
     // structure: columns per bay after the slab cures, cores climbing, deck forms on the west half
     COLS.forEach(([x, z], i) => { const b = Math.floor((x + 32) / 16) * 2 + (z < 0 ? 0 : 1), k = sstep(prog, 0.47 + b * 0.028 + 0.07, 0.47 + b * 0.028 + 0.12);
       tmpM.compose(tv.set(x, -D, z), tq.identity(), k > 0.01 ? ts.set(1, 3.6 * k, 1) : HIDE); colMesh.setMatrixAt(i, tmpM); });

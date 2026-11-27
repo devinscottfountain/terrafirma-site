@@ -7,7 +7,7 @@
 //   2. no NaN
 //   3. speed: at fixed g (film clock only) and during plays, no crew faster than the run cap
 //   4. determinism: the same (t, g) gives bit-identical crew whatever was stepped before
-//   5. zones: the machine block of the original code gives the same machine poses as yard.js
+//   5. zones: how far the machines moved from the original block (printed only: the site plan moved them, see test/check-yard.mjs)
 import * as THREE from 'three';
 import { execSync } from 'node:child_process';
 import { createYard, NW } from '../film/yard.js';
@@ -57,17 +57,16 @@ const newFrame = (t, g) => { Y.machines(t, g); Y.crewStep(t, g); return Y.crew; 
 const origFrame = (t, g) => { Y.machines(t, g); O.step(t, g); return O.out; };
 
 // ---------------------------------------------------------------- 5. machine poses: original inline block vs yard.js
+// Since the Austin site plan (film-austin-traffic) the machines no longer follow the original block: trucks run a timetable with bay
+// lanes, the dozer its own pads. Machine vs machine clearance is test/check-yard.mjs; here the difference is only printed
 {
   let worst = 0;
   for (let k = 0; k < 4000; k++) {
     const t = k * 0.37, g = (k * 0.00731) % 1; Y.machines(t, g); O.step(t, g); const M = Y.M;
-    const pairs = [[O.exA.g, M.ex[0]], [O.exB.g, M.ex[1]]];
-    for (const [gr, e] of pairs) { ok(gr.visible === e.on, `excavator visible at t=${t} g=${g}`); if (e.on) worst = Math.max(worst, Math.abs(gr.position.x - e.x), Math.abs(gr.position.y - e.y), Math.abs(gr.position.z - e.z)); }
-    for (let i = 0; i < 4; i++) { const tr = O.trucks[i].g; ok(tr.visible === M.tr[i].on, 'truck visible'); if (tr.visible) worst = Math.max(worst, Math.abs(tr.position.x - M.tr[i].x), Math.abs(tr.position.z - M.tr[i].z), Math.abs(tr.rotation.y - M.tr[i].yaw)); }
-    ok(O.dozer.visible === M.dz.on, 'dozer visible'); if (O.dozer.visible) worst = Math.max(worst, Math.abs(O.dozer.position.x - M.dz.x), Math.abs(O.dozer.position.z - M.dz.z), Math.abs(O.dozer.position.y - M.dz.y), Math.abs(O.dozer.rotation.y - M.dz.yaw));
+    for (let i = 0; i < 2; i++) { const gr = i ? O.exB.g : O.exA.g, e = M.ex[i]; if (e.on && gr.visible) worst = Math.max(worst, Math.abs(gr.position.x - e.x), Math.abs(gr.position.z - e.z)); }
+    for (let i = 0; i < 4; i++) { const tr = O.trucks[i].g; if (tr.visible && M.tr[i].on) worst = Math.max(worst, Math.abs(tr.position.x - M.tr[i].x), Math.abs(tr.position.z - M.tr[i].z)); }
   }
-  ok(worst < 1e-9, `machine poses differ from the original block by ${worst}`);
-  console.log(`machine poses (original inline block vs yard.js, 4000 frames): worst difference ${worst.toExponential(2)} m`);
+  console.log(`machine poses (original inline block vs yard.js, 4000 frames): worst difference ${worst.toFixed(1)} m (the site plan moved them on purpose)`);
 }
 
 // ---------------------------------------------------------------- plays: t and g advance together, like the film

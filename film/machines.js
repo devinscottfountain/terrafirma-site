@@ -29,7 +29,7 @@ const GRIME = /* glsl */ `
 
 // only: 'excavator' builds just one CAT 336 (its own rnd sequence, so the film yard never changes). envMap replaces the canvas sky,
 // grime: { dirt, rust } scales the baked dirt and rust in the shader (1 = film look), transparent makes every material fade-capable.
-export function createMachines({ THREE, group, D = 4, only = null, envMap = null, grime: gs = null, transparent = false }) {
+export function createMachines({ THREE, group, D = 4, only = null, envMap = null, grime: gs = null, transparent = false, towers: TW = [[-60, -42], [60, -42], [-60, 42], [20, 33]] }) {
   const V3 = THREE.Vector3, Q = THREE.Quaternion;
   let seed = 1337;
   const rnd = () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -631,7 +631,7 @@ export function createMachines({ THREE, group, D = 4, only = null, envMap = null
   const mixers = [0, 1].map(mixer);
   const crane = makeCrane();
   const crew = makeCrew();
-  const towers = [[-60, -42], [60, -42], [-60, 42], [20, 30]].map(([x, z]) => tower(x, z));
+  const towers = TW.map(([x, z]) => tower(x, z)); // yard.js TOWERS: the south one stands clear of the haul road (z 27)
   furniture();
   // every machine with a cab roof gets the Cyber Shroud (site.js mounts it lazily); the crane and the light towers do not
   const roofs = [exA.roof, exB.roof, dozer.userData.roof, ...trucks.map(t => t.roof), pump.roof, ...mixers.map(m => m.roof)];

@@ -1,10 +1,12 @@
 // yard.js: the Austin yard as pure numbers (no THREE, no DOM): where every moving machine is on the film clock t and build progress g
-// (prog), the keep-out zone each one carries, and the 44 crew. site.js copies the results onto the meshes; test/check-crew.mjs steps the
-// same functions in node. Units are metres, lot frame (+x east, -z north). Nothing here keeps state between calls: the same (t, prog)
+// (prog), the keep-out zone each one carries, and the 44 crew. site.js copies the results onto the meshes; test/check-crew.mjs (crew) and
+// test/check-yard.mjs (machine vs machine, on the real model extents) step the same functions in node. Units are metres, lot frame
+// (+x east, -z north). Nothing here keeps state between calls: the same (t, prog)
 // always gives the same machines and crew, whatever came before (scrub back, jump, resume).
 //
 // createYard() -> { M, Z, crew, machines(t, prog), crewStep(t, prog), zsd(row, x, z), nZ }
-//   M     machine poses (plain objects, reused): ex[2], tr[4], dz, pump, mix[2], digOn, xf, bay, pouring, craneOn
+//   M     machine poses (plain objects, reused): ex[2] (x, y, z, slew, boom, stick, load, bayTruck), tr[4] (x, z, yaw, fill, bay), dz,
+//         pump (bx, C hose point), mix[2], crane (slew, tr, drop), digOn, xf, bay, pouring, craneOn, up, trucksOn
 //   Z     keep-out zones, Float64Array rows of ZS: [kind, cx, cz, fx, fz, hf, hb, hw, r, bound]. kind 1 disc (r), kind 2 oriented box (forward
 //         unit vector f, extents ahead hf / behind hb / half width hw). Rows [0, nS) are fixed on t (move with g only), the rest ride t
 //   crew  Float64Array 5 per worker: x, y, z, yaw, scale (scale 0 = hidden, see GATES)
@@ -13,80 +15,191 @@ export const NW = 44, D = 4;
 // integer hash that gives the same answer in JS doubles and GLSL floats (all intermediates stay under 2^24)
 export const H = n => { const a = ((n % 1009) + 1009) % 1009; return ((a * a * 7 + a * 31 + 13) % 1009) / 1009; };
 const sstep = (x, a, b) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-// machine rates (real time): excavator dig-swing-dump cycle, dozer pass, pit pass
-export const EX_CYCLE = 7, DOZE_P = 80, PIT_P = 40;
-// haul loop by arc length, slow on the lot and fast on the street
-const LOOP = [[86, -420], [86, -30], [74, -24], [40, -25.5], [-20, -25.5], [-44, -25.5], [-50, 0], [-44, 25.5], [-10, 25.5], [40, 25.5], [74, 30], [86, 36], [86, 420]];
-const LSEG = LOOP.slice(1).map((p, i) => { const L = Math.hypot(p[0] - LOOP[i][0], p[1] - LOOP[i][1]), v = L > 200 ? 12 : 4.5; return { L, T: L / v, v }; });
-export const LOOP_T = LSEG.reduce((a, s) => a + s.T, 0);
+const lerp = (a, b, k) => a + (b - a) * k;
+// ---------------------------------------------------------------- site plan (metres, lot frame). Every machine keeps to its own lane, bay or pad:
+//   haul road  one-way loop: in at the north gate, west on the north lane (z -27), round the west end (radius 27 about (-40, 0)), east on
+//              the south lane (z 27), out at the south gate. Both lanes pass 0.57 m outside the excavators' swing reach (13 + 12 = 25)
+//   bays       each excavator loads from a bay lane 5.5 m inside the haul road (z -21.5 / 21.5): at a 90 deg swing the bucket is over
+//              the bed and the truck's near side is 7.07 m off the slew axis (tail swing 3.5 m). Trucks 0 and 2 load at excavator A
+//              (north), 1 and 3 at B (south). A truck changes onto its bay lane before the swing reach and back after it, so the
+//              others pass it on the haul road; the timetable below keeps every lane change clear of passing trucks
+//   dozer      works its own pad (stripping ahead of the dig, the north half of the pit floor, then the south yard), reversing
+//              between pushes and stepping over one lane each pass
+//   pours      pump and mixers on the north edge (z -29); the crane's hook stays south of its mast, clear of the pump boom
+export const EX_CYCLE = 7;
+const EX_Z = 13, LANE = 27, BAY = 21.5, OFF = LANE - BAY, WEND = -40, GX = 86, GR = 8;
+export const R_SW = 12; // CAT 336 swing reach: arm + stick + bucket at their longest in the dig cycle (11.93 m measured) -> 12
+// truck model extents (machines.js, forward +x): front 4.95, rear 4.84, half width 1.43. A truck is on its bay lane while within
+// BAY_X of its excavator (front or rear 0.5 m outside the swing chord on that lane, sqrt(12^2 - 7.07^2) = 9.7), lane change LR m long
+const BAY_X = 15.5, LR = 22, BAY_DX = 1.64; // bed centre 1.64 m behind the truck origin: under the bucket at a 90 deg swing
+// excavator A at z -13 swings north (+slew) to load and south to cast, B the other way
+const SLEW_LOAD = Math.PI / 2, SLEW_CAST = 1.9;
 
-// keep-out sizes (m). Moving machines: footprint + MM all round + a travel buffer (BUF s of travel + 2 m) ahead; static ones: footprint + SM.
-// CAT 336: the whole slew circle, tail 3.45 m, arm + stick + bucket reach 11.6 m at its longest in the dig cycle (+0.4) = 12 m
-const SM = 0.5, MM = 0.6, BUF = 2, R_SW = 12;
-// crew: spots sit >= SPOT_D outside every fixed zone, the final clamp keeps every worker >= CLR_D outside all of them
-const SPOT_D = 0.6, CLR_D = 0.3, ZS = 10, ZMAX = 24;
+// the haul road as dense samples (DS m): position, heading, speed and drive time. Street 12 m/s, lot 4.5 m/s, 1.2 m/s^2 between
+const DS = 0.25, V_LOT = 4.5, V_ST = 12, ACC = 1.2;
+const road = (() => {
+  const P = []; let sN = 0, sS = 0;
+  const line = (x0, z0, x1, z1, v) => { const n = Math.max(1, Math.round(Math.hypot(x1 - x0, z1 - z0) / DS)); for (let i = 0; i < n; i++) P.push(x0 + (x1 - x0) * i / n, z0 + (z1 - z0) * i / n, v); };
+  const arc = (cx, cz, r, a0, a1, v) => { const n = Math.max(1, Math.round(Math.abs(a1 - a0) * r / DS)); for (let i = 0; i < n; i++) { const a = a0 + (a1 - a0) * i / n; P.push(cx + Math.cos(a) * r, cz + Math.sin(a) * r, v); } };
+  line(GX, -420, GX, -LANE - GR, V_ST); arc(GX - GR, -LANE - GR, GR, 0, Math.PI / 2, V_LOT);
+  sN = P.length / 3; line(GX - GR, -LANE, WEND, -LANE, V_LOT); arc(WEND, 0, LANE, -Math.PI / 2, -1.5 * Math.PI, V_LOT);
+  sS = P.length / 3; line(WEND, LANE, GX - GR, LANE, V_LOT); arc(GX - GR, LANE + GR, GR, -Math.PI / 2, 0, V_LOT); line(GX, LANE + GR, GX, 420, V_ST);
+  P.push(GX, 420, V_ST);
+  const n = P.length / 3, X = new Float64Array(n), Z = new Float64Array(n), V = new Float64Array(n), S = new Float64Array(n), T = new Float64Array(n), HX = new Float64Array(n), HZ = new Float64Array(n);
+  for (let i = 0; i < n; i++) { X[i] = P[i * 3]; Z[i] = P[i * 3 + 1]; V[i] = P[i * 3 + 2]; if (i) S[i] = S[i - 1] + Math.hypot(X[i] - X[i - 1], Z[i] - Z[i - 1]); }
+  for (let i = 1; i < n; i++) V[i] = Math.min(V[i], Math.sqrt(V[i - 1] ** 2 + 2 * ACC * (S[i] - S[i - 1])));       // speed up after the lot
+  for (let i = n - 2; i >= 0; i--) V[i] = Math.min(V[i], Math.sqrt(V[i + 1] ** 2 + 2 * ACC * (S[i + 1] - S[i]))); // slow down before it
+  for (let i = 1; i < n; i++) T[i] = T[i - 1] + 2 * (S[i] - S[i - 1]) / (V[i] + V[i - 1]);
+  for (let i = 0; i < n; i++) { const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1), L = Math.hypot(X[b] - X[a], Z[b] - Z[a]); HX[i] = (X[b] - X[a]) / L; HZ[i] = (Z[b] - Z[a]) / L; }
+  return { n, X, Z, V, S, T, HX, HZ, sN: S[sN], sS: S[sS], len: S[n - 1], T_DRIVE: T[n - 1] };
+})();
+// timetable: a truck stops in its bay for DW s (2 s braking, D0 s standing, 2 s pulling off); four trucks HW s apart. Passing a bay
+// truck takes DW > HW + 14 (the follower is past its lane change before it pulls out) and the bay is free again for the next truck
+// of the same excavator 2 HW after: DW < 2 HW - 6. P = drive time + DW, HW = P / 4
+const BRAKE = 2, D0 = 66, DW = D0 + 2 * BRAKE;
+export const TRUCK_P = road.T_DRIVE + DW, HW = TRUCK_P / 4;
+if (!(DW > HW + 14 && DW < 2 * HW - 6)) console.warn('yard.js: truck timetable out of its window', { DW, HW });
+// drive time at arc length s / arc length at drive time u (binary search on the samples)
+const uAt = s => { const R = road; let lo = 0, hi = R.n - 1; s = Math.min(R.len, Math.max(0, s)); while (hi - lo > 1) { const m = (lo + hi) >> 1; if (R.S[m] <= s) lo = m; else hi = m; } const f = (s - R.S[lo]) / (R.S[hi] - R.S[lo]); return R.T[lo] + (R.T[hi] - R.T[lo]) * f; };
+let rI = 0, rF = 0; // sample index and fraction of the last sAt / point lookup
+const sAt = u => { const R = road; let lo = 0, hi = R.n - 1; u = Math.min(R.T_DRIVE, Math.max(0, u)); while (hi - lo > 1) { const m = (lo + hi) >> 1; if (R.T[m] <= u) lo = m; else hi = m; } rI = lo; rF = (u - R.T[lo]) / (R.T[hi] - R.T[lo]); return R.S[lo] + (R.S[hi] - R.S[lo]) * rF; };
+// real time in a truck's cycle -> drive time: brake over 2 s into the bay at drive time ub, stand D0, pull off over 2 s
+function warp(tau, ub) {
+  const a = BRAKE, q0 = tau - (ub - a);
+  if (q0 < 0) return tau;
+  if (q0 < 2 * a) return ub - a + q0 - q0 * q0 / (4 * a);
+  const q1 = tau - (ub + a + D0);
+  if (q1 < 0) return ub;
+  if (q1 < 2 * a) return ub + q1 * q1 / (4 * a);
+  return tau - D0 - 2 * a;
+}
+const dwarp = (tau, ub) => { const a = BRAKE, q0 = tau - (ub - a); if (q0 < 0) return 1; if (q0 < 2 * a) return 1 - q0 / (2 * a); const q1 = tau - (ub + a + D0); if (q1 < 0) return 0; if (q1 < 2 * a) return q1 / (2 * a); return 1; };
+const mod = (a, b) => ((a % b) + b) % b;
+const dss = (x, a, b) => { const u = (x - a) / (b - a); return u <= 0 || u >= 1 ? 0 : 6 * u * (1 - u) / (b - a); }; // d/dx of sstep
+
+// dozer passes: push along a lane (x0 -> x1), reverse on a slight diagonal to the next lane, lanes in ping-pong order. Writes o
+const DZ_F = 2.2, DZ_R = 3.0, DZ_TURN = 1.2; // push / reverse speed (average, m/s), s to turn onto the new heading
+const laneOf = (lanes, j) => { const N = lanes.length, per = 2 * N - 2, p = mod(j, per); return lanes[p < N ? p : per - p]; };
+const revYaw = (lanes, j, L) => Math.atan2(-(laneOf(lanes, j) - laneOf(lanes, j + 1)), L); // reversing from lane j to j + 1, nose back up the push
+function doze(t, lanes, x0, x1, o) {
+  const L = x1 - x0, sp = lanes[1] - lanes[0], Tf = L / DZ_F, Tr = Math.hypot(L, sp) / DZ_R, Tp = Tf + Tr;
+  const k = Math.floor(t / Tp), q = t - k * Tp, a = laneOf(lanes, k), b = laneOf(lanes, k + 1);
+  if (q < Tf) { const u = q / Tf; o.x = x0 + L * sstep(u, 0, 1); o.z = a; o.yaw = revYaw(lanes, k - 1, L) * (1 - sstep(q, 0, DZ_TURN)); o.v = L * dss(u, 0, 1) / Tf; }
+  else { const u = (q - Tf) / Tr, f = sstep(u, 0, 1); o.x = x1 - L * f; o.z = a + (b - a) * f; o.yaw = revYaw(lanes, k, L) * sstep(q - Tf, 0, DZ_TURN); o.v = Math.hypot(L, sp) * dss(u, 0, 1) / Tr; }
+}
+const PAD_STRIP = [-14, -7, 0, 7, 14], PAD_PIT = [-14.5, -9.5, -4.5], PAD_YARD = [27, 32, 37];
+// pump: the hose sweeps the active bay (x offset from the pump, x amplitude, z centre; z amplitude 2). Bay 3 holds the crane mast
+// (-4, 4): its sweep sits west of it with the boom 3 m clear. Bays 2 and 5 keep 2 m off the cores rising in them
+const PUMP_W = 0.45, SLEW_W = 0.09;
+const HOSE = [[0, 3, -9.5], [0, 3, 9.5], [4, 3, -12], [-2, 1.5, 9.5], [0, 3, -9.5], [-2, 3, 11], [0, 3, -9.5], [0, 3, 9.5]];
+
+// keep-out sizes for the crew (m). Moving machines: footprint + MM all round + a travel buffer (BUF s of travel + 2 m) ahead; static
+// ones: footprint + SM. Running excavators: the whole swing circle R_SW, whatever the arm is doing
+const SM = 0.5, MM = 0.6, BUF = 2, BUF_T = 1; // trucks: 1 s of travel (their lanes keep away from every job)
+// crew: spots sit >= SPOT_D outside every fixed zone, the final clamp puts every worker CLR_D outside all of them (one still closer
+// than CREW_R, squeezed between two zones, is hidden for those frames)
+const SPOT_D = 0.6, CLR_D = 0.35, CREW_R = 0.3, ZS = 10, ZMAX = 24; // a worker is 0.3 m in radius
 // build-progress values where machines appear / vanish or the crew changes job or bay: the crew blink (scale to 0) across them so a
 // spot never jumps in view. Hidden within +-GW0, fully back at +-GW1
 const GATES = [0.06, 0.07, 0.1, 0.3, 0.404, 0.42, 0.44, 0.455, 0.46, 0.484, 0.512, 0.54, 0.568, 0.596, 0.624, 0.652, 0.69, 0.72, 0.8, 0.85, 0.86, 0.95];
 const GW0 = 0.0008, GW1 = 0.0025;
+// light towers (machines.js places the meshes from this list, site.js the work-light pools)
+export const TOWERS = [[-60, -42], [60, -42], [-60, 42], [20, 33]];
 
 export function createYard() {
-  const ex = [0, 1].map(() => ({ on: false, x: 0, y: 0, z: 0, ph: 0, sw: 0 })), tr = [0, 1, 2, 3].map(() => ({ on: false, x: 0, z: 0, yaw: 0, load: false, v: 0 })),
-    mix = [0, 1].map(() => ({ x: 0, z: -29 })), lo = { x: 0, z: 0, v: 0 };
-  const M = { ex, tr, mix, dz: { on: false, x: 0, y: 0, z: 0, yaw: 0, v: 0 }, pump: { on: false, bx: 0 }, digOn: false, xf: 0, bay: 0, pouring: false, craneOn: false, up: 0 };
+  const ex = [0, 1].map(() => ({ on: false, x: 0, y: 0, z: 0, ph: 0, sw: 0, slew: 0, boom: 0, stick: 0, load: false, bayTruck: -1 })),
+    tr = [0, 1, 2, 3].map(() => ({ on: false, x: 0, z: 0, yaw: 0, load: false, fill: 0, v: 0, bay: false })),
+    mix = [0, 1].map(() => ({ x: 0, z: -29 }));
+  const M = { ex, tr, mix, dz: { on: false, x: 0, y: 0, z: 0, yaw: 0, v: 0 }, pump: { on: false, bx: 0, z: -29, C: [0, 0, 0] }, crane: { slew: 0, tr: 0, drop: 0 },
+    digOn: false, xf: 0, bay: 0, pouring: false, craneOn: false, up: 0, trucksOn: false };
   const Z = new Float64Array(ZMAX * ZS), crew = new Float64Array(NW * 5);
   let nZ = 0, nS = 0;
-
-  // u 0..1 of the loop's time -> lo.x / lo.z / lo.v, returns yaw
-  function loopAt(u) {
-    let k = u * LOOP_T, i = 0; while (i < LSEG.length - 1 && k > LSEG[i].T) { k -= LSEG[i].T; i++; }
-    const f = Math.min(1, k / LSEG[i].T), a = LOOP[i], b = LOOP[i + 1];
-    lo.x = a[0] + (b[0] - a[0]) * f; lo.z = a[1] + (b[1] - a[1]) * f; lo.v = LSEG[i].v; return Math.atan2(-(b[1] - a[1]), b[0] - a[0]);
-  }
   const disc = (x, z, r) => { const o = nZ++ * ZS; Z[o] = 1; Z[o + 1] = x; Z[o + 2] = z; Z[o + 8] = Z[o + 9] = r; };
   // box at (x, z) turned yaw (three's rotation.y: forward = (cos, -sin)), local extents a ahead, b behind, w half width, grown by m
   const box = (x, z, yaw, a, b, w, m, buf = 0) => { const o = nZ++ * ZS; Z[o] = 2; Z[o + 1] = x; Z[o + 2] = z; Z[o + 3] = Math.cos(yaw); Z[o + 4] = -Math.sin(yaw); Z[o + 5] = a + m + buf; Z[o + 6] = b + m + buf; Z[o + 7] = w + m; Z[o + 9] = Math.hypot(Math.max(Z[o + 5], Z[o + 6]), Z[o + 7]); };
   // one-sided: the buffer only ahead (trucks); the dozer drives both ways in turn, so it gets it on both ends
   const boxF = (x, z, yaw, a, b, w, m, buf) => { box(x, z, yaw, a, b, w, m); Z[(nZ - 1) * ZS + 5] += buf; Z[(nZ - 1) * ZS + 9] = Math.hypot(Math.max(Z[(nZ - 1) * ZS + 5], Z[(nZ - 1) * ZS + 6]), Z[(nZ - 1) * ZS + 7]); };
 
-  // machine poses and keep-out zones for (t, prog). Mirrors what site.js used to compute inline, so the film looks the same
+  // per bay (0 north / A, 1 south / B): arc length of the stop, the lane change in (s0..s1) and back out (s2..s3), drive time at the stop
+  const BQ = [new Float64Array(5), new Float64Array(5)];
+  function bays(xe) {
+    const sN = road.sN + (GX - GR), sS = road.sS - WEND; // arc length at lane x = 0, westbound north / eastbound south
+    let b = BQ[0]; b[0] = sN - (xe - BAY_DX); b[2] = sN - (xe + BAY_X); b[1] = b[2] - LR; b[3] = sN - (xe - BAY_X); b[4] = b[3] + LR;
+    b = BQ[1]; b[0] = sS + xe + BAY_DX; b[2] = sS + xe - BAY_X; b[1] = b[2] - LR; b[3] = sS + xe + BAY_X; b[4] = b[3] + LR;
+  }
+  // truck j's cycle time at real time t, and the drive time of its stop
+  const tauOf = (j, t) => mod(t - j * HW, TRUCK_P);
+  // is cycle c of excavator i (start tc) a loading cycle: one of its trucks stands in the bay for the whole cycle
+  function loads(i, tc, ub) {
+    if (!M.trucksOn) return -1;
+    for (let j = i; j < 4; j += 2) { const tau = tauOf(j, tc); if (tau >= ub + BRAKE + 0.2 && tau + EX_CYCLE <= ub + BRAKE + D0 - 0.2) return j; }
+    return -1;
+  }
+  const exOff = i => i * 0.37;
+
+  // machine poses and keep-out zones for (t, prog). Everything is a closed form of (t, prog): no state between calls
   function machines(t, prog) {
     const digOn = prog > 0.06 && prog < 0.42, xf = -32 + sstep(prog, 0.07, 0.36) * 76;
-    M.digOn = digOn; M.xf = xf; nZ = 0;
+    M.digOn = digOn; M.xf = xf; nZ = 0; M.trucksOn = prog > 0.07 && prog < 0.42;
     // fixed: office trailer (60 x 12 ft, doors and stairs on +z), light towers, dumpster
     box(52, -45, 0, 9.15, 9.15, 3.6, SM); box(62, 44, 0, 3.1, 3.1, 1.2, SM);
-    for (const [x, z] of [[-60, -42], [60, -42], [-60, 42], [20, 30]]) disc(x, z, 2.7 + SM);
+    for (let i = 0; i < TOWERS.length; i++) disc(TOWERS[i][0], TOWERS[i][1], 2.7 + SM);
     const up = sstep(prog, 0.4, 0.47); M.up = up; M.craneOn = up > 0.01; if (M.craneOn) box(-4, 4, 0, 3, 3, 3, SM); // tower crane footing
     // pours: pump parks on the north edge opposite the active bay, two mixers queue behind it
     const bay = Math.min(7, Math.max(0, Math.floor((prog - 0.47) / 0.028 + 0.5))), pouring = prog > 0.455 && prog < 0.69;
     M.bay = bay; M.pouring = pouring; M.pump.on = pouring;
     if (pouring) {
-      const bx = -32 + Math.floor(bay / 2) * 16 + 8; M.pump.bx = bx;
-      box(bx, -29, 0, 6.5, 6.4, 4.4, SM); // chassis and the deployed outriggers (4.4 m out each side)
-      for (let i = 0; i < 2; i++) { mix[i].x = bx + 12 + i * 11; mix[i].z = -29; box(mix[i].x, -29, 0, 5.05, 4.85, 1.25, SM); }
+      const bx = -32 + Math.floor(bay / 2) * 16 + 8, hs = HOSE[bay]; M.pump.bx = bx;
+      const C = M.pump.C; C[0] = bx + hs[0] + Math.sin(t * PUMP_W) * hs[1]; C[1] = -D + 3.5; C[2] = hs[2] + Math.cos(t * PUMP_W * 0.8) * 2; // hose over the bay
+      box(bx, -29, 0, 6.5, 6.38, 4.9, SM); // chassis and the deployed outriggers (4.9 m out each side)
+      for (let i = 0; i < 2; i++) { mix[i].x = bx + 12 + i * 11; mix[i].z = -29; box(mix[i].x, -29, 0, 5.05, 5.04, 1.43, SM); }
     }
-    // excavators ride the dig face, which scroll moves: the keep-out is the whole slew circle, whatever the arm is doing
+    // crane: the jib slews over the south side only (the pump boom never comes south of z 12), hook >= 5.6 m above the ground
+    { const sw = t * SLEW_W, K = M.crane; K.slew = -Math.PI / 2 + 0.5 * (Math.sin(sw) * 0.7 + Math.sin(sw * 2.3) * 0.3);
+      K.tr = 12 + (Math.sin(t * 0.13) * 0.5 + 0.5) * 36; K.drop = 10 + (Math.sin(t * 0.21) * 0.5 + 0.5) * 20; }
+    // excavators ride the dig face, which scroll moves; each digs east, then swings 90 deg out to the truck in its bay, or casts the
+    // bucket 109 deg in when no truck stands there for the whole cycle
+    const xe = Math.min(26, Math.max(-28, xf - 6)); bays(xe);
+    const ubA = uAt(BQ[0][0]), ubB = uAt(BQ[1][0]);
     for (let i = 0; i < 2; i++) {
-      const e = ex[i], late = i === 1 && prog > 0.8, ph = (t / EX_CYCLE + i * 0.37) % 1;
+      const e = ex[i], late = i === 1 && prog > 0.8, cy = t / EX_CYCLE + exOff(i), c = Math.floor(cy), ph = cy - c;
       e.on = digOn || (i === 1 && prog > 0.8 && prog < 0.95); e.ph = ph; e.sw = sstep(ph, 0.35, 0.55) * (1 - sstep(ph, 0.7, 0.95));
-      e.x = late ? 40 : Math.min(26, Math.max(-28, xf - 6)); e.y = late ? -1 : -D * sstep(prog, 0.07, 0.12); e.z = i ? 13 : -13;
+      e.x = late ? 41 : xe; e.y = late ? -1 : -D * sstep(prog, 0.07, 0.12); e.z = i ? EX_Z : -EX_Z;
+      const j = late ? -1 : loads(i, (c - exOff(i)) * EX_CYCLE, i ? ubB : ubA), sw = e.sw, s = i ? -1 : 1;
+      e.load = j >= 0; e.bayTruck = -1;
+      const boomD = 0.35 - sstep(ph, 0, 0.3) * 0.55, stickD = 1.05 + sstep(ph, 0.05, 0.33) * 0.9;
+      if (e.load) { // boom up before the bucket reaches the truck (sw 0.4, 36 deg: B's trucks face east, so its arm crosses the cab end), stick open: the bucket clears the body by 0.3 m
+        const k = sstep(sw, 0, 0.4); e.slew = sw * s * SLEW_LOAD; e.boom = lerp(boomD, 1.0, k); e.stick = -lerp(stickD, 0.6 - sstep(ph, 0.55, 0.68) * 0.25, k);
+      } else { e.slew = -sw * s * SLEW_CAST; e.boom = lerp(boomD, 0.62, sw); e.stick = -lerp(stickD, 0.9 - sstep(ph, 0.55, 0.68) * 0.5, sw); }
       if (e.on) disc(e.x, e.z, R_SW);
     }
     nS = nZ;
-    // haul trucks loop through the gates; loaded on the way out. 9.65 x 2.5 m, origin at the cab-back, +x forward
-    for (let i = 0; i < 4; i++) {
-      const T = tr[i], u = (t / LOOP_T + i / 4) % 1; T.on = prog > 0.07 && prog < 0.46;
-      T.yaw = loopAt(u); T.x = lo.x; T.z = lo.z; T.v = lo.v; T.load = u > 0.5;
-      if (T.on) boxF(T.x, T.z, T.yaw, 4.95, 4.7, 1.25, MM, BUF * T.v + 2);
+    // haul trucks: the timetable above, on the haul road; on their bay lane near their own excavator
+    for (let j = 0; j < 4; j++) {
+      const T = tr[j], b = BQ[j % 2], ub = j % 2 ? ubB : ubA, tau = tauOf(j, t), u = warp(tau, ub), s = sAt(u), R = road, i0 = rI, i1 = Math.min(R.n - 1, i0 + 1), f = rF;
+      T.on = M.trucksOn;
+      const k = OFF * sstep(s, b[1], b[2]) * (1 - sstep(s, b[3], b[4])), dk = OFF * (dss(s, b[1], b[2]) * (1 - sstep(s, b[3], b[4])) - sstep(s, b[1], b[2]) * dss(s, b[3], b[4]));
+      const hx = R.HX[i0] + (R.HX[i1] - R.HX[i0]) * f, hz = R.HZ[i0] + (R.HZ[i1] - R.HZ[i0]) * f, hl = Math.hypot(hx, hz) || 1, nx = hz / hl, nz = -hx / hl; // inside normal
+      T.x = R.X[i0] + (R.X[i1] - R.X[i0]) * f + nx * k; T.z = R.Z[i0] + (R.Z[i1] - R.Z[i0]) * f + nz * k;
+      T.yaw = Math.atan2(-(hz / hl + nz * dk), hx / hl + nx * dk);
+      T.v = (R.V[i0] + (R.V[i1] - R.V[i0]) * f) * dwarp(tau, ub); T.bay = k > 0.01;
+      // load: one heap, raised a step per bucket dumped (excavator cycles inside this truck's stand), full on the way out
+      const w0 = ub + BRAKE, w1 = w0 + D0;
+      if (tau < w0) T.fill = 0; else if (tau > w1) T.fill = 1;
+      else { const i = j % 2, o = exOff(i), tw0 = t - (tau - w0), c0 = Math.ceil((tw0 + 0.2) / EX_CYCLE + o), c1 = Math.floor((tw0 + D0 - 0.2) / EX_CYCLE + o) - 1, cd = Math.floor(t / EX_CYCLE + o - 0.62);
+        T.fill = c1 >= c0 ? Math.min(1, Math.max(0, (cd - c0 + 1) / (c1 - c0 + 1))) : 1; }
+      T.load = T.fill > 0.01;
+      if (T.bay && ex[j % 2].on) ex[j % 2].bayTruck = j;
+      if (T.on) boxF(T.x, T.z, T.yaw, 4.95, 4.84, 1.43, MM, BUF_T * T.v + 1.5);
     }
-    // dozer: strips the lot, grades the pit floor, then fine grades the yard (one pass per period, next lane each pass)
-    const dz = M.dz; let x, z, y = 0, on = true, n, v;
-    if (prog < 0.1) { n = t / DOZE_P; x = -60 + Math.abs((n % 1) * 2 - 1) * 110; z = -40 + (Math.floor(n) % 4) * 20; v = 2.75; }
-    else if (prog > 0.3 && prog < 0.44) { n = t / PIT_P; x = -26 + Math.abs((n % 1) * 2 - 1) * 52; z = -12 + (Math.floor(n) % 3) * 12; y = -D; v = 2.6; }
-    else if (prog > 0.86) { n = t / PIT_P; x = -60 + Math.abs((n % 1) * 2 - 1) * 40; z = 40; v = 2; }
-    else { on = false; n = 0; x = z = v = 0; }
-    dz.on = on; dz.x = x; dz.y = y; dz.z = z; dz.v = v; dz.yaw = n % 1 < 0.5 ? 0 : Math.PI;
-    if (on) box(x, z, dz.yaw, 3, 3, 1.7, MM, BUF * v + 2); // blade 3.4 m wide, 5.3 m long; reverses at each lane end, so a buffer both ways
+    // dozer: strips the pad ahead of the dig, grades the north half of the pit floor, then fine grades the south yard
+    const dz = M.dz; let on = true;
+    if (prog < 0.1) { doze(t, PAD_STRIP, -3, 27, dz); dz.y = 0; }
+    else if (prog > 0.3 && prog < 0.44) { doze(t, PAD_PIT, -26, 9, dz); dz.y = -D; }
+    else if (prog > 0.86) { doze(t, PAD_YARD, -42, 6, dz); dz.y = 0; }
+    else { on = false; dz.x = dz.z = dz.v = dz.y = dz.yaw = 0; }
+    dz.on = on;
+    if (on) box(dz.x, dz.z, dz.yaw, 2.92, 2.45, 1.76, MM, BUF * dz.v + 2); // blade 3.4 m wide, 5.4 m long; reverses at each lane end, so a buffer both ways
   }
 
   // signed distance (m) from (x, z) to zone row r: < 0 inside
@@ -133,8 +246,9 @@ export function createYard() {
       let n = ((i * 7 + k) % 78 + 78) % 78; if (n > 39) n = 78 - n; const xi = Math.floor(n / 5), zi = xi % 2 ? 4 - n % 5 : n % 5;
       x = -28 + xi * 8 + (r1 - 0.5) * 3; z = -16 + zi * 8 + (r2 - 0.5) * 3; y = -D + (prog > 0.85 && x < 0 ? 3.75 : 0);
     }
-    else if (i < 34 && M.digOn) { // spotters: on the front arc of the swing circle of their excavator (odd: north one), within 35 deg of its dig line
-      const e = ex[i % 2 ? 0 : 1], a = (r1 - 0.5) * 1.222, r = R_SW + 1.5 + r2 * 2;
+    else if (i < 34 && M.digOn) { // spotters: on the front arc of the swing circle of their excavator (odd: north one), 3 to 34 deg off its
+      // dig line towards the pit centre: the bay lane and the trucks changing onto it are on the other side
+      const e = ex[i % 2 ? 0 : 1], a = (e.z < 0 ? 1 : -1) * (0.05 + r1 * 0.55), r = R_SW + 1.5 + r2 * 3.5;
       x = e.x + Math.cos(a) * r; z = e.z + Math.sin(a) * r; yaw = Math.atan2(-(e.z - z), e.x - x);
     }
     else { x = TR_X + (H(i * 5 + 9) - 0.5) * 13 + (r1 - 0.5) * 12 + 6.5; z = TR_Z + (r2 - 0.5) * 6.5; }
@@ -192,7 +306,9 @@ export function createYard() {
       if (Tw > 0 && ts < 0.5) yaw += wrap(SA[3] - yaw) * (1 - sstep(ts, 0, 0.5));
       if (ts > Tw) yaw += wrap(SB[3] - yaw) * sstep(ts - Tw, 0, 0.8);
       PX = WX[j - 1] + hx * q; PZ = WZ[j - 1] + hz * q; clearAll(CLR_D);
-      const o = i * 5; crew[o] = PX; crew[o + 1] = SA[1] + dy * u; crew[o + 2] = PZ; crew[o + 3] = yaw; crew[o + 4] = vis;
+      // squeezed between two zones (a truck's travel buffer against a swing circle): stand down for those frames rather than overlap
+      let sc = vis; for (let r = 0; r < nZ && sc > 0; r++) if (near(r, PX, PZ, CLR_D) && zsd(r, PX, PZ) < CREW_R) sc = 0;
+      const o = i * 5; crew[o] = PX; crew[o + 1] = SA[1] + dy * u; crew[o + 2] = PZ; crew[o + 3] = yaw; crew[o + 4] = sc;
     }
   }
   return { M, Z, crew, machines, crewStep, zsd, get nZ() { return nZ; }, get nS() { return nS; } };
