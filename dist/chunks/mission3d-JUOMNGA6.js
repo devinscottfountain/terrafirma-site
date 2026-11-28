@@ -1,4 +1,4 @@
-import{b as mt,d as pt}from"./chunk-TAKKMMN3.js";import{a as ut}from"./chunk-4CI7YULG.js";import{a as Ve}from"./chunk-4C5RVMER.js";import{a as lt,b as ct}from"./chunk-M5U4GD3X.js";import{d as rt,f as nt,g as Pe,h as st}from"./chunk-SKKE744E.js";import{a as it}from"./chunk-FCTCDFK5.js";var dt=`
+import{b as mt,d as pt}from"./chunk-XLAB3GI6.js";import{a as ut}from"./chunk-4CI7YULG.js";import{a as Ve}from"./chunk-4C5RVMER.js";import{a as lt,b as ct}from"./chunk-M5U4GD3X.js";import{d as rt,f as nt,g as Pe,h as st}from"./chunk-SKKE744E.js";import{a as it}from"./chunk-FCTCDFK5.js";var dt=`
 uniform float uQ;
 varying vec2 vQ;
 void main(){ vQ = (uv - 0.5) * 2.0 * uQ; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`,ft=`
