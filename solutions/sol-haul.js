@@ -165,7 +165,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   // the world the planner sees: the excavator (circle), its zone (polygon), the other trucks
   const ex = { x: SITE.E.x, z: SITE.E.z, on: true };
   const zone = { P: new Float64Array(24), n: 0, b: { x: 0, z: 0, r: 0, x0: 0, x1: 0, z0: 0, z1: 0 } };
-  const corr = { on: false, ax: 0, az: 0, bx: 0, bz: 0, r: 0 };   // the excavator's drive corridor while it moves (trucks keep out of it)
+  const corr = { on: false, ax: 0, az: 0, bx: 0, bz: 0, r: 0, arm: false, pa: 0, qa: 0, pb: 0, qb: 0 };   // the excavator's drive corridor while it moves (trucks keep out of it)
   const arm = { on: false, ax: 0, az: 0, bx: 0, bz: 0, y: 0 };   // the arm seen from above (swing centre to past the bucket) and its lowest point (world y)
   const bx = new Float64Array(16), bo = new Float64Array(16);
   let extraM = 0;   // m: more room round the other truck (planning a bay's way out round a truck that will only stop near its planned pose)
@@ -305,7 +305,13 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   // deterministic), the bay (or null) as its value. keep: the bay in use, tried first if it still works from here.
   function* findBayG(x, z, digYaw, keep = null, accept = null) {
     const cand = [];
-    if (keep && bayOk(keep, x, z, digYaw)) cand.push({ ...keep, c: -1 });
+    if (keep && bayOk(keep, x, z, digYaw) && (!accept || accept(keep))) {
+      // the bay in use still works from here (a short move): kept as it is, its ways in and out stand, so the truck in it (or on its
+      // way) need not move. Only that it still stands clear of the excavator there and of the zone is checked.
+      const exo = { x: ex.x, z: ex.z, on: ex.on }, sv = T.slice(); let ok = false;
+      ex.x = x; ex.z = z; ex.on = true; T.length = 0; try { ok = clear(keep, null) >= 0; } finally { ex.x = exo.x; ex.z = exo.z; ex.on = exo.on; T.length = 0; T.push(...sv); }
+      if (ok) return keep;
+    }
     for (const sw of SW) for (const rB of [8.5, 9.3]) for (const sk of [0, 0.14, -0.14]) {
       const P = bayPose(x, z, digYaw + sw, rB, sk);
       P.c = Math.abs(Math.abs(sw) - 1.83) + (sw < 0 ? 0.25 : 0) + Math.abs(sk) * 0.8 + (rB - 8.5) * 0.15; cand.push(P);
@@ -483,9 +489,30 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   // elsewhere) sends a parked truck round again, unless it is the same bay; a truck in the excavator's drive corridor leaves it.
   // the excavator's move: a capsule for its body along the way, and a circle the arm sweeps at each end (it turns on the spot there)
   const ARM_SWEEP = 8.2;
-  const inCorr = (m) => { for (let u = 0; u < 2; u++) { const B = u ? bx.subarray(8) : bx; if (capDist(corr.ax, corr.az, corr.bx, corr.bz, corr.r + m, B, 4) < 0 || circDist(corr.ax, corr.az, ARM_SWEEP + m, B, 4) < 0 || circDist(corr.bx, corr.bz, ARM_SWEEP + m, B, 4) < 0) return true; } return false; };
+  // The arm is held on one world bearing while the excavator travels (the house turns against the tracks): it sweeps a band along the
+  // way, a capsule along the path set half the arm's length out that way. With no bearing given: full circles at both ends.
+  const inCorr = (m) => {
+    for (let u = 0; u < 2; u++) {
+      const B = u ? bx.subarray(8) : bx;
+      if (capDist(corr.ax, corr.az, corr.bx, corr.bz, corr.r + m, B, 4) < 0) return true;
+      if (corr.arm) { if (capDist(corr.pa, corr.qa, corr.pb, corr.qb, ARM_SWEEP / 2 + 0.6 + m, B, 4) < 0) return true; }
+      else if (circDist(corr.ax, corr.az, ARM_SWEEP + m, B, 4) < 0 || circDist(corr.bx, corr.bz, ARM_SWEEP + m, B, 4) < 0) return true;
+    }
+    return false;
+  };
   const hitsCorr = t => { if (!corr.on) return false; unitBoxes(D, t.p, bx, 0); return inCorr(0.5); };
   const samePose = (p, q) => Math.hypot(p.fx - q.fx, p.fz - q.fz) < 0.03 && Math.abs(wrap(p.yf - q.yf)) < 0.004 && Math.abs(wrap(p.yr - q.yr)) < 0.004;
+  // into a bay close by (the excavator moved a little and its bay with it): straight back in from where it stands, else a short pull
+  // forward along its own heading and back in from there. -> a move, or null (then the long way round, by a pull-up)
+  function shortIn(t, B) {
+    if (Math.hypot(t.p.fx - B.fx, t.p.fz - B.fz) > 24) return null;
+    const r = backIn(t.p, B, t); if (r) return r;
+    for (const d of [8, 13, 18]) {
+      const g = { fx: t.p.fx + Math.cos(t.p.yf) * d, fz: t.p.fz - Math.sin(t.p.yf) * d, yf: t.p.yf };
+      const f = plan(t.p, g, t, { tail: 0, maxLen: d + 6, back: { x: B.bx, z: B.bz, y: B.yr } }); if (f) return f;
+    }
+    return null;
+  }
   function escape(t) {   // the usual ways out are blocked by the other truck waiting: round onto the tip head by another pull-up, if it is free
     if (tipLock >= 0) return false;
     const r = backIn(t.p, tipBay, t) || approach(t.p, tipBay, t, false, null, 120);   // straight back onto it if it can, else round to a pull-up
@@ -494,7 +521,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   }
   function leave(t) {   // forward to the tip head's pull-up (no long detours: something in the way, it waits and tries again)
     const r = plan(t.p, tipPull, t, { tail: 16, maxLen: 80 });
-    if (r && take(t, r)) { t.st = 'out'; if (lock === t.id) lock = -1; if (stage === t.id) stage = -1; return true; }
+    if (r && take(t, r)) { t.st = 'out'; if (lock === t.id) lock = -1; if (stage === t.id) stage = -1; if (tipLock === t.id) tipLock = -1; return true; }
     return false;
   }
   function replan(t) {   // held up on the way (a zone drawn across its path, the arm low over it): a new way to the same place, else another one
@@ -512,6 +539,12 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     t.retry -= dt;
     if (mover === t.id && atEnd(t) && t.pause <= 0) mover = -1;
     if (!canMove(t) && t.st !== 'tip') { if (t.st === 'stage' || t.st === 'in' || t.st === 'out' || t.st === 'back') drive(t, dt); return; }
+    if (t.kick && atEnd(t) && t.retry <= 0) {   // asked to make way: off to the tip's pull-up, or from there onto the tip head
+      t.retry = 0.5; t.kicks = (t.kicks || 0) + 1;
+      const atPull = Math.hypot(t.p.fx - tipPull.fx, t.p.fz - tipPull.fz) < 1;
+      if ((!atPull && leave(t)) || (atPull && escape(t)) || t.kicks > 20) { t.kick = false; t.kicks = 0; }
+      if (t.st === 'out' || t.st === 'back') { if (t.st === 'out' && tipLock === t.id) tipLock = -1; return; }
+    }
     switch (t.st) {
       case 'queue':
         // up to the bay's pull-up, unless the truck in the bay is about to leave (or is leaving, or is still backing in): their paths cross
@@ -539,7 +572,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
           if (bay && !corr.on && t.retry <= 0 && !T.some(o => o !== t && (o.st === 'in' || o.st === 'out'))) {
             t.retry = 0.5;
             // the new bay is free: straight in (forward to its pull-up, back in); else up to its pull-up to wait; else round again
-            if (lock < 0) { const r = approach(t.p, bay, t, false, null, 120); if (r && take(t, r)) { lock = t.id; stage = -1; t.bay = bay; t.ver = bayVer; t.st = 'in'; break; } }
+            if (lock < 0) { const r = shortIn(t, bay) || approach(t.p, bay, t, false, null, 120); if (r && take(t, r)) { lock = t.id; stage = -1; t.bay = bay; t.ver = bayVer; t.st = 'in'; break; } }
             const r = bay.stage && bay.pull && plan(t.p, bay.pull, t, { tail: 12, maxLen: 110 });
             if (r && take(t, r)) { t.bay = bay; t.ver = bayVer; t.st = 'stage'; }
             else if (!leave(t) && (t.esc = (t.esc || 0) + 0.5) > 2) escape(t);   // round again (by the tip head)
@@ -565,11 +598,17 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
         const moved = t.ver !== bayVer;
         // leave when full, or when the bay moved and it is in the way of the excavator's drive (or the new bay is somewhere else)
         if (moved && bay && !t.full && !corr.on && t.retry <= 0 && (lock < 0 || lock === t.id) && !T.some(o => o !== t && (o.st === 'in' || o.st === 'stage' || o.st === 'out')) && !armIn()) {
-          t.retry = 0.5; const r = approach(t.p, bay, t, false, null, 120);   // the bay moved: straight round to the new one (it keeps its load)
+          t.retry = 0.5; const r = shortIn(t, bay) || approach(t.p, bay, t, false, null, 120);   // the bay moved: to the new one (it keeps its load), the short way if it is close
           if (r && take(t, r)) { lock = t.id; t.bay = bay; t.ver = bayVer; t.st = 'in'; break; }
         }
         const go = (t.full || (moved && bay && t.retry <= -3) || hitsCorr(t)) && !armIn() && !T.some(o => o !== t && o.st === 'stage');   // never across a truck on its way up
-        if (go && t.retry <= 0) { t.retry = 0.5; if (!leave(t)) { t.stuck = (t.stuck || 0) + 0.5; if (t.stuck > 8) escape(t); } else t.stuck = 0; }
+        if (go && t.retry <= 0) {
+          t.retry = 0.5;
+          if (!leave(t)) {
+            t.stuck = (t.stuck || 0) + 0.5; if (t.stuck > 8) escape(t);
+            if (t.stuck > 3) for (const o of T) if (o !== t && atEnd(o) && (o.st === 'queue' || o.st === 'wait' || o.st === 'staged')) o.kick = true;   // a truck parked in the way of the way out is asked to move
+          } else t.stuck = 0;
+        }
         break;
       }
       case 'out':
@@ -623,7 +662,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
 
   const api = {
     trucks: T, D, NPASS, anchors: A,
-    get locks() { return { lock, tipLock, stage, bayVer, corr: corr.on, bay: !!bay }; },
+    get locks() { return { lock, tipLock, stage, bayVer, corr: corr.on, bay: !!bay, armIn: armIn() }; },
     qa: { why(p0, legs, self) {   // QA: where and why a run fails
         const p = { ...p0 }; let k0 = 0;
         for (const L of legs) { const P = L.pts, n = P.length / 3; for (let k = 1; k < n; k++) { follow(D, p, P[k * 3], P[k * 3 + 1], P[k * 3 + 2], L.rev); k0++;
@@ -634,7 +673,11 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     // the excavator's position, the dig zone (flat [x, z, ...], n corners), and its drive corridor (a capsule) while it moves
     setExcavator(x, z) { ex.x = x; ex.z = z; },
     setZone(X, Z, n) { zone.n = n; for (let i = 0; i < n; i++) { zone.P[i * 2] = X[i]; zone.P[i * 2 + 1] = Z[i]; } if (n > 2) bound(zone.P, n, zone.b); },
-    setCorridor(on, ax = 0, az = 0, bx2 = 0, bz2 = 0) { corr.on = on; corr.ax = ax; corr.az = az; corr.bx = bx2; corr.bz = bz2; corr.r = EXC_R + M_EXC; },
+    // aw: the arm's world bearing for the whole move (null: not known, full circles at both ends)
+    setCorridor(on, ax = 0, az = 0, bx2 = 0, bz2 = 0, aw = null) {
+      corr.on = on; corr.ax = ax; corr.az = az; corr.bx = bx2; corr.bz = bz2; corr.r = EXC_R + M_EXC; corr.arm = on && aw != null;
+      if (corr.arm) { const h = ARM_SWEEP / 2, c = Math.cos(aw) * h, sn = -Math.sin(aw) * h; corr.pa = ax + c; corr.qa = az + sn; corr.pb = bx2 + c; corr.qb = bz2 + sn; }
+    },
     setArmIn(fn) { armIn = fn; },
     setArm(on, ax = 0, az = 0, bx2 = 0, bz2 = 0, y = 0) { arm.on = on; arm.ax = ax; arm.az = az; arm.bx = bx2; arm.bz = bz2; arm.y = y; },
     findBay, findBayG, plan, approach, backIn, clear,
@@ -645,7 +688,11 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     // does a zone polygon come within m of a truck (where it stands)?
     zoneHitsTrucks(X, Z, n, m) {
       const P = new Float64Array(n * 2); for (let i = 0; i < n; i++) { P[i * 2] = X[i]; P[i * 2 + 1] = Z[i]; }
-      for (const t of T) { unitBoxes(D, t.p, bx, 0); if (polyDist(P, n, bx, 4) < m || polyDist(P, n, bx.subarray(8), 4) < m) return true; }
+      for (const t of T) {
+        unitBoxes(D, t.p, bx, 0); if (polyDist(P, n, bx, 4) < m || polyDist(P, n, bx.subarray(8), 4) < m) return true;
+        if (!atEnd(t) && t.v > 0.05) { const L = t.legs[t.li], Q = L.pts, nq = Q.length / 3, k1 = Math.min(nq - 1, Math.round((t.s + t.v * t.v / (2 * SPEED.dec) + 3) / STEP)); Object.assign(look, t.p);   // (and where a moving one will stop)
+          for (let k = Math.max(0, Math.round(t.s / STEP)) + 1; k <= k1; k++) { follow(D, look, Q[k * 3], Q[k * 3 + 1], Q[k * 3 + 2], L.rev); if ((k & 7) === 0 || k === k1) { unitBoxes(D, look, bx, 0); if (polyDist(P, n, bx, 4) < m || polyDist(P, n, bx.subarray(8), 4) < m) return true; } } }
+      }
       return false;
     },
     // the bearings (world yaw) a truck standing at pose p covers seen from (x, z), grown by m: [lo, hi] around `mid`
@@ -656,7 +703,12 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     },
     // is the ground point (x, z) within m of a truck (where it stands, or the bay it is coming into)?
     near(x, z, m) {
-      for (const t of T) { unitBoxes(D, t.p, bx, m); if (inPoly(bx, 4, x, z) || inPoly(bx.subarray(8), 4, x, z)) return true; }
+      for (const t of T) {
+        unitBoxes(D, t.p, bx, m); if (inPoly(bx, 4, x, z) || inPoly(bx.subarray(8), 4, x, z)) return true;
+        // a truck on the move: where it will be once it has stopped (a zone drawn there could not stop it short of it)
+        if (!atEnd(t) && t.v > 0.05) { const L = t.legs[t.li], P = L.pts, n = P.length / 3, k1 = Math.min(n - 1, Math.round((t.s + t.v * t.v / (2 * SPEED.dec) + 3) / STEP)); Object.assign(look, t.p);
+          for (let k = Math.max(0, Math.round(t.s / STEP)) + 1; k <= k1; k++) { follow(D, look, P[k * 3], P[k * 3 + 1], P[k * 3 + 2], L.rev); if ((k & 7) === 0 || k === k1) { unitBoxes(D, look, bx, m); if (inPoly(bx, 4, x, z) || inPoly(bx.subarray(8), 4, x, z)) return true; } } }
+      }
       if (bay) { unitBoxes(D, bay, bx, m); if (inPoly(bx, 4, x, z) || inPoly(bx.subarray(8), 4, x, z)) return true; }
       return false;
     }, get tipPose() { return tipPose; }, get tipPull() { return tipPull; }, tipBay,
@@ -674,6 +726,8 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     // a truck in the bay or on its way in (the excavator keeps its bucket off that side)
     // a truck lined up for this bay (staging, staged or backing in): it will be here soon
     get queued() { for (const t of T) if ((t.st === 'stage' || t.st === 'staged' || t.st === 'in') && t.ver === bayVer) return t; return null; },
+    // metres a truck still has to go on its current move (0: parked)
+    left(t) { if (!t.legs) return 0; let d = 0; for (let i = t.li; i < t.legs.length; i++) d += (t.legs[i].pts.length / 3 - 1) * STEP; return Math.max(0, d - t.s); },
     get coming() { for (const t of T) if (t.st === 'in' || (t.st === 'load' && t.ver === bayVer)) return t; return null; },
     // can the excavator drive the corridor now (no truck in it)?
     corridorClear() {

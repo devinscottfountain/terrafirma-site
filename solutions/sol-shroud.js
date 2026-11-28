@@ -5,26 +5,32 @@
 // carries the cab: the excavator's swinging house, the dozer's and compactor's body) with its own line material, so it fades
 // with that machine. Turned as on the hero excavator: the small vented end to the machine's working end. Lazy: call it after
 // the first frame; nothing here blocks ready, and it compiles no program (solid and lines share the machines' programs).
-import { loadShroud } from '../kit/shroud.js';
+import { loadShroud, lod } from '../kit/shroud.js';
 
-const EDGE_DEG = 34;   // crease angle for the line art: the outline, the panel breaks and the vent rows, not every facet
+const EDGE_DEG = 34;
+const LO_CELL = 0.05;   // m: the simplified copy (the film yard's, about 1.3k triangles) for the haul trucks   // crease angle for the line art: the outline, the panel breaks and the vent rows, not every facet
 
 // -> { geo, edges, size, mount(machine, color, k) -> group, dispose() }
 export async function buildShroud({ THREE, alive = () => true }) {
   const src = await loadShroud();
   if (!alive()) return null;
-  let n = 0; for (const p of src.parts) n += p.pos.length;
-  const pos = new Float32Array(n); let off = 0; for (const p of src.parts) { pos.set(p.pos, off); off += p.pos.length; }
-  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.computeBoundingSphere();
-  const edges = new THREE.EdgesGeometry(geo, EDGE_DEG); edges.computeBoundingSphere();
+  const build = S => {
+    let n = 0; for (const p of S.parts) n += p.pos.length;
+    const pos = new Float32Array(n); let off = 0; for (const p of S.parts) { pos.set(p.pos, off); off += p.pos.length; }
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.computeBoundingSphere();
+    const edges = new THREE.EdgesGeometry(geo, EDGE_DEG); edges.computeBoundingSphere();
+    return [geo, edges];
+  };
+  const [geo, edges] = build(src), [geoLo, edgesLo] = build(lod(src, LO_CELL));
   return {
-    geo, edges, size: src.size,
-    // seated on the roof slab, footprint centred on it; R.s scales it down where a roof is much smaller than the part
-    mount(m, color, k = 1) {
-      const R = m.ROOF, g = m.mount(geo, edges, color, k); g.name = 'cyber-shroud';
+    geo, edges, geoLo, edgesLo, size: src.size,
+    // seated on the roof slab, footprint centred on it; R.s scales it down where a roof is much smaller than the part. lo: the
+    // simplified copy (the haul trucks: two more roofs, small on screen)
+    mount(m, color, k = 1, lo = false) {
+      const R = m.ROOF, g = m.mount(lo ? geoLo : geo, lo ? edgesLo : edges, color, k); g.name = 'cyber-shroud';
       g.position.set(R.x, R.y, R.z); g.scale.setScalar(R.s || 1);
       return g;
     },
-    dispose() { geo.dispose(); edges.dispose(); },
+    dispose() { geo.dispose(); edges.dispose(); geoLo.dispose(); edgesLo.dispose(); },
   };
 }

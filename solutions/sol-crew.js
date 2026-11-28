@@ -1,5 +1,5 @@
-// sol-crew.js: the rest of the jobsite crew, running whatever the camera shows. The dozer pushes spoil from the excavator's
-// pile onto the near end of the fill pad (approach, blade down, push, blade up, reverse); the smooth drum roller works the far end of
+// sol-crew.js: the rest of the jobsite crew, running whatever the camera shows. The dozer spreads the haul trucks' tip pile
+// (approach, blade down, push, blade up, reverse); the smooth drum roller works the far end of
 // the pad in lanes, pulling it to the design level, steering on its articulation at each lane change. Both read the ground
 // from the edit field and write back to it (the blade's bite and spill, track and drum marks).
 // Machine slots: `slot.haul` and `slot.grade` are filled by solutions.js from the machine kit (see the TODO there). Rig calls
@@ -31,9 +31,9 @@ const BL = 3.76 * 1.4, BACK = 3.2;   // blade edge ahead of the origin; how far 
 const LIFT = { carry: 0.16, travel: 0.11, cut: -0.015 };   // blade lift (rad): raised for reverse, approach height, biting
 
 export function createCrew({ field, slot, parts, MSCALE }) {
-  // ------------------------------------------------------------------ dozer: one straight push line, pile to pad
-  // The line is laid out in SITE.push (sol-terrain.js): tangent to a 13.2 m circle round the excavator at the pile, so the
-  // dozer's body stays clear of it the whole cycle. Origin positions along the line: S (start, backed off), B (blade on the
+  // ------------------------------------------------------------------ dozer: one straight push line off the tip pile
+  // The line is laid out in SITE.push (sol-terrain.js): it starts on the tip pile's east half and runs south, the dozer's body
+  // always clear of a truck on the tip head. Origin positions along the line: S (start, backed off), B (blade on the
   // pile), T (blade at the pad edge).
   const K = SITE.push, ux = K.ux, uz = K.uz, yawD = Math.atan2(-uz, ux);
   const S = [K.bx - ux * (BL + BACK), K.bz - uz * (BL + BACK)], B = [K.bx - ux * BL, K.bz - uz * BL], T = [K.tx - ux * BL, K.tz - uz * BL];
@@ -42,7 +42,7 @@ export function createCrew({ field, slot, parts, MSCALE }) {
   // legs, kept in the old shape (dir, p) so the zone hull and path lines read them as before
   const VAR = [[{ dir: 1, p: route, t0: 0 }, { dir: -1, p: poly([T, S]), t0: lenST }]]; VAR[0].total = lenST * 2;
   const L = { m: slot.haul, x: S[0], z: S[1], yaw: yawD, s: 0, phase: 'approach', wait: 0.6, carry: 0, t: 0, speed: 0, lift: LIFT.carry, tilt: 0, dist: 0, spill: 0, drive: 0 };
-  const pileHit = [K.bx - (K.bx - SITE.E.x) / K.r * 1.6, K.bz - (K.bz - SITE.E.z) / K.r * 1.6];   // inner half of the blade, over the pile's outer flank
+  const pileHit = [(SITE.tipPile.x + K.bx) / 2, SITE.tipPile.z + 0.4];   // the inner half of the blade, over the tip pile's east flank
 
   // ------------------------------------------------------------------ smooth drum roller lanes on the pad (pad local frame)
   // forward along +x, reverse back stepping over to the next lane. The drum is DRUM ahead of the hitch (the

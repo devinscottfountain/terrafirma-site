@@ -94,7 +94,7 @@ function measure(W, S) {
       const U = u ? tb.subarray(8) : tb;
       S.exc = Math.min(S.exc, polyDist(U, 4, trkPoly, 4), polyDist(U, 4, housePoly, HOUSE.length));
       S.dozer = Math.min(S.dozer, polyDist(U, 4, dzPoly, 4)); S.roller = Math.min(S.roller, polyDist(U, 4, rlPoly, 4));
-      if (zone) S.zone = Math.min(S.zone, polyDist(U, 4, zone, J.n));
+      if (zone) { const zd = polyDist(U, 4, zone, J.n); if (zd <= 0 && S.zone > 0 && process.env.ZDBG) console.log('    ZONEHIT', W.t.toFixed(1), 'truck', i, t.st, t.p.fx.toFixed(1), t.p.fz.toFixed(1), 'job', W.dig.job.on, W.dig.job.done, 'step', W.dig.qa.stepName, 'zone', Array.from(J.x.subarray(0, J.n)).map((x, k) => x.toFixed(1) + ',' + J.z[k].toFixed(1)).join(' ')); S.zone = Math.min(S.zone, zd); }
       for (let j = i + 1; j < T.length; j++) { unitBoxes(D, T[j].p, tb2, 0); S.truck = Math.min(S.truck, polyDist(U, 4, tb2, 4), polyDist(U, 4, tb2.subarray(8), 4)); }
     }
     // 3D: arm points over this truck's footprint (grown 0.2 m) against its top, in each unit's own frame (as it really sits: pitched, rolled)
@@ -143,8 +143,17 @@ function run(name, seed, opts, script) {
     const vs = W.dig.qa.vel.sw; S.swMax = Math.max(S.swMax, Math.abs(vs)); if (!(vs === 0 && Math.abs(pvs) < 0.05)) S.swAcc = Math.max(S.swAcc, Math.abs(vs - pvs) / DT); pvs = vs;   // (a settle from under 0.05 rad/s to rest is one step)
     const st = W.dig.qa.stepName; S.steps[st] = (S.steps[st] || 0) + DT;
     if (st === 'dump' && pst !== 'dump') S.dumps.push(W.t);
-    if (st === 'hold') { holdT += DT; S.hold += DT; } else if (holdT) { S.holdMax = Math.max(S.holdMax, holdT); holdT = 0; }
+    if (W.dig.site.bay && !W.dig.site.cast) S.bayT = (S.bayT || 0) + DT;   // time with a bay to load into (a visitor's zones may leave no room for one)
+    if (st === 'cast' && pst !== 'cast') S.casts = (S.casts || 0) + 1;
+    if (process.env.HDBG && st === 'hold' && holdT === 0) S.hctx = W.t.toFixed(1) + ' ' + JSON.stringify(W.haul.locks) + ' next ' + !!W.haul.next + ' | ' + W.haul.trucks.map(t => t.st + (t.full ? ' FULL' : '') + ' p' + t.passes + ' ver' + t.ver + (t.legs && t.li < t.legs.length ? ' moving' : '') + ' blk' + t.block.toFixed(1)).join(' | ');
+    if (process.env.HDBG && st !== 'hold' && holdT > 4) console.log('    HOLD', holdT.toFixed(1), 's at', S.hctx, ' -> trucks now', W.haul.trucks.map(t => t.st).join(','), 'step', st);
+    if ((pst === 'drive' || pst === 'home') && st !== pst) S.arrT = W.t;
+    for (const t of W.haul.trucks) { if (t.full && !t.wasFull) S.fullT = W.t; t.wasFull = t.full; }
+    if (st === 'hold' && holdT === 0) S.hcat = W.t - (S.arrT ?? -1e9) < 40 ? 'arrive' : W.t - (S.fullT ?? -1e9) < 40 ? 'swap' : 'other';
+    if (st === 'hold') { holdT += DT; S.hold += DT; } else if (holdT) { S.holdMax = Math.max(S.holdMax, holdT); (S.holds = S.holds || []).push(holdT); (S.hc = S.hc || []).push(S.hcat); holdT = 0; }
+    if (LOG && LOG === name + ':' + seed && st === 'clear' && S.waitT > 8 && Math.abs(S.waitT % 10 - 0) < DT * 0.99) console.log('    CLEARWAIT', W.t.toFixed(1), JSON.stringify(W.haul.locks), 'next', !!W.haul.next, W.haul.trucks.map(t => t.st + '@' + t.p.fx.toFixed(1) + ',' + t.p.fz.toFixed(1) + (t.corrSafe ? ' safe' : '') + (t.legs && t.li < t.legs.length ? ' moving' : '') + ' v' + t.v.toFixed(1) + ' blk' + t.block.toFixed(1)).join(' | '), 'armOver', W.dig.qa.stepName);
     if (st === 'clear' || st === 'plan') { S.waitT = (S.waitT || 0) + DT; S.waitMax = Math.max(S.waitMax || 0, S.waitT); } else S.waitT = 0;   // stuck planning or waiting for the way to clear
+    if (process.env.WHYAT && LOG === name + ':' + seed && Math.abs(W.t - +process.env.WHYAT) < DT / 2) { const H = W.haul; for (const t of H.trucks) if (t.legs && t.li < t.legs.length) { const L = t.legs[t.li], P = L.pts, n = P.length / 3, k0 = Math.round(t.s / 0.25); console.log('    WHY truck', t.id, t.st, 'blk', t.block.toFixed(1), JSON.stringify(H.qa.why(t.p, [{ rev: L.rev, pts: P.slice(k0 * 3, Math.min(n, k0 + 16) * 3) }], t)), 'arm', JSON.stringify(H.qa.arm), 'dig', W.dig.qa.stepName, 'tip y', W.dig.tip.y.toFixed(2)); } }
     if (LOG && LOG === name + ':' + seed) { if (st !== pst) console.log('   ', W.t.toFixed(1), 'dig', st, JSON.stringify(W.dig.qa.bayWhy()), 'load', W.dig.qa.load.toFixed(2), 'bay', !!W.dig.site.bay, 'body', W.dig.body.x.toFixed(1), W.dig.body.z.toFixed(1)); W.haul.trucks.forEach((k, i) => { if (k.st !== (S.tst || [])[i]) console.log('   ', W.t.toFixed(1), '  truck', i, k.st, k.p.fx.toFixed(1), k.p.fz.toFixed(1)); }); S.tst = W.haul.trucks.map(k => k.st); }
     pst = st;
     W.haul.trucks.forEach((t, i) => { S.block = Math.max(S.block, t.block); if (t.st === 'tip' && tipped[i] === 0) { tipped[i] = 1; S.loads++; S.passes.push(+t.drop.toFixed(2)); } if (t.st !== 'tip') tipped[i] = 0; });
@@ -161,11 +170,14 @@ function run(name, seed, opts, script) {
       if (t.st === 'queue' && H.bay && H.bay.toPull) { const sp = H.qa.samePose(t.p, H.tipPose), sl = !!H.qa.simLegs(t.p, H.bay.toPull, t); const sv2 = H.trucks.slice(); H.trucks.length = 0; H.trucks.push(t); const sl2 = !!H.qa.simLegs(t.p, H.bay.toPull, t); H.trucks.length = 0; H.trucks.push(...sv2); const o2 = H.trucks.find(q => q !== t); console.log('    queue: samePose', sp, 'cached toPull clears', sl, 'alone', sl2, 'other at', o2.p.fx.toFixed(2), o2.p.fz.toFixed(2), o2.p.yf.toFixed(3), o2.p.yr.toFixed(3), 'tipPull', H.tipPull.fx.toFixed(2), H.tipPull.fz.toFixed(2), H.tipPull.yf.toFixed(3), 'bay.stage', H.bay.stage); }
       if (t.block > 0) { const L = t.legs[t.li], P = L.pts, n = P.length / 3, k0 = Math.round(t.s / 0.25); const look = { ...t.p }; for (let k = k0 + 1; k <= Math.min(n - 1, k0 + 10); k++) H.qa.follow(look, P[k * 3], P[k * 3 + 1], P[k * 3 + 2], L.rev); console.log('    blocked: why', JSON.stringify(H.qa.why(t.p, [{ rev: L.rev, pts: P.slice((k0) * 3, Math.min(n, k0 + 12) * 3) }], t)), 'clear look', H.clear(look, t, false).toFixed(2), 'arm', JSON.stringify(H.qa.arm)); }
       console.log('    truck', t.id, t.st, 'ver', t.ver, 'clear', sc.toFixed(2), 'backIn tip', !!bp, 'approach bay', !!ap, '(alone', !!ap2, ') to pull', !!pu, 'leave', !!lv, 'escape', !!es, '(alone', !!es2, ')', 'bay.stage', H.bay && H.bay.stage, 'at', t.p.fx.toFixed(1), t.p.fz.toFixed(1), 'ex', W.dig.body.x.toFixed(1), W.dig.body.z.toFixed(1)); } }
+  { const H = (S.holds || []).slice().sort((a, b) => a - b), q = f => H.length ? H[Math.min(H.length - 1, Math.floor(f * H.length))] : 0;
+    S.holdStats = { n: H.length, med: q(0.5), p90: q(0.9), max: H.length ? H[H.length - 1] : 0, pct: 100 * S.hold / (S.frames * DT) };
+    console.log(`          side-casts ${S.casts || 0}, holds ${H.length}: median ${S.holdStats.med.toFixed(1)} s, p90 ${S.holdStats.p90.toFixed(1)} s, max ${S.holdStats.max.toFixed(1)} s, ${S.holdStats.pct.toFixed(0)}% of the time`); ALLH.push([name, H, S.hold, S.frames * DT, (S.holds || []).map((h, i) => [h, S.hc[i]]), S.casts || 0, S.dumps.length]); if (0) ALLH.push([name, H, S.hold, S.frames * DT, (S.holds || []).map((h, i) => [h, S.hc[i]])]); }
   if (process.env.STEPS) console.log('          steps', Object.entries(S.steps).map(([k, v]) => k + ' ' + v.toFixed(0)).join(', '), ' trucks', W.haul.trucks.map(t => t.st).join(' '));
   ok(S.exc > 0, name + ': truck touches the excavator ' + S.exc); ok(S.truck > 0, name + ': trucks touch ' + S.truck); ok(S.dozer > 0, name + ': truck touches the dozer'); ok(S.roller > 0, name + ': truck touches the roller');
   ok(S.zone > 0, name + ': truck in the zone ' + S.zone); ok(S.arm > 0, name + ': arm through a truck ' + S.arm); ok(!S.nan, name + ': NaN'); ok(!S.link, name + ': linkage / stroke out of range');
   ok(S.gnd > -0.05, name + ': bucket in the ground outside a bite ' + S.gnd + ' ' + S.gndAt); ok(S.hinge > -0.05, name + ': hinge in the ground ' + S.hinge + ' ' + S.hingeAt); ok(!S.pivotBad, name + ': tracks not counter-rotating on a turn');
-  ok(S.loads >= 1, name + ': no truck load hauled'); ok((S.waitMax || 0) < 60, name + ': stuck in plan / clear for ' + (S.waitMax || 0).toFixed(1) + ' s'); ok(S.swMax <= 0.851 && S.swAcc <= 0.63, name + ': swing faster than the servo limits ' + S.swMax + ' ' + S.swAcc);
+  ok(S.loads >= 1 || (S.bayT || 0) < 300, name + ': no truck load hauled (' + (S.bayT || 0).toFixed(0) + ' s with a bay)'); ok((S.waitMax || 0) < 60, name + ': stuck in plan / clear for ' + (S.waitMax || 0).toFixed(1) + ' s'); ok(S.swMax <= 0.851 && S.swAcc <= 0.63, name + ': swing faster than the servo limits ' + S.swMax + ' ' + S.swAcc);
   return S;
 }
 
@@ -183,6 +195,7 @@ function randomZone(W, S) {
   if (LOG) console.log('    ZONE', W.t.toFixed(1), d.job.on && !d.job.done ? 'closed' : 'dropped', Array.from(d.job.x.subarray(0, d.job.n)).map((x, i) => x.toFixed(1) + ',' + d.job.z[i].toFixed(1)).join(' '));
 }
 
+const ALLH = [];
 console.log(`check-haul: ${MIN} min of sim time per run, 30 Hz`);
 run('auto', 1, {});
 for (const seed of (process.env.SEEDS || '2,3,4,5,6,7').split(',').map(Number)) {   // SEEDS=10,11,12 for more
@@ -198,5 +211,13 @@ for (const seed of (process.env.SEEDS || '2,3,4,5,6,7').split(',').map(Number)) 
 }
 run('phone', 8, { interactive: false });
 { let next = 70; run('intro', 9, { intro: true }, (W, t, S) => { if (t >= next) { randomZone(W, S); next = t + 40 + rand() * 60; } }); }
+{ // pooled hold stats per kind of run
+  for (const kind of ['auto', 'zones', 'nobay', 'phone', 'intro']) {
+    const R = ALLH.filter(r => r[0] === kind); if (!R.length) continue;
+    const H = R.flatMap(r => r[1]).sort((a, b) => a - b), q = f => H.length ? H[Math.min(H.length - 1, Math.floor(f * H.length))] : 0, tot = R.reduce((a, r) => a + r[2], 0), T = R.reduce((a, r) => a + r[3], 0);
+    for (const c of ['arrive', 'swap', 'other']) { const X = R.flatMap(r => r[4]).filter(h => h[1] === c).map(h => h[0]).sort((a, b) => a - b); if (X.length) console.log(`       ${kind.padEnd(6)} ${c.padEnd(6)} n ${X.length}: median ${X[Math.floor(X.length / 2)].toFixed(1)} s, p90 ${X[Math.min(X.length - 1, Math.floor(0.9 * X.length))].toFixed(1)} s, max ${X[X.length - 1].toFixed(1)} s`); }
+    console.log(`pooled ${kind.padEnd(6)} holds ${H.length}: median ${q(0.5).toFixed(1)} s, p90 ${q(0.9).toFixed(1)} s, max ${(H[H.length - 1] || 0).toFixed(1)} s, ${(100 * tot / T).toFixed(1)}% of the time, side-casts ${R.reduce((a, r) => a + r[5], 0)} of ${R.reduce((a, r) => a + r[5] + r[6], 0)} buckets`);
+  }
+}
 console.log(fails ? `\n${fails} FAILURES` : '\nALL OK');
 process.exit(fails ? 1 : 0);

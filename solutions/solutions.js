@@ -418,7 +418,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
   for (const Zn of ZONES) for (const [x, z] of Zn) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));   // the machine zones too
   // exec frames the three machines' work: the pit and the pile (excavator), the dozer's zone, the compactor's zone
   const pitM = rectPoly({ ...SITE.pit, hx: SITE.pit.hx + 2, hz: SITE.pit.hz + 2 }), excM = [0, 1, 2, 3, 4, 5].map(k => [SITE.E.x + Math.cos(k * 1.047) * 4, SITE.E.z + Math.sin(k * 1.047) * 4]);
-  for (const [x, z] of [...pitM, ...excM, [SITE.pile.x, SITE.pile.z], ...ZONES[1], ...ZONES[2]]) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));
+  for (const [x, z] of [...pitM, ...excM, [SITE.tipPile.x, SITE.tipPile.z], ...ZONES[1], ...ZONES[2]]) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));
   const mid = K => { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (const v of K) { x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z); } return { x: (x0 + x1) / 2, z: (z0 + z1) / 2 }; };
   const planC = mid(keyPlan), execC = mid(keyExec);
   { const E = SITE.E;
@@ -486,7 +486,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
       const mk = pts => { const K = []; for (const [x, z] of pts) K.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z)); const m = mid(K);
         const e = fit(Object.assign(pose(), SHOT[2], { tx: m.x, ty: 0, tz: m.z, yaw: T.execYaw, dist: 80, fov: T.execFov }), K); e.dist *= T.execK; return recentre(e, K); };
       const K = SITE.push, line = (t0, t1) => [0, 1, 2, 3].map(i => { const t = t0 + (t1 - t0) * i / 3; return [K.bx + (K.tx - K.bx) * t, K.bz + (K.tz - K.bz) * t]; });   // points along the dozer's push line
-      base[2] = mk([...pitM, ...ZONES[0], [SITE.pile.x, SITE.pile.z], ...line(0, T.armEnd)]);   // the dig zone: the excavator drives inside it
+      base[2] = mk([...pitM, ...ZONES[0], [SITE.tipPile.x, SITE.tipPile.z], ...line(0, T.armEnd)]);   // the dig zone: the excavator drives inside it
       base2B = mk([...line(T.brStart, 1), ...ZONES[2]]);
     }
   }
@@ -572,7 +572,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     mbox: [new Float32Array(4), new Float32Array(4), new Float32Array(4)],
     // the zone being drawn (corners on screen, snap, cursor) and the closed zone's tag (what it has dug)
     zone: { n: 0, pts: new Float32Array(dig.MAXV * 2), ok: new Uint8Array(dig.MAXV), snap: false, hov: false, h: [0, 0], pulse: 0 },
-    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '', hintPulse: 0, hov: { a: 0, p: [0, 0], ok: true, r: 12 },
+    zoneTag: { a: 0, p: [0, 0], label: words.zone, value: '', k: 0 }, hintSub: '', hintPulse: 0, hov: { a: 0, p: [0, 0], ok: true, soft: false, r: 12 },
     cur: { a: 0, ok: false, p: [0, 0], pa: 99 } };   // the intro's cursor sprite (screen point, alpha, seconds since a press)
   const MRK_R = 1.6, pp = [0, 0], EXC_BOX = { hx: 3, hz: 3, off: 0 };
   // project the click markers and the ghost path (no allocation: straight into the preallocated arrays)
@@ -756,9 +756,9 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     hudState.wDig = wD * (fl ? 0 : 1) + (fl ? Math.max(0, wTo.y * (k - 0.75) * 4) : 0); hudState.wPlan = clamp01((wP - 0.6) / 0.4); hudState.wExec = clamp01((wE - 0.6) / 0.4);
     hudState.safeTop = SAFE.top; hudState.safeBottom = SAFE.bottom; hudState.t = clockT;
     hudState.tip = project(tip.x, tip.y, tip.z, tipXY) ? tipXY : null;
-    { // hover reticle on the ground under the pointer: a ring the size of a ~2.2 m patch (14 to 34 px), muted with a bar where a click can't dig
+    { // hover reticle on the ground under the pointer: a ring the size of a ~2.2 m patch (14 to 34 px); dimmer out of reach (a corner there is pulled in), a bar over a truck
       const Hv = dig.hover, R = hudState.hov, on = interactive && mode === 1 && !fl && Hv.on && project(Hv.x, Hv.y, Hv.z, R.p);
-      if (on) { R.ok = Hv.ok; project(Hv.x + 2.2, Hv.y, Hv.z, tipXY2); R.r = Math.max(14, Math.min(34, Math.hypot(tipXY2[0] - R.p[0], tipXY2[1] - R.p[1]))); project(Hv.x, Hv.y, Hv.z, R.p); }
+      if (on) { R.ok = Hv.ok; R.soft = Hv.soft; project(Hv.x + 2.2, Hv.y, Hv.z, tipXY2); R.r = Math.max(14, Math.min(34, Math.hypot(tipXY2[0] - R.p[0], tipXY2[1] - R.p[1]))); project(Hv.x, Hv.y, Hv.z, R.p); }
       R.a += ((on ? 1 : 0) - R.a) * (1 - Math.exp(-dt * 14));
     }
     // hint: what a click does next (start a zone / add corners / close it on the first corner). It stays up the whole time
@@ -900,7 +900,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
         if (!kit) return null;
         if (dead) { kit.dispose(); return null; }
         shroudKit = kit;
-        const g = [exc, loader, roller, ...trucks].map(m => kit.mount(m, color));
+        const g = [exc, loader, roller].map(m => kit.mount(m, color)).concat(trucks.map(m => kit.mount(m, color, 1, true)));   // the trucks: the simplified copy
         shroud = g[0]; shroud.userData.all = g; shroud.userData.size = kit.size;
         return shroud;
       })

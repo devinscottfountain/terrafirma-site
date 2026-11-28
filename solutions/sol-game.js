@@ -213,7 +213,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   // working spot it could use, best first, gets a bay worked out (a few candidates per frame, a fixed amount of work), the first spot
   // with a bay wins. Then the trucks clear its path (it waits), then it drives, and the new bay goes to the trucks on arrival.
   let booted = false;   // the first home bay found: the first truck starts in it
-  const site = { bay: null, homeBay: null, homeGen: null, cands: [], ci: 0, gen: null, park: null, next: null, wait: 0, fail: 0, holdTry: 0, spins: 0, cast: false, first: null };
+  const site = { bay: null, homeBay: null, homeGen: null, cands: [], ci: 0, gen: null, park: null, next: null, wait: 0, fail: 0, holdTry: 0, spins: 0, cast: false, first: null, armW: null };
   if (haul) { site.homeGen = haul.findBayG(home.x, home.z, home.yaw); haul.setArmIn(() => armOverTruck(0.25)); }
   // is the zone's middle well off the bearing of a bay seen from (x, z)? (else the bites there would all be refused)
   const zsec = [0, 0, 0];
@@ -236,13 +236,28 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
       }
     return out.sort((a, b) => a.c - b.c);
   }
+  // working spots that keep today's bay: the truck standing in it (or coming to it) need not move at all. Radial to the bay as findBay
+  // places one (8.6 to 9.2 m to its bogie, the body on the bearing within a few degrees), facing the zone, the bay 1.4 to 2.35 rad round.
+  function keepers(x, z) {
+    const B = site.bay, out = []; if (!B || !haul) return out;
+    for (const dl of [0, 0.2, -0.2, 0.38, -0.38]) for (const d of [8.6, 9.2]) {
+      const a = B.yr + dl, ex = B.bx - Math.cos(a) * d, ez = B.bz + Math.sin(a) * d;
+      inZone(ex, ez, pk); if (Math.hypot(pk.x - ex, pk.z - ez) > 0.05) continue;   // inside the excavator's drive zone
+      const dz0 = Math.hypot(x - ex, z - ez); if (dz0 < ZNEAR || dz0 > ZFAR) continue;
+      if (inJob(ex, ez) || (job.n > 2 && edgeDist(job.x, job.z, job.n, ex, ez) < 4.6)) continue;
+      const yaw = Math.atan2(-(z - ez), x - ex), brg = Math.atan2(-(B.bz - ez), B.bx - ex), sw = Math.abs(wrap(brg - yaw));
+      if (sw < 1.4 || sw > 2.35) continue;
+      out.push({ x: ex, z: ez, yaw, keep: true, c: Math.hypot(ex - body.x, ez - body.z) });
+    }
+    return out.sort((u, v) => u.c - v.c).slice(0, 3);
+  }
   // move to work on (x, z) (or home): plan, then clear, then drive
   function relocate(x, z, toHome = false) {
     if (toHome) site.cands = [{ x: home.x, z: home.z, yaw: home.yaw, home: true }];
     else {
       const here = { x: body.x, z: body.z, yaw: Math.atan2(-(z - body.z), x - body.x), here: true }, d = Math.hypot(x - body.x, z - body.z);
       const ok = op.kind === 'load' ? !inJob(body.x, body.z) : d >= ZNEAR && d <= ZFAR && !inJob(body.x, body.z) && !(job.n > 2 && edgeDist(job.x, job.z, job.n, body.x, body.z) < 4.6);
-      site.cands = (ok ? [here] : []).concat(parks(x, z).slice(0, 5));
+      site.cands = (ok ? [here] : []).concat(keepers(x, z), parks(x, z).slice(0, 5));
     }
     site.first = site.cands[0] || null;   // (where it would work from with no bay at all)
     // a zone that keeps sending it round (plans, but no bite from any of them): give the zone up
@@ -435,7 +450,8 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
     tg.sw = wrap(Math.atan2(-dz, dx) - body.yaw); tg.r = clamp(Math.hypot(dx, dz) + extra, RMIN, RMAX);
   }
   function tuck() { // arm in for travel and waiting: boom low and forward, bucket curled; a load is kept up
-    tg.sw = step === 'drive' || step === 'home' || step === 'clear' || Math.abs(cur.sw) < 0.6 || load < CAP * 0.15 ? 0 : cur.sw; tg.r = 6;   // travel: the arm straight ahead along(tg.sw, tg.r, tmp); tg.y = ground(tmp.x, tmp.z) + (load > CAP * 0.15 ? 2.9 : 2.5); tg.ph = PH.carry;
+    tg.sw = (step === 'drive' || step === 'home' || step === 'clear') && site.armW != null ? wrap(site.armW - body.yaw) : Math.abs(cur.sw) < 0.6 || load < CAP * 0.15 ? 0 : cur.sw; tg.r = 6;   // (travel: the house turns against the tracks, the arm holds its world bearing)
+    along(tg.sw, tg.r, tmp); tg.y = ground(tmp.x, tmp.z) + (load > CAP * 0.15 ? 2.9 : 2.5); tg.ph = PH.carry;
   }
   // the hinge (stick end) at (r, y): the tip target that puts it there with the bucket at its current angle
   function hingeTo(r, y) { const c = Math.cos(ARM.pe), s = Math.sin(ARM.pe); tg.r = r + (TX * c - TY * s) * MS; tg.y = y + (TX * s + TY * c) * MS; }
@@ -503,7 +519,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   function run(dt) {
     stepT += dt;
     if (haul && step !== 'clear' && step !== 'drive' && step !== 'home') {
-      haul.setCorridor(false);   // the corridor only stands while it is about to drive or driving
+      site.armW = null; haul.setCorridor(false);   // the corridor (and the held arm) only stand while it is about to drive or driving
       if (step !== 'plan' && haul.bay !== site.bay) haul.setBay(site.bay);   // a move given up half way: the bay where it stands is still good
     }
     const auto = !op.user;
@@ -526,12 +542,23 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
         break;
       }
       case 'clear': {   // the trucks out of the way, then drive (or, staying put, the new bay is set at once)
+        if (stepT <= dt * 1.5 || site.armW == null) site.armW = wrap(body.yaw + cur.sw);   // the arm holds this world bearing until it has arrived
+        { const A = anyArc(wrap(site.armW - body.yaw), 0.35); if (A) { const lo = wrap(A.lo - 0.6), hi = wrap(A.hi + 0.6); site.armW = wrap(body.yaw + (Math.abs(wrap(lo - cur.sw)) < Math.abs(wrap(hi - cur.sw)) ? lo : hi)); } }   // (off any truck's bearing first)
         if (load > CAP * 0.15) holdPose(); else tuck();
+        tg.sw = wrap(site.armW - body.yaw);
         for (const T of haul.trucks) if ((T.st === 'out' || T.st === 'in') && haul.nearR(T.p, body.x, body.z) < 10) { tg.sw = cur.sw; tg.y = Math.max(tg.y, cur.y); break; }   // never swing at a truck on the move beside it
         const P = site.park, stay = Math.hypot(P.x - body.x, P.z - body.z) < 0.3 && Math.abs(wrap(P.yaw - body.yaw)) < 0.05;
         if (stay) { haul.setCorridor(false); haul.setBay(site.next); site.bay = haul.bay; site.holdTry = 0; if (site.bay) site.cast = false; afterMove(); break; }
-        haul.setBay(null); haul.setCorridor(true, body.x, body.z, P.x, P.z);
+        haul.setBay(null); haul.setCorridor(true, body.x, body.z, P.x, P.z, site.armW);   // the body's way, and the band the held arm sweeps
         if (Math.abs(wrap(cur.sw - tg.sw)) < 0.3 && haul.corridorClear() && !armOverTruck(0.05)) { driveTo(P.x, P.z, P.yaw); go(P.home ? 'home' : 'drive'); }
+        else if (stepT > 9) {   // a truck that cannot get out of the way: work from the next spot on the list (planned round it, where it stands)
+          haul.setCorridor(false); haul.setBay(site.bay); site.armW = null;
+          if (site.cands[site.ci + 1]) { site.ci++; site.gen = null; go('plan'); }
+          else if (site.cast || site.fail) {   // nowhere left to work from: the zone is given up (the autopilot takes over again)
+            site.cast = false; if (job.on && !job.done) { job.done = true; job.doneT = clock(); job.ver++; haul.setZone(job.x, job.z, 0); }
+            op.on = false; endOp();
+          } else planFailed();
+        }
         break;
       }
       case 'home': case 'drive':
@@ -849,7 +876,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   let armed = false, downId = -1, downX = 0, downY = 0, moved = 0, downScroll = 0;
   const P0 = { x: 0, z: 0 };
   // where the pointer is over the ground (for the reticle): ok = a click here digs here as it is, blocked = it would be moved
-  const hover = { on: false, x: 0, y: 0, z: 0, ok: false, ver: 0 };
+  const hover = { on: false, x: 0, y: 0, z: 0, ok: false, soft: false, ver: 0 };
   // the ground under a screen point, or null when the ray misses it (above the horizon)
   function pick(e) {
     const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -866,11 +893,11 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   let cursorNow = '';
   const setCursor = c => { if (c !== cursorNow) { cursorNow = c; canvas.style.cursor = c; } };
   // the cursor while drawing: where a click would put the next corner (clamped), and whether it would close the zone; and the reticle:
-  // over diggable ground a crosshair, over ground it cannot dig as it is (out of reach, a truck's) a blocked cursor
+  // a crosshair, also out of reach (the corner is pulled in); a blocked cursor only over a truck (or the bay it is coming into)
   function onHover(e) {
     if (intro.ctl) return;   // the intro owns the live edge until it hands over
     const p = armed ? pick(e) : null;
-    if (p && draw.drag < 0 && !draw.box) { hover.on = true; hover.x = p.x; hover.y = p.y; hover.z = p.z; hover.ok = diggable(p.x, p.z); }
+    if (p && draw.drag < 0 && !draw.box) { hover.on = true; hover.x = p.x; hover.y = p.y; hover.z = p.z; hover.ok = !(haul && haul.near(p.x, p.z, TRUCK_M)); hover.soft = hover.ok && reachable({ x: p.x, z: p.z }); }   // soft: out of reach, a corner there is pulled into reach
     else hover.on = false;
     hover.ver++;
     setCursor(!armed ? '' : draw.drag >= 0 || draw.box ? 'crosshair' : !hover.on ? '' : hover.ok || (draw.n > 2 && screenD(draw.x[0], draw.z[0], e) < SNAP_PX) ? 'crosshair' : 'not-allowed');

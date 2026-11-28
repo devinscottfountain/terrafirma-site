@@ -100,13 +100,14 @@ export function createHud(host, words, pal, { phone = false, prMax = 2 } = {}) {
   }
   const CS = 24 / 17;   // sprite scale: the arrow outline is 17 px tall, the sprite is 24
   const CUR = [0, 0, 0, 15, 3.7, 11.7, 6.3, 17, 8.6, 16, 6.1, 10.9, 10.8, 10.6];   // arrow outline, tip first (17 px tall, scaled by CS when drawn)
-  // hover reticle: a dashed ring with four ticks over ground a click can dig; dim with a bar across where it can't (a truck, the
-  // machine, a crew zone, off the pad)
+  // hover reticle: a dashed ring with four ticks over ground a click can dig (dimmer out of reach: the corner is pulled in); a
+  // grey ring with a bar over a truck
   function hov(R, a) {
     if (!R || R.a < 0.01) return;
     const [x, y] = R.p, r = R.r, k = a * R.a;
-    g.lineWidth = 1.5; g.strokeStyle = R.ok ? rgba(pal.accent, 0.95 * k) : `rgba(255,255,255,${(0.6 * k).toFixed(3)})`;
-    if (R.ok) { g.fillStyle = rgba(pal.accent, 0.08 * k); g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
+    const kk = R.soft ? k * 0.45 : k;   // out of reach: the same ring, dimmer (a corner there is pulled into reach)
+    g.lineWidth = 1.5; g.strokeStyle = R.ok ? rgba(pal.accent, 0.95 * kk) : `rgba(255,255,255,${(0.6 * k).toFixed(3)})`;
+    if (R.ok) { g.fillStyle = rgba(pal.accent, 0.08 * kk); g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
     g.setLineDash(R.ok ? [4, 4] : []); g.beginPath(); g.arc(x, y, R.ok ? r : r * 0.75, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
     g.beginPath();
     if (R.ok) for (let q = 0; q < 4; q++) { const dx = q < 2 ? 1 - 2 * q : 0, dy = q < 2 ? 0 : 5 - 2 * q; g.moveTo(x + dx * (r - 4), y + dy * (r - 4)); g.lineTo(x + dx * (r + 6), y + dy * (r + 6)); }
