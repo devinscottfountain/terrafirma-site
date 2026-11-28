@@ -409,16 +409,19 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     2: { pitch: 39 * DEG, fov: 30, fogD: 290, siteR: 1e4, siteW: 1, minS: 4.2, sizeK: 0.42, near: 0, moteA: 0.55, skyA: 0.85, moteW: 120, maxPx: 3.6 },
   };
   const SAFE = { top: 0.2, bottom: 0.3, ...(safe || {}) };
-  const TUNE = { execYaw: 0.8, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.5,
+  const TUNE = { execYaw: 1.5, execK: 1.0, digYaw: 0.95, digAhead: 6.6, digK: 1.5,
     // phones (PH): own shots for a ~390 x 400 box. dig: tighter lens and air, the camera follows the bucket by `follow` (0 home, 1 on the tip);
     // exec: a slow pan between the excavator + dozer and the dozer + roller (hold `hold` s at each end, `move` s between), `execK` air on both
-    ph: { digFov: 34, digPitch: 31 * DEG, digK: 0.9, follow: 0.4, execFov: 26, execYaw: 0.25, execK: 1.0, armEnd: 0.45, brStart: 0.4, hold: 7, move: 5 } };
+    ph: { digFov: 34, digPitch: 31 * DEG, digK: 0.9, follow: 0.4, execFov: 26, execYaw: 0.95, execK: 1.0, armEnd: 0.45, brStart: 0.4, hold: 7, move: 5 } };
   const keyPlan = [], keyExec = [], keyDig = [];
   for (const P of [SITE.pit, SITE.pad, SITE.plat]) for (const [x, z] of rectPoly({ ...P, hx: P.hx + P.ws * 0.6, hz: P.hz + P.ws * 0.6 })) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));
   for (const Zn of ZONES) for (const [x, z] of Zn) keyPlan.push(new THREE.Vector3(x, hD(x, z), z));   // the machine zones too
-  // exec frames the three machines' work: the pit and the pile (excavator), the dozer's zone, the compactor's zone
-  const pitM = rectPoly({ ...SITE.pit, hx: SITE.pit.hx + 2, hz: SITE.pit.hz + 2 }), excM = [0, 1, 2, 3, 4, 5].map(k => [SITE.E.x + Math.cos(k * 1.047) * 4, SITE.E.z + Math.sin(k * 1.047) * 4]);
-  for (const [x, z] of [...pitM, ...excM, [SITE.tipPile.x, SITE.tipPile.z], ...ZONES[1], ...ZONES[2]]) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));
+  // exec frames the machines at work
+  const excM = [0, 1, 2, 3, 4, 5].map(k => [SITE.E.x + Math.cos(k * 1.047) * 7, SITE.E.z + Math.sin(k * 1.047) * 7]);
+  // the excavator (its swing, not the whole pit), a truck on the tip head and its pile, the dozer's zone, the compactor's zone
+  const tipM = [-10, -5, 0, 3].map(d => [SITE.tip.x + Math.cos(SITE.tip.y) * -d, SITE.tip.z - Math.sin(SITE.tip.y) * -d]);
+  for (const [x, z] of [...excM, ...tipM, [SITE.tipPile.x, SITE.tipPile.z], ...ZONES[1], ...ZONES[2]]) keyExec.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z));
+  keyExec.push(new THREE.Vector3(SITE.E.x, hD(SITE.E.x, SITE.E.z) + 10, SITE.E.z));   // the excavator's boom stands up to ~9.5 m
   const mid = K => { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (const v of K) { x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x); z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z); } return { x: (x0 + x1) / 2, z: (z0 + z1) / 2 }; };
   const planC = mid(keyPlan), execC = mid(keyExec);
   { const E = SITE.E;
@@ -467,7 +470,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
     let best = null;
     for (const yaw of yaws) { const c = fit(Object.assign(pose(), SHOT[0], { tx: planC.x, ty: 0, tz: planC.z, yaw, dist: 300 }), keyPlan); if (!best || c.dist < best.dist * 0.97) best = c; }
     base[0] = best;
-    // exec: across the diagonal the three jobs lie on (pit -> pad), looking into the low sun, so all three spread out.
+    // exec: across the line the jobs lie on (dig -> tip -> pad), so all of them spread out.
     // Tall hosts look along that diagonal instead, so it runs up the screen.
     best = null;
     for (const yaw of asp < 0.95 ? [TUNE.execYaw - 1.2, TUNE.execYaw] : [TUNE.execYaw]) { const c = fit(Object.assign(pose(), SHOT[2], { tx: execC.x, ty: 0, tz: execC.z, yaw, dist: 150 }), keyExec); if (!best || c.dist < best.dist * 0.97) best = c; }
@@ -486,7 +489,7 @@ export async function createSolutions({ THREE, host, root = host, quality = 'hig
       const mk = pts => { const K = []; for (const [x, z] of pts) K.push(new THREE.Vector3(x, hD(x, z), z), new THREE.Vector3(x, hD(x, z) + 4, z)); const m = mid(K);
         const e = fit(Object.assign(pose(), SHOT[2], { tx: m.x, ty: 0, tz: m.z, yaw: T.execYaw, dist: 80, fov: T.execFov }), K); e.dist *= T.execK; return recentre(e, K); };
       const K = SITE.push, line = (t0, t1) => [0, 1, 2, 3].map(i => { const t = t0 + (t1 - t0) * i / 3; return [K.bx + (K.tx - K.bx) * t, K.bz + (K.tz - K.bz) * t]; });   // points along the dozer's push line
-      base[2] = mk([...pitM, ...ZONES[0], [SITE.tipPile.x, SITE.tipPile.z], ...line(0, T.armEnd)]);   // the dig zone: the excavator drives inside it
+      base[2] = mk([...excM, ...tipM, [SITE.tipPile.x, SITE.tipPile.z], ...line(0, T.armEnd)]);   // the excavator, a truck tipping, the dozer on the pile
       base2B = mk([...line(T.brStart, 1), ...ZONES[2]]);
     }
   }

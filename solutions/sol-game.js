@@ -460,6 +460,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   // side-cast: where a full bucket goes when no truck comes for HOLD_CAST s. Away from the bay, off any truck, out of the zone
   const cast = { sw: 0, r: 7.6, on: false };
   function castSpot() {
+    if (haul) for (const T of haul.trucks) if (T.v > 0.05 && haul.nearR(T.p, body.x, body.z) < RMAX + 3) return false;   // never swing out while a truck manoeuvres within reach (the arm is quicker than its look-ahead)
     const B = site.bay, b0 = B ? wrap(Math.atan2(-(B.bz - body.z), B.bx - body.x) - body.yaw) : 0;
     for (const d of [Math.PI, 2.3, -2.3, 1.7, -1.7]) {
       const sw = wrap(b0 + d); along(sw, cast.r, tmp);
@@ -519,7 +520,7 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
   function run(dt) {
     stepT += dt;
     if (haul && step !== 'clear' && step !== 'drive' && step !== 'home') {
-      site.armW = null; haul.setCorridor(false);   // the corridor (and the held arm) only stand while it is about to drive or driving
+      site.armW = null; haul.setCorridor(false); haul.setNext(null);   // the corridor (the held arm, the bay ahead) only stand while it is about to drive or driving
       if (step !== 'plan' && haul.bay !== site.bay) haul.setBay(site.bay);   // a move given up half way: the bay where it stands is still good
     }
     const auto = !op.user;
@@ -549,10 +550,10 @@ export function createDig({ THREE, exc, field, camera, canvas, interactive, MSCA
         for (const T of haul.trucks) if ((T.st === 'out' || T.st === 'in') && haul.nearR(T.p, body.x, body.z) < 10) { tg.sw = cur.sw; tg.y = Math.max(tg.y, cur.y); break; }   // never swing at a truck on the move beside it
         const P = site.park, stay = Math.hypot(P.x - body.x, P.z - body.z) < 0.3 && Math.abs(wrap(P.yaw - body.yaw)) < 0.05;
         if (stay) { haul.setCorridor(false); haul.setBay(site.next); site.bay = haul.bay; site.holdTry = 0; if (site.bay) site.cast = false; afterMove(); break; }
-        haul.setBay(null); haul.setCorridor(true, body.x, body.z, P.x, P.z, site.armW);   // the body's way, and the band the held arm sweeps
+        haul.setBay(null); haul.setCorridor(true, body.x, body.z, P.x, P.z, site.armW); haul.setNext(site.next);   // the body's way, the band the held arm sweeps, and the bay it is going to (a truck may make for it meanwhile)
         if (Math.abs(wrap(cur.sw - tg.sw)) < 0.3 && haul.corridorClear() && !armOverTruck(0.05)) { driveTo(P.x, P.z, P.yaw); go(P.home ? 'home' : 'drive'); }
         else if (stepT > 9) {   // a truck that cannot get out of the way: work from the next spot on the list (planned round it, where it stands)
-          haul.setCorridor(false); haul.setBay(site.bay); site.armW = null;
+          haul.setCorridor(false); haul.setNext(null); haul.setBay(site.bay); site.armW = null;
           if (site.cands[site.ci + 1]) { site.ci++; site.gen = null; go('plan'); }
           else if (site.cast || site.fail) {   // nowhere left to work from: the zone is given up (the autopilot takes over again)
             site.cast = false; if (job.on && !job.done) { job.done = true; job.doneT = clock(); job.ver++; haul.setZone(job.x, job.z, 0); }

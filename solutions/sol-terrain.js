@@ -63,13 +63,18 @@ export const SITE = {
   SITE.pileSw = Math.atan2(Math.sin(SITE.pileSw), Math.cos(SITE.pileSw));
 }
 SITE.pile = { x: E.x + Math.cos(E.yaw + SITE.pileSw) * SITE.pileR, z: E.z - Math.sin(E.yaw + SITE.pileSw) * SITE.pileR };
-// The dozer works the tip pile: the haul trucks tip on the tip head (HAUL_SITE.TIP in sol-haul.js: bogie at (26, 29), cab west), the
-// load lands behind the tail at about (31.1, 29). The dozer comes down from the north-east onto the pile's east half and spreads it
-// south, its body always east of x = 31.4 (the tail of a truck on the tip head is at 28.9). The push line replaces the old one (the
-// excavator only side-casts now): same shape, so the crew, the path line and the framing read it as before.
-SITE.tipPile = { x: 31.1, z: 29 };
+// The dozer works the tip pile. The haul trucks tip on the tip head (SITE.tip: between the dig and the fill pad, so the Execution
+// shot reads excavator, truck, dozer, roller in one frame). The truck stands cab west-north-west (TIP_A, 23 degrees north of west),
+// the load lands behind the tail on SITE.tipPile (35.14, 14). The angle is what lets an empty truck pull off the tip head and swing
+// north past the mouth of the loading bay (with the tip square to the bay it would have to cross it); a loaded one comes down to
+// the tip's pull-up from the bay and backs round onto it (sol-haul.js). The dozer comes in from the east onto the pile's south half
+// and spreads it 14 m north, its body east of a truck on the tip head. Same shape as the old push line: the crew, the path line and
+// the framing read it as before.
+const TIP_A = 0.4;
+SITE.tipPile = { x: 35.14, z: 14 };
+SITE.tip = { x: SITE.tipPile.x - Math.cos(TIP_A) * 5.14, z: SITE.tipPile.z + Math.sin(TIP_A) * 5.14, y: Math.PI + TIP_A };   // the bogie and the body heading (HAUL_SITE.TIP reads it); the pile is 5.14 m behind the bogie
 {
-  const K = SITE.push, bx = 34.9, bz = 31.6, ang = -1.4, L = 20;   // blade edge start, push heading (yaw), push length
+  const K = SITE.push, bx = SITE.tipPile.x + 4.26, bz = SITE.tipPile.z - 2.6, ang = -1.4, L = 14;   // blade edge start, push heading (yaw), push length
   Object.assign(K, { bx, bz, ux: Math.cos(ang), uz: -Math.sin(ang), len: L });
   K.tx = bx + K.ux * L; K.tz = bz + K.uz * L;
 }
