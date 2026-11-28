@@ -662,6 +662,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
 
   const api = {
     trucks: T, D, NPASS, anchors: A,
+    get tipPull() { return tipPull; },
     get locks() { return { lock, tipLock, stage, bayVer, corr: corr.on, bay: !!bay, armIn: armIn() }; },
     qa: { why(p0, legs, self) {   // QA: where and why a run fails
         const p = { ...p0 }; let k0 = 0;
@@ -773,8 +774,8 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   };
   // start: one truck on the tip head (it heads for the bay as soon as the excavator has one), the other at the tip's pull-up (it backs on
   // when the first has gone)
-  tipPull = pullUps(tipBay).find(g => Math.abs(wrap(g.yf + Math.PI / 2)) < 0.1);
-  tipPull.fz += 10;   // 10 m further on: clear of the corridor the next truck backs into the bay through, so it need not wait for this one
+  // the tip head's pull-up: north of the bay (a loaded truck drives straight up out of it), cab north; it backs down onto the tip head
+  tipPull = { fx: HAUL_SITE.TIP.pull.x, fz: HAUL_SITE.TIP.pull.z, yf: -Math.PI / 2 };
   if (T[0]) { place(T[0], tipPose); T[0].st = 'queue'; tipLock = 0; }
   if (T[1]) { place(T[1], { ...tipPull, yr: tipPull.yf }); T[1].st = 'wait'; }
   for (const t of T) seat(t);
@@ -784,4 +785,4 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
 // the haul road anchors (world m, front axle poses [x, z, yaw]; the tip head as a bogie pose). Out past the excavator to the north-east:
 // the queue on the way in, the tip head on gentle ground east of the site (the heap lands behind the tail), clear of the dozer's push line
 // and the roller's pad.
-export const HAUL_SITE = { TIP: { x: 26, z: 29, y: Math.PI } };   // tip head (and queue): the bogie here, cab west, the heap east of the tail
+export const HAUL_SITE = { TIP: SITE.tip };   // tip head (and queue): the bogie here, cab west, the heap east of the tail (SITE.tip, sol-terrain.js)

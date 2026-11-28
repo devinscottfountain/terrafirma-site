@@ -42,7 +42,7 @@ export function createCrew({ field, slot, parts, MSCALE }) {
   // legs, kept in the old shape (dir, p) so the zone hull and path lines read them as before
   const VAR = [[{ dir: 1, p: route, t0: 0 }, { dir: -1, p: poly([T, S]), t0: lenST }]]; VAR[0].total = lenST * 2;
   const L = { m: slot.haul, x: S[0], z: S[1], yaw: yawD, s: 0, phase: 'approach', wait: 0.6, carry: 0, t: 0, speed: 0, lift: LIFT.carry, tilt: 0, dist: 0, spill: 0, drive: 0 };
-  const pileHit = [(SITE.tipPile.x + K.bx) / 2, SITE.tipPile.z + 0.4];   // the inner half of the blade, over the tip pile's east flank
+  const pileHit = [SITE.tipPile.x + 1.2, SITE.tipPile.z + 0.4];   // the inner half of the blade, over the tip pile's east flank
 
   // ------------------------------------------------------------------ smooth drum roller lanes on the pad (pad local frame)
   // forward along +x, reverse back stepping over to the next lane. The drum is DRUM ahead of the hitch (the

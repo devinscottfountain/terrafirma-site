@@ -63,13 +63,15 @@ export const SITE = {
   SITE.pileSw = Math.atan2(Math.sin(SITE.pileSw), Math.cos(SITE.pileSw));
 }
 SITE.pile = { x: E.x + Math.cos(E.yaw + SITE.pileSw) * SITE.pileR, z: E.z - Math.sin(E.yaw + SITE.pileSw) * SITE.pileR };
-// The dozer works the tip pile: the haul trucks tip on the tip head (HAUL_SITE.TIP in sol-haul.js: bogie at (26, 29), cab west), the
-// load lands behind the tail at about (31.1, 29). The dozer comes down from the north-east onto the pile's east half and spreads it
-// south, its body always east of x = 31.4 (the tail of a truck on the tip head is at 28.9). The push line replaces the old one (the
-// excavator only side-casts now): same shape, so the crew, the path line and the framing read it as before.
-SITE.tipPile = { x: 31.1, z: 29 };
+// The dozer works the tip pile. The haul trucks tip on the tip head (SITE.tip: bogie at (30, 14), cab north, between the dig and the
+// fill pad, so the Execution shot reads excavator, truck, dozer, roller in one frame); they back down onto it from a pull-up straight
+// north of it, and the load lands behind the tail at about (30, 8.9). The dozer comes in from the east onto the pile's south half and
+// spreads it 14 m west, its body south of a truck on the tip head (more than 1 m clear of its tail). Same shape as the old push line:
+// the crew, the path line and the framing read it as before.
+SITE.tip = { x: 30, z: 14, y: Math.PI, pull: { x: 10, z: 62 } };   // pull: where a loaded truck stops (front axle, cab north) before it backs down onto it   // bogie and body heading (cab north): HAUL_SITE.TIP reads it
+SITE.tipPile = { x: SITE.tip.x + 5.14, z: SITE.tip.z };
 {
-  const K = SITE.push, bx = 34.9, bz = 31.6, ang = -1.4, L = 20;   // blade edge start, push heading (yaw), push length
+  const K = SITE.push, bx = SITE.tip.x + 9.4, bz = SITE.tip.z - 2.6, ang = -1.4, L = 14;   // blade edge start, push heading (yaw), push length
   Object.assign(K, { bx, bz, ux: Math.cos(ang), uz: -Math.sin(ang), len: L });
   K.tx = bx + K.ux * L; K.tz = bz + K.uz * L;
 }
