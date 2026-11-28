@@ -63,15 +63,18 @@ export const SITE = {
   SITE.pileSw = Math.atan2(Math.sin(SITE.pileSw), Math.cos(SITE.pileSw));
 }
 SITE.pile = { x: E.x + Math.cos(E.yaw + SITE.pileSw) * SITE.pileR, z: E.z - Math.sin(E.yaw + SITE.pileSw) * SITE.pileR };
-// The dozer works the tip pile. The haul trucks tip on the tip head (SITE.tip: bogie at (30, 14), cab north, between the dig and the
-// fill pad, so the Execution shot reads excavator, truck, dozer, roller in one frame); they back down onto it from a pull-up straight
-// north of it, and the load lands behind the tail at about (30, 8.9). The dozer comes in from the east onto the pile's south half and
-// spreads it 14 m west, its body south of a truck on the tip head (more than 1 m clear of its tail). Same shape as the old push line:
-// the crew, the path line and the framing read it as before.
-SITE.tip = { x: 30, z: 14, y: Math.PI, pull: { x: 10, z: 62 } };   // pull: where a loaded truck stops (front axle, cab north) before it backs down onto it   // bogie and body heading (cab north): HAUL_SITE.TIP reads it
-SITE.tipPile = { x: SITE.tip.x + 5.14, z: SITE.tip.z };
+// The dozer works the tip pile. The haul trucks tip on the tip head (SITE.tip: between the dig and the fill pad, so the Execution
+// shot reads excavator, truck, dozer, roller in one frame). The truck stands cab west-north-west (TIP_A, 23 degrees north of west),
+// the load lands behind the tail on SITE.tipPile (35.14, 14). The angle is what lets an empty truck pull off the tip head and swing
+// north past the mouth of the loading bay (with the tip square to the bay it would have to cross it); a loaded one comes down to
+// the tip's pull-up from the bay and backs round onto it (sol-haul.js). The dozer comes in from the east onto the pile's south half
+// and spreads it 14 m north, its body east of a truck on the tip head. Same shape as the old push line: the crew, the path line and
+// the framing read it as before.
+const TIP_A = 0.4;
+SITE.tipPile = { x: 35.14, z: 14 };
+SITE.tip = { x: SITE.tipPile.x - Math.cos(TIP_A) * 5.14, z: SITE.tipPile.z + Math.sin(TIP_A) * 5.14, y: Math.PI + TIP_A };   // the bogie and the body heading (HAUL_SITE.TIP reads it); the pile is 5.14 m behind the bogie
 {
-  const K = SITE.push, bx = SITE.tip.x + 9.4, bz = SITE.tip.z - 2.6, ang = -1.4, L = 14;   // blade edge start, push heading (yaw), push length
+  const K = SITE.push, bx = SITE.tipPile.x + 4.26, bz = SITE.tipPile.z - 2.6, ang = -1.4, L = 14;   // blade edge start, push heading (yaw), push length
   Object.assign(K, { bx, bz, ux: Math.cos(ang), uz: -Math.sin(ang), len: L });
   K.tx = bx + K.ux * L; K.tz = bz + K.uz * L;
 }

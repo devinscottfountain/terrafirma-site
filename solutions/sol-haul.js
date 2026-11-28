@@ -168,7 +168,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   const corr = { on: false, ax: 0, az: 0, bx: 0, bz: 0, r: 0, arm: false, pa: 0, qa: 0, pb: 0, qb: 0 };   // the excavator's drive corridor while it moves (trucks keep out of it)
   const arm = { on: false, ax: 0, az: 0, bx: 0, bz: 0, y: 0 };   // the arm seen from above (swing centre to past the bucket) and its lowest point (world y)
   const bx = new Float64Array(16), bo = new Float64Array(16);
-  let extraM = 0;   // m: more room round the other truck (planning a bay's way out round a truck that will only stop near its planned pose)
+  let extraM = 0, skipT = null, ahead = false;   // ahead: planning for the next bay while the excavator moves (its way is kept clear)   // skipT: a truck pulling away that a plan may follow (pathFree with follow checks it instead)   // m: more room round the other truck (planning a bay's way out round a truck that will only stop near its planned pose)
 
   // clearance of a truck pose against everything but `self` (m; negative = overlap). mode: which margins to apply
   function clear(p, self, m = true) {
@@ -181,10 +181,11 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
       const far = (b, mm) => ux0 > b.x1 + mm || ux1 < b.x0 - mm || uz0 > b.z1 + mm || uz1 < b.z0 - mm;   // boxes apart by more than mm: no need to measure
       if (zone.n > 2 && !far(zone.b, M_ZONE + 2)) d = Math.min(d, polyDist(U, 4, zone.P, zone.n) - (m ? M_ZONE : 0));
       for (const S of ST) if (!far(S.b, M_STATIC + 2)) d = Math.min(d, polyDist(U, 4, S.P, S.n) - (m ? M_STATIC : 0));
+      if (m && ahead && corr.on && corrD(U) < 0) d = Math.min(d, -0.1);   // (planning ahead while the excavator moves: never into its way)
       // a moving truck never passes under the arm while the arm is lower than the truck (a parked one is never planned under it)
       if (!m && arm.on && self && arm.y < (field ? field.ground((U[0] + U[4]) / 2, (U[1] + U[5]) / 2) : 0) + (u ? D.topR : D.topT) + 0.5) d = Math.min(d, capDist(arm.ax, arm.az, arm.bx, arm.bz, 1.1, U, 4) + 0.6);
       for (const t of T) {
-        if (t === self) continue;
+        if (t === self || t === skipT) continue;
         unitBoxes(D, t.p, bo, 0);
         d = Math.min(d, polyDist(U, 4, bo, 4) - (m ? M_TRUCK + extraM : 0), polyDist(U, 4, bo.subarray(8), 4) - (m ? M_TRUCK + extraM : 0));
       }
@@ -216,6 +217,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     let best = null;
     for (const c of dubins(p.fx, p.fz, p.yf, fx, fz, goal.yf, D.rhoF)) {
       if (c.len > (opts.maxLen || 160)) break;
+      if (c.len <= (opts.from || 0)) continue;   // (the shorter ones were tried already)
       const L = { rev: false, pts: dubinsPts(p.fx, p.fz, p.yf, c, D.rhoF, tail) };
       const e = simLegs(p, [L], self, opts.ignoreZone);
       if (!e) continue;
@@ -277,7 +279,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   // from wherever it stopped, the bogie back into the bay (reverse Dubins, motion heading opposite to the body)
   function backIn(p, bay, self) {
     // the last LS m straight back along the bay's axis, so the tractor has lined up behind the body when it stops
-    const LS = 9, [b0x, b0z] = bogieOf(D, p), y0 = wrap(p.yr + Math.PI), ux = Math.cos(bay.yr), uz = -Math.sin(bay.yr), qx = bay.bx + ux * LS, qz = bay.bz + uz * LS;
+    const LS = bay.ls ?? 9, [b0x, b0z] = bogieOf(D, p), y0 = wrap(p.yr + Math.PI), ux = Math.cos(bay.yr), uz = -Math.sin(bay.yr), qx = bay.bx + ux * LS, qz = bay.bz + uz * LS;
     for (const c of dubins(b0x, b0z, y0, qx, qz, wrap(bay.yr + Math.PI), D.rhoB)) {
       if (c.len > 60) break;
       const L = { rev: true, pts: dubinsPts(b0x, b0z, y0, c, D.rhoB, LS) };
@@ -286,10 +288,22 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     }
     return null;
   }
-  const tipBay = { bx: HAUL_SITE.TIP.x, bz: HAUL_SITE.TIP.z, yr: HAUL_SITE.TIP.y };
+  const tipBay = { bx: HAUL_SITE.TIP.x, bz: HAUL_SITE.TIP.z, yr: HAUL_SITE.TIP.y, ls: TIP_LS };
   const poseAt = b => ({ fx: b.bx + Math.cos(b.yr) * (D.LR + D.LF), fz: b.bz - Math.sin(b.yr) * (D.LR + D.LF), yf: b.yr, yr: b.yr });
   const tipPose = poseAt(tipBay);
-  let tipPull = null;   // the tip head's pull-up: across its axis, cab north (the trucks come up from the bay)
+  let tipPull = null;   // the tip head's home pull-up (cab north, the trucks come up from the home bay); tipPulls: all of them
+  const tipPulls = [];
+  // the pull-up a truck at p would use: the cheapest (forward Dubins to it plus its reverse back onto the tip head, reversing counted
+  // slower) whose run clears. -> { r, g } or null. from: only words longer than that (a loop, when nothing short clears)
+  const pc = [];
+  function toTip(p, self, maxLen = 80, from = 0) {
+    pc.length = 0;
+    for (const g of tipPulls) { const fx = g.fx - Math.cos(g.yf) * OUT_TAIL, fz = g.fz + Math.sin(g.yf) * OUT_TAIL, d = dubins(p.fx, p.fz, p.yf, fx, fz, g.yf, D.rhoF)[0]; g.L = (d ? d.len : 1e9) + g.rl * 1.6; pc.push(g); }
+    pc.sort((u, v) => u.L - v.L);
+    let n = 0;
+    for (const g of pc) { if (g.L > 1e8 || ++n > 4) break; const r = plan(p, g, self, { tail: OUT_TAIL, maxLen, from }); if (r) return { r, g }; }
+    return null;
+  }
 
   // ------------------------------------------------------------------ the bay (loading spot) for an excavator position
   // The truck stands radial, body toward the excavator: bogie at rB from the swing centre on the bearing `brg` (world yaw), cab away.
@@ -345,15 +359,15 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     const stageable = f => {
       sv2.length = 0; sv2.push(...T); T.length = 0;
       try {
-        T.push(gq, { p: { ...f.end } }); extraM = 1; const o = plan(P, tipPull, null, { tail: 16, maxLen: 70 }); extraM = 0; if (!o) return false;
-        T.length = 0; T.push({ p: { ...f.end } }); return !!backIn({ ...tipPull, yr: tipPull.yf }, tipBay, null);
+        T.push(gq, { p: { ...f.end } }); extraM = 1; const o = toTip(P, null, 70); extraM = 0; if (!o) return false;
+        T.length = 0; T.push({ p: { ...f.end } }); return !!backIn({ ...o.g, yr: o.g.yf }, tipBay, null);
       } finally { extraM = 0; T.length = 0; T.push(...sv2); }
     };
     let stageOK = true, inP = yield* stepG(function* () { T.push(gt, g0); return yield* approachG(tipPose, P, null, true, g0, 75, stageable); });
     if (!inP) { stageOK = false; inP = yield* stepG(function* () { T.push(gt); return yield* approachG(tipPose, P, null, true, null, 75); }); }
     if (!inP) { if (DBG) DBG.push(['in', P.brg, P.rB]); return null; }
     // out: to the tip's pull-up, the other truck on the tip head
-    const outP = yield* stepG(function* () { T.push(gq); return plan(P, tipPull, null, { tail: 16, maxLen: 70 }); });
+    const outP = yield* stepG(function* () { T.push(gq); return toTip(P, null, 70); });
     if (!outP) { if (DBG) DBG.push(['out', P.brg, P.rB]); return null; }
     return { ...P, x, z, digYaw, toPull: inP.legs, pull: inP.pull, pullEnd: inP.end, back: inP.back.legs, stage: stageOK };
   }
@@ -415,7 +429,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   }
 
   // ------------------------------------------------------------------ the bay in use
-  let bay = null, bayVer = 0, lock = -1, tipLock = -1, stage = -1;   // lock: the truck in (or coming into) the bay; tipLock: the one on (or backing onto) the tip head
+  let bay = null, bayVer = 0, lock = -1, tipLock = -1, stage = -1, nextBay = null;   // nextBay: the bay the excavator is moving to (a truck may stage for it meanwhile)   // lock: the truck in (or coming into) the bay; tipLock: the one on (or backing onto) the tip head
   let armIn = () => false;   // the dig tells us when its bucket is over a truck (a truck never moves under it)
   // a move's sweep: both units' boxes every metre along all its legs (from the pose it starts in); t.sweepK: how far along it is
   function sweepOf(p0, legs) {
@@ -427,12 +441,23 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   const ba = [0, 0, 0, 0], bc = [0, 0, 0, 0];
   // would a move with this sweep come within the trucks' margin of where another moving truck still has to go? (two moves at once only
   // when their paths never meet, so neither ever has to stop for the other)
-  function pathFree(t, sweep) {
+  // follow: t sets off behind a truck that is pulling away (the next truck backing into the bay as the full one drives out of it): a
+  // place on o's way is no conflict when o is sure to have left it well before t can get there (o at its own pace from where it is,
+  // counted slow; t at its top speed from rest, counted fast). The look-ahead in drive() still stops t if o ever stalls.
+  const tOut = (o, d) => { const v0 = Math.max(0, o.v), a = SPEED.acc, vm = 2.4, d1 = Math.max(0, (vm * vm - v0 * v0) / (2 * a));
+    return Math.max(0, o.pause) + (v0 >= vm ? d / vm : d <= d1 ? (Math.sqrt(v0 * v0 + 2 * a * d) - v0) / a : (vm - v0) / a + (d - d1) / vm); };
+  const tRev = d => { const d1 = SPEED.rev * SPEED.rev / (2 * SPEED.acc); return PAUSE * 0.5 + (d <= d1 ? Math.sqrt(2 * d / SPEED.acc) : SPEED.rev / SPEED.acc + (d - d1) / SPEED.rev); };   // s: the soonest t can have reversed d m from rest
+  const leader = t => { for (const o of T) if (o !== t && !atEnd(o) && o.sweep && !o.legs[o.li].rev && o.li === o.legs.length - 1) return o; return null; };
+  function pathFree(t, sweep, follow = false) {
     for (const o of T) {
       if (o === t || atEnd(o) || !o.sweep) continue;
+      const lead = follow && !o.legs[o.li].rev && o.li === o.legs.length - 1;   // (o driving forward on its last leg: it only goes away)
       for (let j = Math.max(0, o.sweepK - 1); j < o.sweep.length; j++) {
         const Bo = o.sweep[j]; bb(Bo, bc);
-        for (const Bt of sweep) {
+        const gone = lead ? tOut(o, Math.max(0, j - o.sweepK + 2)) * 1.2 + 1.0 : 1e9;   // s: by then o has left this place
+        for (let i = 0; i < sweep.length; i++) {
+          if (tRev(i) > gone) break;   // t cannot be anywhere near this far along by then
+          const Bt = sweep[i];
           bb(Bt, ba); if (ba[0] > bc[1] + M_TRUCK || ba[1] < bc[0] - M_TRUCK || ba[2] > bc[3] + M_TRUCK || ba[3] < bc[2] - M_TRUCK) continue;
           if (Math.min(polyDist(Bt, 4, Bo, 4), polyDist(Bt, 4, Bo.subarray(8), 4), polyDist(Bt.subarray(8), 4, Bo, 4), polyDist(Bt.subarray(8), 4, Bo.subarray(8), 4)) < M_TRUCK) return false;
         }
@@ -444,8 +469,8 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   // a move is only taken when its whole sweep stays clear of the other truck: where it stands (the plan was checked against that) and,
   // if it is moving, everywhere it still has to go. So two moves at once never meet, and neither ever waits on the other half way.
   let mover = -1;
-  function take(t, r) {
-    const sw = sweepOf(t.p, r.legs); if (!pathFree(t, sw)) return false;
+  function take(t, r, follow = false) {
+    const sw = sweepOf(t.p, r.legs); if (!pathFree(t, sw, follow)) return false;
     t.sweep = sw; t.sweepK = 0; t.sd = 0; setLegs(t, r); mover = t.id; return true;
   }
   const canMove = () => true;
@@ -500,6 +525,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     }
     return false;
   };
+  const corrD = U => capDist(corr.ax, corr.az, corr.bx, corr.bz, corr.r + 0.8, U, 4) < 0 || (corr.arm ? capDist(corr.pa, corr.qa, corr.pb, corr.qb, ARM_SWEEP / 2 + 1.4, U, 4) < 0 : circDist(corr.ax, corr.az, ARM_SWEEP + 0.8, U, 4) < 0 || circDist(corr.bx, corr.bz, ARM_SWEEP + 0.8, U, 4) < 0) ? -1 : 1;
   const hitsCorr = t => { if (!corr.on) return false; unitBoxes(D, t.p, bx, 0); return inCorr(0.5); };
   const samePose = (p, q) => Math.hypot(p.fx - q.fx, p.fz - q.fz) < 0.03 && Math.abs(wrap(p.yf - q.yf)) < 0.004 && Math.abs(wrap(p.yr - q.yr)) < 0.004;
   // into a bay close by (the excavator moved a little and its bay with it): straight back in from where it stands, else a short pull
@@ -519,16 +545,16 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     if (r && take(t, r)) { tipLock = t.id; t.st = 'back'; if (lock === t.id) lock = -1; if (stage === t.id) stage = -1; t.esc = 0; return true; }
     return false;
   }
-  function leave(t) {   // forward to the tip head's pull-up (no long detours: something in the way, it waits and tries again)
-    const r = plan(t.p, tipPull, t, { tail: 16, maxLen: 80 });
-    if (r && take(t, r)) { t.st = 'out'; if (lock === t.id) lock = -1; if (stage === t.id) stage = -1; if (tipLock === t.id) tipLock = -1; return true; }
+  function leave(t) {   // forward to a pull-up of the tip head (a loop only when nothing shorter clears; else it waits and tries again)
+    const o = toTip(t.p, t) || toTip(t.p, t, 130, 80);   // (else round a loop)
+    if (o && take(t, o.r)) { t.pullT = o.g; t.st = 'out'; if (lock === t.id) lock = -1; if (stage === t.id) stage = -1; if (tipLock === t.id) tipLock = -1; return true; }
     return false;
   }
   function replan(t) {   // held up on the way (a zone drawn across its path, the arm low over it): a new way to the same place, else another one
     let r = null, st = t.st;
     if (t.st === 'stage' && bay) r = approach(t.p, bay, t, true, null, 140);
     else if (t.st === 'in' && bay) r = backIn(t.p, bay, t) || approach(t.p, bay, t, false, null, 140);
-    else if (t.st === 'out') r = plan(t.p, tipPull, t, { tail: 16, maxLen: 80 });
+    else if (t.st === 'out') { const o = toTip(t.p, t); if (o) { r = o.r; t.pullT = o.g; } }
     else if (t.st === 'back') r = backIn(t.p, tipBay, t) || approach(t.p, tipBay, t, false, null, 140);
     if (!r && tipLock < 0 && t.st !== 'back') { r = backIn(t.p, tipBay, t) || approach(t.p, tipBay, t, false, null, 140); if (r) { st = 'back'; tipLock = t.id; if (lock === t.id) lock = -1; if (stage === t.id) stage = -1; } }   // round by the tip head
     if (r && take(t, r)) { t.st = st; t.block = 0; t.replans = (t.replans || 0) + 1; }
@@ -541,12 +567,17 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     if (!canMove(t) && t.st !== 'tip') { if (t.st === 'stage' || t.st === 'in' || t.st === 'out' || t.st === 'back') drive(t, dt); return; }
     if (t.kick && atEnd(t) && t.retry <= 0) {   // asked to make way: off to the tip's pull-up, or from there onto the tip head
       t.retry = 0.5; t.kicks = (t.kicks || 0) + 1;
-      const atPull = Math.hypot(t.p.fx - tipPull.fx, t.p.fz - tipPull.fz) < 1;
-      if ((!atPull && leave(t)) || (atPull && escape(t)) || t.kicks > 20) { t.kick = false; t.kicks = 0; }
+      const atPull = t.st === 'wait';
+      if ((!atPull && leave(t)) || escape(t) || t.kicks > 20) { t.kick = false; t.kicks = 0; }
       if (t.st === 'out' || t.st === 'back') { if (t.st === 'out' && tipLock === t.id) tipLock = -1; return; }
     }
     switch (t.st) {
       case 'queue':
+        if (!bay && corr.on && nextBay && nextBay.pull && t.retry <= 0 && !T.some(o => o !== t && (o.st === 'stage' || o.st === 'in' || o.st === 'out' || (o.st === 'staged' && o.bay === nextBay)))) {   // the excavator is on its way to a new bay: up to its pull-up now
+          t.retry = 0.5; ahead = true; let r = null; try { r = plan(t.p, nextBay.pull, t, { tail: 12, maxLen: 110 }); } finally { ahead = false; }
+          if (r && take(t, r)) { t.bay = nextBay; t.ver = -2; t.st = 'stage'; if (tipLock === t.id) tipLock = -1; }
+          break;
+        }
         // up to the bay's pull-up, unless the truck in the bay is about to leave (or is leaving, or is still backing in): their paths cross
         if (bay && stage < 0 && !corr.on && t.retry <= 0 && !T.some(o => o !== t && (o.st === 'out' || o.st === 'in' || (o.st === 'load' && (o.full || o.ver !== bayVer || !bay.stage))))) {
           t.retry = 0.5;
@@ -568,6 +599,11 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
       case 'staged':
         if (t.ver !== bayVer && bay && t.bay && Math.hypot(bay.bx - t.bay.bx, bay.bz - t.bay.bz) < 0.3 && Math.abs(wrap(bay.yr - t.bay.yr)) < 0.05) { t.ver = bayVer; if (bay.stage) stage = t.id; }   // the same bay again
         if (hitsCorr(t)) { if (t.retry <= 0) { t.retry = 0.5; if (!leave(t) && (t.esc = (t.esc || 0) + 0.5) > 4) escape(t); } break; }
+        if (!bay && corr.on && nextBay && nextBay.pull && t.bay !== nextBay && t.retry <= 0 && !T.some(o => o !== t && (o.st === 'stage' || o.st === 'in' || o.st === 'out' || (o.st === 'staged' && o.bay === nextBay)))) {   // waiting for a bay the excavator has left: on to the next one's pull-up
+          t.retry = 0.5; ahead = true; let r = null; try { r = plan(t.p, nextBay.pull, t, { tail: 12, maxLen: 110 }); } finally { ahead = false; }
+          if (r && take(t, r)) { t.bay = nextBay; t.ver = -2; t.st = 'stage'; }
+          break;
+        }
         if (t.ver !== bayVer) {   // the bay moved: to the new one's pull-up (when there is one)
           if (bay && !corr.on && t.retry <= 0 && !T.some(o => o !== t && (o.st === 'in' || o.st === 'out'))) {
             t.retry = 0.5;
@@ -583,9 +619,9 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
         if (lock < 0 && !corr.on && t.retry <= 0) {
           t.retry = 0.4;
           let r = null;
-          if (bay.back && bay.pullEnd && samePose(t.p, bay.pullEnd)) { if (simLegs(t.p, bay.back, t)) r = { legs: bay.back }; }
-          else r = backIn(t.p, bay, t);
-          if (r && take(t, r)) { lock = t.id; stage = -1; t.st = 'in'; }
+          skipT = leader(t);   // (the full one driving out of the bay: back in behind it as it goes)
+          try { if (bay.back && bay.pullEnd && samePose(t.p, bay.pullEnd)) { if (simLegs(t.p, bay.back, t)) r = { legs: bay.back }; } else r = backIn(t.p, bay, t); } finally { skipT = null; }
+          if (r && take(t, r, true)) { lock = t.id; stage = -1; t.st = 'in'; }
         }
         break;
       case 'in':
@@ -612,7 +648,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
         break;
       }
       case 'out':
-        if (atEnd(t)) { t.st = 'wait'; snap(t, { ...tipPull, yr: tipPull.yf }); }
+        if (atEnd(t)) { t.st = 'wait'; if (t.pullT) snap(t, { ...t.pullT, yr: t.pullT.yf }); }
         break;
       case 'wait':   // at the tip head's pull-up: back on when the tip head is free (an empty one may go straight to a free bay)
         if (t.vol <= 0 && !t.passes && bay && lock < 0 && stage < 0 && !corr.on && t.retry <= 0 && !T.some(o => o !== t && (o.st === 'load' || o.st === 'in' || o.st === 'out' || o.st === 'stage'))) {
@@ -662,7 +698,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
 
   const api = {
     trucks: T, D, NPASS, anchors: A,
-    get tipPull() { return tipPull; },
+    get tipPull() { return tipPull; }, tipPulls,
     get locks() { return { lock, tipLock, stage, bayVer, corr: corr.on, bay: !!bay, armIn: armIn() }; },
     qa: { why(p0, legs, self) {   // QA: where and why a run fails
         const p = { ...p0 }; let k0 = 0;
@@ -670,7 +706,7 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
           const art = Math.abs(wrap(p.yf - p.yr)); if (art > D.art) return { k: k0, art };
           const c = clear(p, self); if (c < 0) { const sv = T.slice(); T.length = 0; const c0 = clear(p, self); T.push(...sv); const exo = ex.on; ex.on = false; const c1 = clear(p, self); ex.on = exo; return { k: k0, at: [p.fx.toFixed(1), p.fz.toFixed(1)], c: c.toFixed(2), noTrucks: c0.toFixed(2), noExc: c1.toFixed(2) }; } } }
         return null; },
-      dubins, dubinsPts, simLegs: (...a) => simLegs(...a), follow: (p, x, z, y, rev) => follow(D, p, x, z, y, rev), get arm() { return arm; }, samePose: (...a) => samePose(...a), sweepOf: (...a) => sweepOf(...a), pathFree: (...a) => pathFree(...a) },
+      dubins, dubinsPts, simLegs: (...a) => simLegs(...a), follow: (p, x, z, y, rev) => follow(D, p, x, z, y, rev), get arm() { return arm; }, samePose: (...a) => samePose(...a), sweepOf: (...a) => sweepOf(...a), pathFree: (...a) => pathFree(...a), toTip: (...a) => toTip(...a) },
     // the excavator's position, the dig zone (flat [x, z, ...], n corners), and its drive corridor (a capsule) while it moves
     setExcavator(x, z) { ex.x = x; ex.z = z; },
     setZone(X, Z, n) { zone.n = n; for (let i = 0; i < n; i++) { zone.P[i * 2] = X[i]; zone.P[i * 2 + 1] = Z[i]; } if (n > 2) bound(zone.P, n, zone.b); },
@@ -715,7 +751,8 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     }, get tipPose() { return tipPose; }, get tipPull() { return tipPull; }, tipBay,
     get bay() { return bay; },
     // a new bay (or null while the excavator chooses where to go)
-    setBay(b) { if (b === bay) return; if (b && bay && Math.hypot(b.bx - bay.bx, b.bz - bay.bz) < 0.05 && Math.abs(wrap(b.yr - bay.yr)) < 0.01) return; bay = b; bayVer++; stage = -1; },   // (the same bay again: kept, the truck in it stays)
+    setNext(b) { nextBay = b && b.pull ? b : null; },
+    setBay(b) { if (b) nextBay = null; if (b === bay) return; if (b && bay && Math.hypot(b.bx - bay.bx, b.bz - bay.bz) < 0.05 && Math.abs(wrap(b.yr - bay.yr)) < 0.01) return; bay = b; bayVer++; stage = -1; },   // (the same bay again: kept, the truck in it stays)
     // boot: the first truck already stands in the excavator's first bay (the section opens on a load going in, not on an empty bay)
     startIn(b) {
       const t = T[0]; if (!t || t.st !== 'queue' || lock >= 0 || b !== bay) return false;
@@ -733,7 +770,10 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
     // can the excavator drive the corridor now (no truck in it)?
     corridorClear() {
       if (!corr.on) return true;
-      for (const t of T) { unitBoxes(D, t.p, bx, 0); if (inCorr((t.st === 'in' || t.st === 'out') ? 8 : 0)) return false; }   // (and none on the move near it)
+      for (const t of T) {
+        unitBoxes(D, t.p, bx, 0); if (inCorr((t.st === 'in' || t.st === 'out') ? 8 : 0)) return false;   // (and none on the move near it)
+        if (t.st === 'in' && t.bay) { unitBoxes(D, t.bay, bx, 0); if (inCorr(0.5)) return false; }   // (nor backing into a bay in its way)
+      }
       return true;
     },
     // world bed geometry of a truck: centre, axis, rail top (y), the floor, and where pass k should land (nearest to the excavator first)
@@ -774,10 +814,19 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
   };
   // start: one truck on the tip head (it heads for the bay as soon as the excavator has one), the other at the tip's pull-up (it backs on
   // when the first has gone)
-  // the tip head's pull-up: north of the bay (a loaded truck drives straight up out of it), cab north; it backs down onto the tip head
-  tipPull = { fx: HAUL_SITE.TIP.pull.x, fz: HAUL_SITE.TIP.pull.z, yf: -Math.PI / 2 };
+  // the tip head's pull-ups: TIP_LS m out along its axis, a turn round (right: north, left: south) and TIP_S m on, so a loaded truck
+  // backs round onto the tip head in about 20 to 35 m. The first (cab north, north-west of the tip head) is the home bay's; the
+  // others serve bays elsewhere (a truck takes the cheapest it can reach, see toTip).
+  for (const [sg, yEnd] of [[1, -Math.PI / 2], [1, -Math.PI / 2 + 0.45], [1, -Math.PI / 2 - 0.5], [-1, Math.PI / 2], [-1, Math.PI / 2 + 0.6]]) for (const S of [TIP_S, TIP_S + 8]) {
+    const R = D.rhoB + 0.6, h = tipBay.yr, th = sg > 0 ? mod2pi(yEnd - h) : mod2pi(h - yEnd), n = 24;   // th: the turn from the tip's axis
+    let x = tipBay.bx + Math.cos(h) * TIP_LS, z = tipBay.bz - Math.sin(h) * TIP_LS;
+    for (let k = 0; k < n; k++) { const y1 = h + sg * th * (k + 0.5) / n; x += Math.cos(y1) * R * th / n; z -= Math.sin(y1) * R * th / n; }
+    const y = wrap(h + sg * th); x += Math.cos(y) * S; z -= Math.sin(y) * S;
+    tipPulls.push({ fx: x + Math.cos(y) * (D.LR + D.LF), fz: z - Math.sin(y) * (D.LR + D.LF), yf: y, rl: TIP_LS + R * th + S });
+  }
+  tipPull = tipPulls[0];
   if (T[0]) { place(T[0], tipPose); T[0].st = 'queue'; tipLock = 0; }
-  if (T[1]) { place(T[1], { ...tipPull, yr: tipPull.yf }); T[1].st = 'wait'; }
+  if (T[1]) { place(T[1], { ...tipPull, yr: tipPull.yf }); T[1].st = 'wait'; T[1].pullT = tipPull; }
   for (const t of T) seat(t);
   return api;
 }
@@ -785,4 +834,6 @@ export function createHaul({ trucks: models, field, parts, MSCALE, statics = [],
 // the haul road anchors (world m, front axle poses [x, z, yaw]; the tip head as a bogie pose). Out past the excavator to the north-east:
 // the queue on the way in, the tip head on gentle ground east of the site (the heap lands behind the tail), clear of the dozer's push line
 // and the roller's pad.
-export const HAUL_SITE = { TIP: SITE.tip };   // tip head (and queue): the bogie here, cab west, the heap east of the tail (SITE.tip, sol-terrain.js)
+export const HAUL_SITE = { TIP: SITE.tip };   // tip head (and queue): the bogie here, cab west-north-west, the heap behind the tail (SITE.tip, sol-terrain.js)
+let TIP_LS = 4, TIP_S = 10, OUT_TAIL = 6;   // m: the straight run back onto the tip head, on past the turn to its pull-up, and into the pull-up
+export const setTipQA = (ls, s3, ot = OUT_TAIL) => { TIP_LS = ls; TIP_S = s3; OUT_TAIL = ot; };   // QA: try other pull-ups
