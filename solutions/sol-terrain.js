@@ -63,6 +63,16 @@ export const SITE = {
   SITE.pileSw = Math.atan2(Math.sin(SITE.pileSw), Math.cos(SITE.pileSw));
 }
 SITE.pile = { x: E.x + Math.cos(E.yaw + SITE.pileSw) * SITE.pileR, z: E.z - Math.sin(E.yaw + SITE.pileSw) * SITE.pileR };
+// The dozer works the tip pile: the haul trucks tip on the tip head (HAUL_SITE.TIP in sol-haul.js: bogie at (26, 29), cab west), the
+// load lands behind the tail at about (31.1, 29). The dozer comes down from the north-east onto the pile's east half and spreads it
+// south, its body always east of x = 31.4 (the tail of a truck on the tip head is at 28.9). The push line replaces the old one (the
+// excavator only side-casts now): same shape, so the crew, the path line and the framing read it as before.
+SITE.tipPile = { x: 31.1, z: 29 };
+{
+  const K = SITE.push, bx = 34.9, bz = 31.6, ang = -1.4, L = 20;   // blade edge start, push heading (yaw), push length
+  Object.assign(K, { bx, bz, ux: Math.cos(ang), uz: -Math.sin(ang), len: L });
+  K.tx = bx + K.ux * L; K.tz = bz + K.uz * L;
+}
 SITE.pit.level = hF(SITE.pit.x, SITE.pit.z) - SITE.pit.cut;
 SITE.pad.level = hF(SITE.pad.x, SITE.pad.z) + SITE.pad.fill;
 SITE.plat.level = hF(SITE.plat.x, SITE.plat.z);

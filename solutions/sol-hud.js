@@ -100,6 +100,20 @@ export function createHud(host, words, pal, { phone = false, prMax = 2 } = {}) {
   }
   const CS = 24 / 17;   // sprite scale: the arrow outline is 17 px tall, the sprite is 24
   const CUR = [0, 0, 0, 15, 3.7, 11.7, 6.3, 17, 8.6, 16, 6.1, 10.9, 10.8, 10.6];   // arrow outline, tip first (17 px tall, scaled by CS when drawn)
+  // hover reticle: a dashed ring with four ticks over ground a click can dig (dimmer out of reach: the corner is pulled in); a
+  // grey ring with a bar over a truck
+  function hov(R, a) {
+    if (!R || R.a < 0.01) return;
+    const [x, y] = R.p, r = R.r, k = a * R.a;
+    const kk = R.soft ? k * 0.45 : k;   // out of reach: the same ring, dimmer (a corner there is pulled into reach)
+    g.lineWidth = 1.5; g.strokeStyle = R.ok ? rgba(pal.accent, 0.95 * kk) : `rgba(255,255,255,${(0.6 * k).toFixed(3)})`;
+    if (R.ok) { g.fillStyle = rgba(pal.accent, 0.08 * kk); g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
+    g.setLineDash(R.ok ? [4, 4] : []); g.beginPath(); g.arc(x, y, R.ok ? r : r * 0.75, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+    g.beginPath();
+    if (R.ok) for (let q = 0; q < 4; q++) { const dx = q < 2 ? 1 - 2 * q : 0, dy = q < 2 ? 0 : 5 - 2 * q; g.moveTo(x + dx * (r - 4), y + dy * (r - 4)); g.lineTo(x + dx * (r + 6), y + dy * (r + 6)); }
+    else { const d = r * 0.53; g.moveTo(x - d, y + d); g.lineTo(x + d, y - d); }
+    g.stroke();
+  }
   // the closed zone's tag: label and what it has dug, at its centre
   function zoneTag(T, a) {
     if (!T || T.a < 0.01 || !T.value) return;
@@ -111,7 +125,7 @@ export function createHud(host, words, pal, { phone = false, prMax = 2 } = {}) {
   // the dig: click markers, ghost path, reticle on the bucket teeth, a grade ladder beside it, the autopilot readout, the hint
   function dig(s, a) {
     const A = pal.accent, cream = k => rgba(A, a * k), small = W < 600, FS = 12;   // FS: phones never draw text under 12 px
-    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a); zone(s.zone, a); cursor(s.cur, a);
+    s0t = s.t; ghost(s.ghost, a); marker(s.marks[1], a); marker(s.marks[0], a); zone(s.zone, a); hov(s.hov, a); cursor(s.cur, a);
     if (s.tip) {
       const [x, y] = s.tip, r = small ? 13 : 17;
       const gv = s.tel.grade, col = Math.abs(gv) < 0.12 ? cream(0.95) : rgba(gv > 0 ? pal.cut : pal.fill, a * 0.95);
@@ -173,7 +187,7 @@ export function createHud(host, words, pal, { phone = false, prMax = 2 } = {}) {
       }
     }
   }
-  const HINTS = ['hint', 'hintPoint', 'hintClose', 'hintDrag', 'hintClick'];
+  const HINTS = ['hint', 'hintPoint', 'hintClose', 'hintRelease', 'hintClick'];
   let hintW0 = 0, hintMax = 0;   // the widest hint text at this width (cached per resize)
 
   // execution: one tag per machine, a leader up to a label with a live number
